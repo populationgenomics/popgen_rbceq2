@@ -1,11 +1,23 @@
 #!/usr/bin/env nextflow
 
-params.gvcfs = 'test_data/gvcfs/*.g.vcf.gz'
+process BUILD_SAMPLESHEET { 
+
+    container params.metamist_container
+
+    output:
+        path "*.tsv", emit: samplesheet
+
+    script:
+    def cohort_list = params.cohorts.replace(',', ' ')
+    """
+    fetch_cohort_samplesheet.py --project ${params.metamist_project} --cohorts ${cohort_list}
+    """
+    
+}
 
 process CONVERT {
 
-    container 'staphb/bcftools:1.21'
-    containerOptions '--platform linux/amd64' 
+    container params.bcftools_container
 
     input:
         tuple val(meta), path(gvcf)
@@ -22,9 +34,9 @@ process CONVERT {
 
 process RBCEQ2 {
 
-    container 'rbceq2:2.4.1'
+    container params.rbceq2_container
 
-    publishDir {"results/${meta.id}"}, mode: 'copy' // after success, copy declared outputs into results/
+    publishDir { "${params.outdir}/${meta.id}" }, mode: 'copy' // after success, copy declared outputs into results/
 
     input:
         tuple val(meta), path(vcf)
@@ -40,8 +52,10 @@ process RBCEQ2 {
 
 workflow {
 
-    gvcf_ch = channel.fromPath(params.gvcfs)
-        .map{gvcf -> [[id: gvcf.simpleName], gvcf]} // [[id:'HG00096'], file]
+    BUILD_SAMPLESHEET()
+    gvcf_ch = BUILD_SAMPLESHEET.out.samplesheet
+        .splitCsv(header: true, sep: '\t')
+        .map { row -> [[id: row.sg_id, cohort: row.cohort, project: row.project], file(row.gvcf)] }
     
     CONVERT(gvcf_ch)
 
