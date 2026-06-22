@@ -36,7 +36,7 @@ process RBCEQ2 {
 
     container params.rbceq2_container
 
-    publishDir { "${params.outdir}/${meta.id}" }, mode: 'copy' // after success, copy declared outputs into results/
+    publishDir { "${params.outdir}/${params.output_version}/${meta.id}" }, mode: 'copy' // after success, copy declared outputs into results/
 
     input:
         tuple val(meta), path(vcf)
@@ -45,8 +45,15 @@ process RBCEQ2 {
         tuple val(meta), path("${meta.id}_*.tsv"), emit: results // globs all three .tsv files 
     
     script:
+    def output_pdfs = params.output_pdfs ? '--PDFs' : ''
     """
-    rbceq2 --vcf $vcf --out ${meta.id} --reference_genome GRCh38
+    rbceq2 \
+        --vcf $vcf \
+        --out ${meta.id} \
+        --reference_genome ${params.reference_genome} \
+        --depth ${params.min_depth} \
+        --quality ${params.min_qual} \
+        ${output_pdfs}
     """
 }
 

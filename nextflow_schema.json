@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/populationgenomics/popgen_rbceq2/main/nextflow_schema.json",
-  "title": "popgen_rbceq2 pipeline parameters",
-  "description": "Nextflow port of RBCeq2 - blood group genotyping from gVCFs",
+  "title": "populationgenomics/popgen_rbceq2 pipeline parameters",
+  "description": "Nextflow port of RBCeq2: blood group genotyping from gVCFs",
   "type": "object",
   "$defs": {
     "input_output_options": {
@@ -42,6 +42,12 @@
           "description": "Output directory where results will be saved. Use an absolute cloud path.",
           "fa_icon": "fas fa-folder-open",
           "default": "gs://cpg-seqera-trial-test/rbceq2"
+        },
+        "output_version": {
+          "type": "string",
+          "description": "Version label inserted into the output path (e.g. v1, v2) so re-runs don't overwrite each other.",
+          "fa_icon": "fas fa-code-branch",
+          "default": "v1"
         }
       }
     },
@@ -57,6 +63,32 @@
           "default": "GRCh38",
           "description": "Reference genome build passed to rbceq2.",
           "fa_icon": "fas fa-dna"
+        }
+      }
+    },
+    "rbceq2_options": {
+      "title": "rbceq2 options",
+      "type": "object",
+      "fa_icon": "fas fa-sliders-h",
+      "description": "rbceq2 calling and filtering options.",
+      "properties": {
+        "min_depth": {
+          "type": "integer",
+          "description": "Minimum read depth filter (rbceq2 --depth).",
+          "fa_icon": "fas fa-layer-group",
+          "default": 10
+        },
+        "min_qual": {
+          "type": "integer",
+          "description": "Minimum genotype quality / GQ filter (rbceq2 --quality).",
+          "fa_icon": "fas fa-check",
+          "default": 10
+        },
+        "output_pdfs": {
+          "type": "boolean",
+          "description": "Generate per-sample PDF reports (rbceq2 --PDFs).",
+          "fa_icon": "fas fa-file-pdf",
+          "default": true
         }
       }
     },
@@ -93,6 +125,9 @@
     },
     {
       "$ref": "#/$defs/reference_options"
+    },
+    {
+      "$ref": "#/$defs/rbceq2_options"
     },
     {
       "$ref": "#/$defs/container_options"
