@@ -43,6 +43,7 @@ process RBCEQ2 {
 
     output:
         tuple val(meta), path("${meta.id}_*.tsv"), emit: results // globs all three .tsv files 
+        path("${meta.id}_PDFs"), optional: true, emit: pdfs
     
     script:
     def output_pdfs = params.output_pdfs ? '--PDFs' : ''
