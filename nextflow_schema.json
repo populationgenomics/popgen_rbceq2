@@ -70,20 +70,8 @@
       "title": "rbceq2 options",
       "type": "object",
       "fa_icon": "fas fa-sliders-h",
-      "description": "rbceq2 calling and filtering options.",
+      "description": "rbceq2 reporting options.",
       "properties": {
-        "min_depth": {
-          "type": "integer",
-          "description": "Minimum read depth filter (rbceq2 --depth).",
-          "fa_icon": "fas fa-layer-group",
-          "default": 10
-        },
-        "min_qual": {
-          "type": "integer",
-          "description": "Minimum genotype quality / GQ filter (rbceq2 --quality).",
-          "fa_icon": "fas fa-check",
-          "default": 10
-        },
         "output_pdfs": {
           "type": "boolean",
           "description": "Generate per-sample PDF reports (rbceq2 --PDFs).",

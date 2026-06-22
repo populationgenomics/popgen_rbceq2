@@ -51,9 +51,25 @@ process RBCEQ2 {
         --vcf $vcf \
         --out ${meta.id} \
         --reference_genome ${params.reference_genome} \
-        --depth ${params.min_depth} \
-        --quality ${params.min_qual} \
         ${output_pdfs}
+    """
+}
+
+process GATHER {
+
+    publishDir {"${params.outdir}/${params.output_version}/combined"}, mode: 'copy'
+
+    input:
+        path tsvs
+
+    output:
+        path "combined.*.tsv", emit: combined
+
+    script:
+    """
+    awk 'NR==1 || FNR>1' *_geno.tsv > combined.geno.tsv
+    awk 'NR==1 || FNR>1' *_pheno_numeric.tsv > combined.pheno_numeric.tsv 
+    awk 'NR==1 || FNR>1' *_pheno_alphanumeric.tsv > combined.pheno_alphanumeric.tsv 
     """
 }
 
@@ -67,4 +83,9 @@ workflow {
     CONVERT(gvcf_ch)
 
     RBCEQ2(CONVERT.out.vcf)
+
+    gathered_ch = RBCEQ2.out.results.map {meta, files -> files}.collect()
+
+    GATHER(gathered_ch)
+
 }
