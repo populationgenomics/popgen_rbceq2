@@ -57,20 +57,41 @@ process RBCEQ2 {
 
 process GATHER {
 
-    publishDir {"${params.outdir}/${params.output_version}/combined"}, mode: 'copy'
+    publishDir {"${params.outdir}/${params.output_version}/${cohort}/combined"}, mode: 'copy'
 
     input:
-        path tsvs
+        tuple val(cohort), path(tsvs)
 
     output:
-        path "combined.*.tsv", emit: combined
+        tuple val(cohort), path("combined.${cohort}.*.tsv"), emit: combined
 
     script:
     """
-    awk 'NR==1 || FNR>1' *_geno.tsv > combined.geno.tsv
-    awk 'NR==1 || FNR>1' *_pheno_numeric.tsv > combined.pheno_numeric.tsv 
-    awk 'NR==1 || FNR>1' *_pheno_alphanumeric.tsv > combined.pheno_alphanumeric.tsv 
+    awk 'NR==1 || FNR>1' *_geno.tsv > combined.${cohort}.geno.tsv
+    awk 'NR==1 || FNR>1' *_pheno_numeric.tsv > combined.${cohort}.pheno_numeric.tsv 
+    awk 'NR==1 || FNR>1' *_pheno_alphanumeric.tsv > combined.${cohort}.pheno_alphanumeric.tsv 
     """
+}
+
+process REGISTER_METAMIST {
+
+    tag "${cohort}"
+    container params.metamist_container
+
+    input:
+        tuple val(cohort), path(tsvs)
+
+    script:
+    def out_prefix = "${params.outdir}/${params.output_version}/${cohort}/combined"
+        """
+        update_metamist.py \
+            --project ${params.metamist_project} \
+            --cohorts ${cohort} \
+            --type custom \
+            --output ${out_prefix}/combined.${cohort}.geno.tsv \
+            --secondary pheno_numeric=${out_prefix}/combined.${cohort}.pheno_numeric.tsv pheno_alphanumeric=${out_prefix}/combined.${cohort}.pheno_alphanumeric.tsv
+
+        """
 }
 
 workflow {
@@ -84,8 +105,13 @@ workflow {
 
     RBCEQ2(CONVERT.out.vcf)
 
-    gathered_ch = RBCEQ2.out.results.map {meta, files -> files}.collect()
+    cohort_gathered_ch = RBCEQ2.out.results
+        .map { meta, files -> [meta.cohort, files] }   // key each item by cohort
+        .groupTuple()                                   // fan-in per distinct cohort
+        .map { cohort, fileLists -> [cohort, fileLists.flatten()] }  // 3 TSVs × N samples → flat list
 
-    GATHER(gathered_ch)
+    GATHER(cohort_gathered_ch)
+
+    REGISTER_METAMIST(GATHER.out.combined)
 
 }
