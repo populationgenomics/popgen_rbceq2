@@ -1,101 +1,10 @@
 #!/usr/bin/env nextflow
 
-process BUILD_SAMPLESHEET { 
-
-    container params.metamist_container
-
-    output:
-        path "*.tsv", emit: samplesheet
-
-    script:
-    def cohort_list = params.cohorts.replace(',', ' ')
-    """
-    fetch_cohort_samplesheet.py --project ${params.metamist_project} --cohorts ${cohort_list}
-    """
-    
-}
-
-process FILTER_AND_CONVERT {
-
-    container params.bcftools_container
-
-    input:
-        tuple val(meta), path(gvcf)
-    
-    output:
-        tuple val(meta), path("${meta.id}.converted.vcf.gz"), emit: vcf
-    
-    
-    script:
-    """
-    bcftools norm -m -any -Ou $gvcf \
-        | bcftools view -e 'ALT="<NON_REF>" || FMT/DP="." || FMT/DP < ${params.min_depth} || FMT/GQ="." || FMT/GQ < ${params.min_gq}' \
-            --trim-alt-alleles -Oz -o ${meta.id}.converted.vcf.gz
-    """
-}
-
-process RBCEQ2 {
-
-    container params.rbceq2_container
-
-    publishDir { "${params.outdir}/${params.output_version}/${meta.id}" }, mode: 'copy' // after success, copy declared outputs into results/
-
-    input:
-        tuple val(meta), path(vcf)
-
-    output:
-        tuple val(meta), path("${meta.id}_*.tsv"), emit: results // globs all three .tsv files 
-        path("${meta.id}_PDFs"), optional: true, emit: pdfs
-    
-    script:
-    def output_pdfs = params.output_pdfs ? '--PDFs' : ''
-    """
-    rbceq2 \
-        --vcf $vcf \
-        --out ${meta.id} \
-        --reference_genome ${params.reference_genome} \
-        ${output_pdfs}
-    """
-}
-
-process GATHER {
-
-    publishDir {"${params.outdir}/${params.output_version}/${cohort}/combined"}, mode: 'copy'
-
-    input:
-        tuple val(cohort), path(tsvs)
-
-    output:
-        tuple val(cohort), path("combined.${cohort}.*.tsv"), emit: combined
-
-    script:
-    """
-    awk 'NR==1 || FNR>1' *_geno.tsv > combined.${cohort}.geno.tsv
-    awk 'NR==1 || FNR>1' *_pheno_numeric.tsv > combined.${cohort}.pheno_numeric.tsv 
-    awk 'NR==1 || FNR>1' *_pheno_alphanumeric.tsv > combined.${cohort}.pheno_alphanumeric.tsv 
-    """
-}
-
-process REGISTER_METAMIST {
-
-    tag "${cohort}"
-    container params.metamist_container
-
-    input:
-        tuple val(cohort), path(tsvs)
-
-    script:
-    def out_prefix = "${params.outdir}/${params.output_version}/${cohort}/combined"
-        """
-        update_metamist.py \
-            --project ${params.metamist_project} \
-            --cohorts ${cohort} \
-            --type custom \
-            --output ${out_prefix}/combined.${cohort}.geno.tsv \
-            --secondary pheno_numeric=${out_prefix}/combined.${cohort}.pheno_numeric.tsv pheno_alphanumeric=${out_prefix}/combined.${cohort}.pheno_alphanumeric.tsv
-
-        """
-}
+include { BUILD_SAMPLESHEET } from './modules/local/build_samplesheet'
+include { FILTER_AND_CONVERT } from './modules/local/filter_and_convert'
+include { RBCEQ2 }            from './modules/local/rbceq2'
+include { GATHER }            from './modules/local/gather'
+include { REGISTER_METAMIST } from './modules/local/register_metamist'
 
 workflow {
 
