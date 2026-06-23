@@ -80,6 +80,28 @@
         }
       }
     },
+    "filter_options": {
+      "title": "Variant filtering options",
+      "type": "object",
+      "fa_icon": "fas fa-filter",
+      "description": "Per-variant hard filters applied upstream in the FILTER_AND_CONVERT (bcftools) step, since rbceq2 itself exposes no depth/quality filtering. Set to 0 to disable a filter.",
+      "properties": {
+        "min_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum genotype depth (FORMAT/DP); records below this are dropped before rbceq2.",
+          "fa_icon": "fas fa-layer-group",
+          "default": 20
+        },
+        "min_gq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum genotype quality (FORMAT/GQ); records below this are dropped before rbceq2.",
+          "fa_icon": "fas fa-check-double",
+          "default": 30
+        }
+      }
+    },
     "container_options": {
       "title": "Container options",
       "type": "object",
@@ -94,7 +116,7 @@
         },
         "bcftools_container": {
           "type": "string",
-          "description": "Container image for the CONVERT (bcftools) process.",
+          "description": "Container image for the FILTER_AND_CONVERT (bcftools) process.",
           "fa_icon": "fab fa-docker",
           "default": "australia-southeast1-docker.pkg.dev/seqera-trial/images/nf_bcftools:1.23.1-1"
         },
@@ -116,6 +138,9 @@
     },
     {
       "$ref": "#/$defs/rbceq2_options"
+    },
+    {
+      "$ref": "#/$defs/filter_options"
     },
     {
       "$ref": "#/$defs/container_options"

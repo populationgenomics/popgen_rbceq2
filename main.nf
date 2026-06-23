@@ -15,7 +15,7 @@ process BUILD_SAMPLESHEET {
     
 }
 
-process CONVERT {
+process FILTER_AND_CONVERT {
 
     container params.bcftools_container
 
@@ -28,7 +28,9 @@ process CONVERT {
     
     script:
     """
-    bcftools norm -m -any $gvcf | bcftools view -e 'ALT="<NON_REF>"' --trim-alt-alleles -Oz -o ${meta.id}.converted.vcf.gz
+    bcftools norm -m -any $gvcf \
+        | bcftools view -e 'ALT="<NON_REF>" || FMT/DP="." || FMT/DP < ${params.min_depth} || FMT/GQ < ${params.min_gq}' \
+            --trim-alt-alleles -Oz -o ${meta.id}.converted.vcf.gz
     """
 }
 
@@ -102,9 +104,9 @@ workflow {
         .splitCsv(header: true, sep: '\t')
         .map { row -> [[id: row.sg_id, cohort: row.cohort, project: row.project], file(row.gvcf)] }
     
-    CONVERT(gvcf_ch)
+    FILTER_AND_CONVERT(gvcf_ch)
 
-    RBCEQ2(CONVERT.out.vcf)
+    RBCEQ2(FILTER_AND_CONVERT.out.vcf)
 
     cohort_gathered_ch = RBCEQ2.out.results
         .map { meta, files -> [meta.cohort, files] }   // key each item by cohort
