@@ -28,8 +28,8 @@ process FILTER_AND_CONVERT {
     
     script:
     """
-    bcftools norm -m -any $gvcf \
-        | bcftools view -e 'ALT="<NON_REF>" || FMT/DP="." || FMT/DP < ${params.min_depth} || FMT/GQ < ${params.min_gq}' \
+    bcftools norm -m -any -Ou $gvcf \
+        | bcftools view -e 'ALT="<NON_REF>" || FMT/DP="." || FMT/DP < ${params.min_depth} || FMT/GQ="." || FMT/GQ < ${params.min_gq}' \
             --trim-alt-alleles -Oz -o ${meta.id}.converted.vcf.gz
     """
 }
