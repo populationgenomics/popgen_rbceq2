@@ -2,8 +2,6 @@ process GATHER {
     
     tag "${cohort}"
 
-    publishDir {"${params.outdir}/${params.output_version}/${cohort}/combined"}, mode: 'copy'
-
     input:
         tuple val(cohort), path(tsvs)
 

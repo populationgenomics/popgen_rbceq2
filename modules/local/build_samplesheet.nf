@@ -2,13 +2,17 @@ process BUILD_SAMPLESHEET {
 
     container params.metamist_container
 
+    input:
+        val project
+        val cohorts
+
     output:
         path "*.tsv", emit: samplesheet
 
     script:
-    def cohort_list = params.cohorts.replace(',', ' ')
+    def cohort_list = cohorts.replace(',', ' ')
     """
-    fetch_cohort_samplesheet.py --project ${params.metamist_project} --cohorts ${cohort_list}
+    fetch_cohort_samplesheet.py --project ${project} --cohorts ${cohort_list}
     """
     
 }

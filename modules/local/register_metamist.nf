@@ -5,12 +5,15 @@ process REGISTER_METAMIST {
 
     input:
         tuple val(cohort), path(tsvs)
+        val project
+        val outdir
+        val output_version
 
     script:
-    def out_prefix = "${params.outdir}/${params.output_version}/${cohort}/combined"
+    def out_prefix = "${outdir}/${output_version}/${cohort}/combined"
         """
         update_metamist.py \
-            --project ${params.metamist_project} \
+            --project ${project} \
             --cohorts ${cohort} \
             --type custom \
             --output ${out_prefix}/combined.${cohort}.geno.tsv \
