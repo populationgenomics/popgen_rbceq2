@@ -13,7 +13,7 @@ workflow {
         .splitCsv(header: true, sep: '\t')
         .map { row -> [[id: row.sg_id, cohort: row.cohort, project: row.project], file(row.gvcf)] }
     
-    FILTER_AND_CONVERT(gvcf_ch)
+    FILTER_AND_CONVERT(gvcf_ch, params.min_depth, params.min_gq)
 
     RBCEQ2(FILTER_AND_CONVERT.out.vcf)
 
