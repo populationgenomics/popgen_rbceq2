@@ -20,7 +20,7 @@ workflow {
     }
 
     FILTER_AND_CONVERT(gvcf_ch, params.min_depth, params.min_gq)
-    RBCEQ2(FILTER_AND_CONVERT.out.vcf, params.reference_genome, params.output_pdfs)
+    RBCEQ2(FILTER_AND_CONVERT.out.vcf, params.reference_genome)
 
     cohort_gathered_ch = RBCEQ2.out.results
         .map { meta, files -> [meta.cohort, files] }
