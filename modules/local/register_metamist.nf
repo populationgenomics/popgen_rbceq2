@@ -8,6 +8,9 @@ process REGISTER_METAMIST {
         val project
         val outdir
         val output_version
+    
+    output:  
+        stdout emit: log 
 
     script:
     def out_prefix = "${outdir}/${output_version}/${cohort}/combined"

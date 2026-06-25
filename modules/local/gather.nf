@@ -1,5 +1,7 @@
 process GATHER {
     
+    container params.bcftools_container
+    
     tag "${cohort}"
 
     input:
