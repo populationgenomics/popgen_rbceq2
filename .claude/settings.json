@@ -1,0 +1,62 @@
+{
+  "extraKnownMarketplaces": {
+    "cpg": {
+      "source": { "source": "github", "repo": "populationgenomics/cpg-skills" }
+    },
+    "scr": {
+      "source": { "source": "github", "repo": "populationgenomics/semantic-code-review" }
+    }
+  },
+  "enabledPlugins": {
+    "cpg@cpg": true,
+    "scr@scr": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(cat:*)",
+      "Bash(gcloud storage ls:*)",
+      "Bash(gcloud storage cat:*)",
+      "Bash(gcloud storage du:*)"
+    ],
+    "ask": [
+      "Bash(gcloud storage cp:*)",
+      "Bash(gsutil:*)"
+    ],
+    "deny": [
+      "Bash(gcloud storage rm:*)",
+      "Bash(gcloud storage mv:*)",
+      "Bash(gcloud storage rewrite:*)",
+      "Bash(gcloud storage objects delete:*)",
+      "Bash(gcloud storage buckets delete:*)",
+      "Bash(gsutil rm:*)",
+      "Bash(gsutil mv:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-setup-check.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-destructive-cloud.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}
