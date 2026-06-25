@@ -10,7 +10,7 @@ process BUILD_SAMPLESHEET {
         path "*.tsv", emit: samplesheet
 
     script:
-    def cohort_list = cohorts.replace(',', ' ')
+    def cohort_list = cohorts.join(' ')
     """
     fetch_cohort_samplesheet.py --project ${project} --cohorts ${cohort_list}
     """
