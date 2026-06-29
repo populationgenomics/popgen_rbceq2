@@ -1,3 +1,20 @@
+# Popgen_RBCeq2
+
+## What Popgen_RBCew2 is
+A pipeline that produces an estimate of the blood type for each individual in the input cohort.
+- __In__: Variant calls in gVCF format.
+- __Structure__: A Nextflow pipeline that converts the input into the correct format for RBCeq2, which it then calls.
+- __Out__: Three CSV files:
+  1. `system/gene` to genotype,
+  2. `system/gene` to alphanumeric phenotype,
+  3. `system/gene` to numeric phenotype.
+
+## Why it exists
+
+Popgen_RBCeq2 exists to provide a simple, automated way to estimate blood type from variant calls.
+_Do we include information on rare blood types etc_
+
+
 # Writing your repo's PRODUCT.md (north star)
 
 Every durable repo needs a north-star doc that an agent and a new contributor
@@ -17,6 +34,12 @@ doc you write.**
 ## What to capture
 
 Cover these, adapting the headings to your project:
+
+
+- Produce an estimate of a blood type for each individual
+- Annotate a field in Metamist with the inference of blood type
+
+
 
 1. **What it is.** One tight statement of the thing, then its inputs, the
    structure it works within, and what it outputs.
