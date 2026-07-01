@@ -1,70 +1,66 @@
 # Popgen_RBCeq2
 
-## What Popgen_RBCew2 is
+## What Popgen_RBCeq2 is
 A pipeline that produces an estimate of the blood type for each individual in the input cohort.
 - __In__: Variant calls in gVCF format.
 - __Structure__: A Nextflow pipeline that converts the input into the correct format for RBCeq2, which it then calls.
-- __Out__: Three CSV files:
-  1. `system/gene` to genotype,
-  2. `system/gene` to alphanumeric phenotype,
-  3. `system/gene` to numeric phenotype.
+- __Out__: Three TSV files:
+  1. `<SGID>.geno.tsv` to genotype calls,
+  2. `<SGID>.pheno_alphanumeric.tsv` to alphanumeric phenotype,
+  3. `<SGID>.pheno_numeric.tsv` to numeric phenotype.
 
 ## Why it exists
 
 Popgen_RBCeq2 exists to provide a simple, automated way to estimate blood type from variant calls.
-_Do we include information on rare blood types etc_
+Blood donations are heavily relied on by healthcare institutions. Some blood groups are much rarer than
+others among the general population. Lifeblood, the developer of RBCeq2, are interested in targeting
+communities with high occurrences of rare blood groups to bolster blood donations. CPG has access
+to blood samples from communities not commonly represented in genomic databases and are uniquely positioned
+to provide insights into blood-group frequencies in these underrepresented populations to help direct
+blood drive initiatives.
 
+## Who is this for?
+This pipeline is for PopGen team members at CPG to identify individual blood groups and 
+estimate frequency of blood groups across their datasets. 
 
-# Writing your repo's PRODUCT.md (north star)
+## Core Thesis
+The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented cohort gVCFs with estimated blood groups.
 
-Every durable repo needs a north-star doc that an agent and a new contributor
-read first — what the thing is, why it exists, and the load-bearing decisions
-that shape it. This file tells you how to write your own; **replace it with the
-doc you write.**
+## Load-bearing design principles
+**gVCF -> VCF conversion + filtering (`filter_and_convert.nf`)**
+- RBCeq2 cannot read gVCFs: Its variant encoder rejects any ALT ending in `>`, so the `<NON_REF>` symbolic allele present on every gVCF record (both ref blocks and real variants like G,`<NON_REF>`) falls through to a fallback that mis-keys the variant and never matches the database. RBCeq2 does not error, it silently reverts affected systems to reference (observed: ABO -> Undetermined on HG00096). `filter_and_convert.nf` therefore splits multiallelics (`bcftools norm -m -any`) and drops `<NON_REF>` (`view -e 'ALT="<NON_REF>"'`) so only clean biallelic records reach RBCeq2. RBCeq2 also has no depth/quality filtering, so depth/GQ filtering must happen upstream. Both are handled at conversion:
+1. `bcftools norm -m -any`: splits multiallelic records to one ALT per row. RBCeq2 evaluates one allele at a time and misreads multiallelic sites, so this precedes filtering.
+2. `bcftools view -e 'ALT="<NON_REF>" || FMT/DP="." || FMT/DP < min_depth || FMT/GQ="." || FMT/GQ < min_gq'`: drops `<NON_REF>` records and missing/sub-threshold depth or GQ. The explicit `="."` checks are required because a missing value does not reliably fail a `<` comparison in `bcftools`; without them, no-data sites pass the filter.
+3. `--trim-alt-alleles`: drops ALT alleles not carried by any surviving genotype call.
 
-## What this doc is (and isn't)
+**Regions BED generation from RBCeq2's own `db.tsv`**
+- RBCeq2 internally restricts VCFs it handles to regions only appearing in its `db.tsv` database. It does this via a `build_intervals()` function. By far the biggest time-sink is the filter and conversion step using `bcftools` as it parses the entire genome. 
+- Clear time saving: We build a BED file from the `db.tsv` the same way RBCeq2 does and restrict all input gVCF files to these regions. This DRAMATICALLY improves run times from ~50min-1hr to a couple of minutes.
+- Pre-generated BED is located in root: `bg_regions.GRCh38.bed`. As well as the script to generate it `gen_bg_bed.py`. The script itself is almost an exact copy of `build_intervals()` used in RBCeq2.
+- Note: no dependency on RBCeq2's implementation in this process means BED file can drift if upstream RBCeq2 changes `build_intervals()`.
 
-- It's the **frame to start detailed plans from**, so context isn't re-litigated
-  every session. Keep it current, but this is not expected to change frequently.
-- It is **not the build plan** — concrete current work lives in issues / design
-  docs / plans; keep those out of here.
-- Write it **for an LLM reader**: dense, each fact stated **once**, no rhetorical
-  emphasis or recap. Every token is re-paid on every future read.
+## Scope boundaries & ecosystem
+### Scope
+- Not a variant caller
+- Not a fork or fix of RBCeq2
+- Not the source/maintainer of blood-group data/knowledge
+- No phasing (yet)
 
-## What to capture
+### Ecosystem
+- **RBCeq2**: the genotyper
+- **bcftools**
+- **Nextflow/Seqera**: workflow orchestrator and platform to manage workflows
+- **Metamist**: CPG's sample metadata system. Source of truth for inputs and where results are registered.
 
-Cover these, adapting the headings to your project:
+## Relevant external repositories and resources.
+[RBCeq2 repo and source code](https://github.com/limcintyre/RBCeq2)
 
+## Bets & open questions.
+- Currently do not have phased data. This leads to multiple blood-group phenotypes assigned to individuals. All outputs are registered in the analysis object on metamist, regardless of this uncertainty.
+- Decision to remove sites that do not meet `min_depth`/`min_gq` instead of labelling them as `"./."` (no calls). Converting low quality sites to `"./."` would lead to false-positives at blood-group loci. Compared to the current implementation of deleting low quality sites leading to false-reference and therefore removed from analysis (except at Lane loci where they are added back in as hom-ref).
 
-- Produce an estimate of a blood type for each individual
-- Annotate a field in Metamist with the inference of blood type
-
-
-
-1. **What it is.** One tight statement of the thing, then its inputs, the
-   structure it works within, and what it outputs.
-2. **Why it exists.** The problem / bottleneck it attacks, why now, and what
-   success looks like in observable terms.
-3. **Who it's for.** The users — and whether they're also the people building it.
-4. **The core thesis.** The actual durable contribution — the bet about where the
-   lasting value sits, versus what's thin and replaceable.
-5. **Load-bearing design principles.** The non-obvious choices everything else
-   must respect (the ones you'd otherwise re-argue in every design review).
-6. **Scope boundaries & ecosystem.** What it is **not**; the neighbouring
-   tools/systems and exactly how this relates to each.
-7. **Relevant external repositories and resources.** Point at the external repos
-   an agent should *read* for this work — upstream tools, libraries, reference
-   implementations, related pipelines — with a one-line note on what each is for,
-   so it doesn't guess at code it could read. And where relevant context should
-   be extracted or summarised from an external resource (e.g. documentation for a
-   tool like DRAGEN or Hail), capture that summary here.
-8. **Bets & open questions.** The bets you hold deliberately — each with *what
-   would falsify it* — and the questions you'll resolve by building, not up front.
-9. **The current slice.** The one narrowed target you're building first, with a
-   pointer to where its concrete definition lives (not inlined here).
+## The current slice.
+An implementation of RBCeq2 using Nextflow in CPG's infrastructure. Not yet running on production data.
 
 ## Domain terms
-
-Define the terms a newcomer (human or agent) would otherwise guess at in a
-companion `GLOSSARY.md` (see its template), and point at it from here. Don't
-inline a long term list in this doc.
+[See GLOSSARY.md](../GLOSSARY.md)

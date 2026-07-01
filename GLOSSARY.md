@@ -1,18 +1,20 @@
 # Writing your repo's GLOSSARY.md
 
-A companion to `PRODUCT.md`: shared definitions so people *and* tooling use terms
-consistently, with one source of truth. **Replace this with your glossary.**
-
-## How to write it
-
-- **One entry per term**: the term in **bold**, then a one-line definition of
-  what it means *here* — not a textbook definition.
-- **Group related terms** under headings that fit your project — for example
-  programme & organisations, ecosystem tools, domain concepts, and
-  method / infrastructure.
-- **Capture what a newcomer would get subtly wrong**: internal names, acronyms,
-  tool names, sentinel values, domain jargon.
-- **Disambiguate easily-confused things** (e.g. two similarly-named teams or
-  systems; "dataset" versus "cohort").
-- **Keep it current**, and let `PRODUCT.md` link to it as the single source of
-  truth for terminology.
+- RBCeq2: the genotyping tool this pipeline wraps; consumes VCF file and outputs blood group assignments per-sample.
+- `db.tsv`: RBCeq2's bundled allele database; the source of truth for both calls and the regions BED.
+- Blood group system/reported locus: RBCeq2 emits one genotype+phenotype call per gene/locus (48 in v2.4.1: ABO, FY, VEL, GYPA, GYPB…). These map to ISBT blood group systems but not 1:1, one system can involve several genes, and some reported loci are related transporters/regulators.
+- Antigen vs phenotype vs genotype:
+   - Genotype: The allele-pair call in ISBT nomenclature (`geno.tsv`), e.g. ABO*A1.01/ABO*O.01.05. RBCeq2 often lists many candidate pairs. 
+   - Phenotype (numeric): ISBT numeric antigen notation (`pheno_numeric.tsv`), e.g. ABCC1:1, CROM:1,2,-3 (system:antigen-number, sign = present/absent). 
+   - Phenotype (alphanumeric): conventional serological names (`pheno_alphanumeric.tsv`), e.g. P1+,Pk+, Fy(a+b−), Lan+. An antigen is the individual serological marker. The phenotype is the observed +/− pattern of antigens. The genotype is the  allele pair predicted to produce it.
+- Antithetical antigens: a pair of antigens encoded by alternative alleles at the same locus, where having one usually means lacking the other.
+Rare blood group: a phenotype for which antigen-compatible donor blood is hard to source, typically a rare antigen-negative combination; prevalence is population-specific.
+- Lane variant: a position that's wildtype in the genomic reference but variant relative to the transcript (from Dr
+Lane's paper); RBCeq2 adds the reference allele to complete the genotype.
+- gVCF vs VCF: gVCFs contains information at every position in the genome, both reference and variant positions. VCFs contain information only at variant sites.
+- `<NON_REF>`: sentinel symbolic ALT in gVCFs; breaks RBCeq2.
+- `build_intervals` / regions / flank: how RBCeq2 (and the pre-built BED) derive read regions from `db.tsv` (±500 kb).
+- `Undetermined`: placeholder output value meaning RBCeq2 couldn't resolve a system, not read as "reference."
+- geno / pheno_numeric / pheno_alphanumeric: the three output TSVs.
+- `Metamist`: CPG's sample-metadata system.
+- `analysis-runner`: CPG's tool to launch workflows.
