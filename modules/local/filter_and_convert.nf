@@ -5,9 +5,11 @@ process FILTER_AND_CONVERT {
     container params.bcftools_container
 
     input:
-        tuple val(meta), path(gvcf)
+        tuple val(meta), path(gvcf), path(tbi)
+        path region_bed
         val min_depth
         val min_gq
+        val n_cpus
     
     output:
         tuple val(meta), path("${meta.id}.converted.vcf.gz"), emit: vcf
@@ -29,11 +31,15 @@ process FILTER_AND_CONVERT {
     So without the "." check, no-data sites could slip through.
 
     3. --trim-alt-alleles: after filtering, removes ALT alleles no genotype references anymore.
+
+    -R ${region_bed}: restricts to blood-group regions (a BED built from RBCeq2's db.tsv) via
+    index-jump on the first pipe stage. Requires the gVCF's .tbi index.
     */
     script:
     """
-    bcftools norm -m -any -Ou $gvcf \
-        | bcftools view -e 'ALT="<NON_REF>" || FMT/DP="." || FMT/DP < ${min_depth} || FMT/GQ="." || FMT/GQ < ${min_gq}' \
+    bcftools norm -m -any --threads ${n_cpus} -R ${region_bed} -Ou $gvcf \
+        | bcftools view --threads ${n_cpus} \
+            -e 'ALT="<NON_REF>" || FMT/DP="." || FMT/DP < ${min_depth} || FMT/GQ="." || FMT/GQ < ${min_gq}' \
             --trim-alt-alleles -Oz -o ${meta.id}.converted.vcf.gz
     """
 }

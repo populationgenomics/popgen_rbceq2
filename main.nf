@@ -12,9 +12,9 @@ workflow {
 
     gvcf_ch = BUILD_SAMPLESHEET.out.samplesheet
         .splitCsv(header: true, sep: '\t')
-        .map { row -> [[id: row.sg_id, cohort: row.cohort, project: row.project], file(row.gvcf)] }
-    
-    FILTER_AND_CONVERT(gvcf_ch, params.min_depth, params.min_gq)
+        .map { row -> [[id: row.sg_id, cohort: row.cohort, project: row.project], file(row.gvcf), file(row.gvcf + '.tbi')] }
+
+    FILTER_AND_CONVERT(gvcf_ch, params.region_bed, params.min_depth, params.min_gq, params.n_cpus)
 
     RBCEQ2(FILTER_AND_CONVERT.out.vcf, params.reference_genome, params.output_pdfs)
 
