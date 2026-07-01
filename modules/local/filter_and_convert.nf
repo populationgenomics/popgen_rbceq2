@@ -1,15 +1,15 @@
 process FILTER_AND_CONVERT {
 
     tag "${meta.id}"
-    
+
     container params.bcftools_container
+    cpus params.n_cpus
 
     input:
         tuple val(meta), path(gvcf), path(tbi)
         path region_bed
         val min_depth
         val min_gq
-        val n_cpus
     
     output:
         tuple val(meta), path("${meta.id}.converted.vcf.gz"), emit: vcf
@@ -37,8 +37,8 @@ process FILTER_AND_CONVERT {
     */
     script:
     """
-    bcftools norm -m -any --threads ${n_cpus} -R ${region_bed} -Ou $gvcf \
-        | bcftools view --threads ${n_cpus} \
+    bcftools norm -m -any --threads ${task.cpus} -R ${region_bed} -Ou $gvcf \
+        | bcftools view --threads ${task.cpus} \
             -e 'ALT="<NON_REF>" || FMT/DP="." || FMT/DP < ${min_depth} || FMT/GQ="." || FMT/GQ < ${min_gq}' \
             --trim-alt-alleles -Oz -o ${meta.id}.converted.vcf.gz
     """

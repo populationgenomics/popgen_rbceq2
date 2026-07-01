@@ -19,7 +19,7 @@ workflow {
             .map { f -> [[id: f.simpleName, cohort: params.local_cohort, project: 'local'], f, file(f + '.tbi')] }
     }
 
-    FILTER_AND_CONVERT(gvcf_ch, params.region_bed, params.min_depth, params.min_gq, params.n_cpus)
+    FILTER_AND_CONVERT(gvcf_ch, params.region_bed, params.min_depth, params.min_gq)
     RBCEQ2(FILTER_AND_CONVERT.out.vcf, params.reference_genome)
 
     cohort_gathered_ch = RBCEQ2.out.results
