@@ -3,7 +3,6 @@ process FILTER_AND_CONVERT {
     tag "${meta.id}"
 
     container params.bcftools_container
-    cpus params.n_cpus
 
     input:
         tuple val(meta), path(gvcf), path(tbi)
