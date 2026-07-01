@@ -1,0 +1,13 @@
+# Nextflow
+work/
+.nextflow/
+.nextflow.log*
+results/
+
+# Test data (large gVCFs/VCFs — never commit)
+test_data/
+
+# Python / OS cruft
+__pycache__/
+*.pyc
+.DS_Store

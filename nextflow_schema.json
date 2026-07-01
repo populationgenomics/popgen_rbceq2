@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/populationgenomics/popgen_rbceq2/main/nextflow_schema.json",
+  "title": "populationgenomics/popgen_rbceq2 pipeline parameters",
+  "description": "Nextflow port of RBCeq2: blood group genotyping from gVCFs",
+  "type": "object",
+  "$defs": {
+    "input_output_options": {
+      "title": "Input/output options",
+      "type": "object",
+      "fa_icon": "fas fa-terminal",
+      "description": "Where the pipeline finds input gVCFs and writes results.",
+      "required": ["outdir", "cohorts"],
+      "properties": {
+        "cohorts": {
+          "type": "string",
+          "description": "Comma-separated Metamist cohort IDs to fetch gVCFs for (e.g. COH11572,COH11598).",
+          "fa_icon": "fas fa-users",
+          "default": "COH11572,COH11598"
+        },
+        "metamist_project": {
+          "type": "string",
+          "description": "Metamist project to query for cohort gVCF analyses.",
+          "fa_icon": "fas fa-database",
+          "default": "seqera-trial"
+        },
+        "use_metamist": {
+          "type": "boolean",
+          "description": "Build the input samplesheet from Metamist (production). If false, use the gvcfs glob (local/dev).",
+          "fa_icon": "fas fa-toggle-on",
+          "default": true
+        },
+        "gvcfs": {
+          "type": "string",
+          "description": "Glob for input gVCFs, used for local/dev runs when use_metamist is false.",
+          "fa_icon": "fas fa-file-import",
+          "default": "gs://cpg-seqera-trial-test/gvcf/*.g.vcf.gz"
+        },
+        "outdir": {
+          "type": "string",
+          "format": "directory-path",
+          "description": "Output directory where results will be saved. Use an absolute cloud path.",
+          "fa_icon": "fas fa-folder-open",
+          "default": "gs://cpg-seqera-trial-test/rbceq2"
+        },
+        "output_version": {
+          "type": "string",
+          "description": "Version label inserted into the output path (e.g. v1, v2) so re-runs don't overwrite each other.",
+          "fa_icon": "fas fa-code-branch",
+          "default": "v1"
+        }
+      }
+    },
+    "reference_options": {
+      "title": "Reference genome options",
+      "type": "object",
+      "fa_icon": "fas fa-dna",
+      "description": "Reference genome build for variant calling.",
+      "properties": {
+        "reference_genome": {
+          "type": "string",
+          "enum": ["GRCh37", "GRCh38"],
+          "default": "GRCh38",
+          "description": "Reference genome build passed to rbceq2.",
+          "fa_icon": "fas fa-dna"
+        }
+      }
+    },
+    "rbceq2_options": {
+      "title": "rbceq2 options",
+      "type": "object",
+      "fa_icon": "fas fa-sliders-h",
+      "description": "rbceq2 reporting options.",
+      "properties": {
+        "output_pdfs": {
+          "type": "boolean",
+          "description": "Generate per-sample PDF reports (rbceq2 --PDFs).",
+          "fa_icon": "fas fa-file-pdf",
+          "default": true
+        }
+      }
+    },
+    "filter_options": {
+      "title": "Variant filtering options",
+      "type": "object",
+      "fa_icon": "fas fa-filter",
+      "description": "Per-variant hard filters applied upstream in the FILTER_AND_CONVERT (bcftools) step, since rbceq2 itself exposes no depth/quality filtering. Set to 0 to disable a filter.",
+      "properties": {
+        "min_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum genotype depth (FORMAT/DP); records below this are dropped before rbceq2.",
+          "fa_icon": "fas fa-layer-group",
+          "default": 20
+        },
+        "min_gq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum genotype quality (FORMAT/GQ); records below this are dropped before rbceq2.",
+          "fa_icon": "fas fa-check-double",
+          "default": 30
+        }
+      }
+    },
+    "container_options": {
+      "title": "Container options",
+      "type": "object",
+      "fa_icon": "fab fa-docker",
+      "description": "Container images for each process (Artifact Registry paths).",
+      "properties": {
+        "rbceq2_container": {
+          "type": "string",
+          "description": "Container image for the RBCEQ2 process.",
+          "fa_icon": "fab fa-docker",
+          "default": "australia-southeast1-docker.pkg.dev/seqera-trial/images/rbceq2:2.4.1"
+        },
+        "bcftools_container": {
+          "type": "string",
+          "description": "Container image for the FILTER_AND_CONVERT (bcftools) process.",
+          "fa_icon": "fab fa-docker",
+          "default": "australia-southeast1-docker.pkg.dev/seqera-trial/images/nf_bcftools:1.23.1-1"
+        },
+        "metamist_container": {
+          "type": "string",
+          "description": "Container image for the BUILD_SAMPLESHEET (Metamist query) process.",
+          "fa_icon": "fab fa-docker",
+          "default": "australia-southeast1-docker.pkg.dev/seqera-trial/images/metamist:dataproc"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "$ref": "#/$defs/input_output_options"
+    },
+    {
+      "$ref": "#/$defs/reference_options"
+    },
+    {
+      "$ref": "#/$defs/rbceq2_options"
+    },
+    {
+      "$ref": "#/$defs/filter_options"
+    },
+    {
+      "$ref": "#/$defs/container_options"
+    }
+  ]
+}
