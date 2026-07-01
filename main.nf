@@ -13,13 +13,13 @@ workflow {
         BUILD_SAMPLESHEET(params.metamist_project, cohort_list)
         gvcf_ch = BUILD_SAMPLESHEET.out.samplesheet
             .splitCsv(header: true, sep: '\t')
-            .map { row -> [[id: row.sg_id, cohort: row.cohort, project: row.project], file(row.gvcf)] }
+            .map { row -> [[id: row.sg_id, cohort: row.cohort, project: row.project], file(row.gvcf), file(row.gvcf + '.tbi')] }
     } else {
         gvcf_ch = Channel.fromPath(params.gvcfs)
-            .map { f -> [[id: f.simpleName, cohort: params.local_cohort, project: 'local'], f] }
+            .map { f -> [[id: f.simpleName, cohort: params.local_cohort, project: 'local'], f, file(f + '.tbi')] }
     }
 
-    FILTER_AND_CONVERT(gvcf_ch, params.min_depth, params.min_gq)
+    FILTER_AND_CONVERT(gvcf_ch, params.region_bed, params.min_depth, params.min_gq, params.n_cpus)
     RBCEQ2(FILTER_AND_CONVERT.out.vcf, params.reference_genome)
 
     cohort_gathered_ch = RBCEQ2.out.results
