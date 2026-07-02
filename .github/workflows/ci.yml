@@ -46,6 +46,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: nf-core/setup-nextflow@v2
         with:
-          version: "26.04+"
+          version: "26.04.2.0"
       - name: Nextflow lint
         run: nextflow lint main.nf
