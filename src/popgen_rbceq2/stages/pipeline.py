@@ -28,12 +28,11 @@ from popgen_rbceq2.stages.blood_group_genotyping import call_qc, combine, filter
 FilterAndConvertGvcfsForRbceq2: cpg_flow.stage.StageDecorator = stage_support.wire(
     filter_and_convert.FilterAndConvertGvcfsForRbceq2,
 )
-# Per-SG calls Analysis, output = the geno TSV. analysis_type='custom' because Metamist has no
-# blood-group genotype type; the calls themselves go into the meta.
+# Per-SG calls Analysis, output = the geno TSV.
 GenotypeBloodGroupsWithRbceq2: cpg_flow.stage.StageDecorator = stage_support.wire(
     genotype.GenotypeBloodGroupsWithRbceq2,
     requires=[FilterAndConvertGvcfsForRbceq2],
-    analysis_type='custom',
+    analysis_type='blood_group_qc',
     analysis_keys=['geno'],
     update_analysis_meta=analysis_meta.blood_group_calls,
 )
@@ -49,7 +48,7 @@ FlagBloodGroupCallQc: cpg_flow.stage.StageDecorator = stage_support.wire(
 CombineRbceq2OutputsPerCohort: cpg_flow.stage.StageDecorator = stage_support.wire(
     combine.CombineRbceq2OutputsPerCohort,
     requires=[GenotypeBloodGroupsWithRbceq2, FlagBloodGroupCallQc],
-    analysis_type='custom',
+    analysis_type='blood_group_qc',
     analysis_keys=['geno'],
     update_analysis_meta=analysis_meta.cohort_calls,
 )
