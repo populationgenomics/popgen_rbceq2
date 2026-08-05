@@ -1,23 +1,72 @@
-# Project metadata plus the CPG-standard ruff + pyright config. Fill in the
-# REPLACE-ME name and adjust deps for your repo. Run from source (no build
-# backend); add one when you ship a distributable package.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
-name = "PopGen-RBCeq2"
-version = "0.0.1"
-requires-python = "==3.12.*"
+name = "popgen_rbceq2"
+description = "Blood-group genotyping with RBCeq2, as a cpg-flow workflow"
+readme = "README.md"
+version = "0.1.0"
+# cpg-flow is pinned to this range; the cpg_hail base image ships Python 3.11.
+requires-python = ">=3.10,<3.12"
+classifiers = [
+    'Environment :: Console',
+    'Intended Audience :: Science/Research',
+    'Natural Language :: English',
+    'Operating System :: Unix',
+    'Programming Language :: Python',
+    'Topic :: Scientific/Engineering :: Bio-Informatics',
+]
+
+dependencies = [
+    'click',
+    'cpg-flow>=v1.3.3',
+    'cpg-utils>=5.5.0',
+    'metamist>=v7.14.1',
+]
+
+# The workflow runner — the command analysis-runner invokes.
+[project.scripts]
+popgen_rbceq2 = 'popgen_rbceq2.run_workflow:cli_main'
+
+[project.urls]
+Repository = "https://github.com/populationgenomics/popgen_rbceq2"
 
 [dependency-groups]
 # Managed by uv: `uv sync` installs these for development.
-dev = ["ruff", "pyright", "pytest", "pre-commit"]
+dev = ["pytest", "pytest-mock", "pre-commit", "pyright", "ruff", "toml", "types-toml"]
+
+# The blood-group resources are read out of the installed package at graph-build time
+# (stage_support.blood_group_resource), so they have to be in the wheel, not just the checkout.
+[tool.hatch.build.targets.wheel]
+packages = ["src/popgen_rbceq2"]
+artifacts = [
+    "src/popgen_rbceq2/resources/*.bed",
+    "src/popgen_rbceq2/resources/*.tsv",
+    "src/popgen_rbceq2/config/*.toml",
+]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/popgen_rbceq2/resources/*.bed",
+    "src/popgen_rbceq2/resources/*.tsv",
+    "src/popgen_rbceq2/config/*.toml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "fast: unit tests that build no batch and touch no cloud",
+]
 
 [tool.ruff]
 line-length = 120
-target-version = "py312"
+target-version = "py311"
+extend-exclude = [".venv", "build", "dist"]
 
 [tool.ruff.format]
 quote-style = "single"
@@ -25,7 +74,7 @@ quote-style = "single"
 [tool.ruff.lint]
 select = [
     "A", "B", "C", "D", "E", "F", "G", "I", "N", "Q", "S", "W",
-    "ANN", "ARG", "BLE", "COM", "DTZ", "ERA", "EXE", "ICN", "ISC",
+    "ANN", "ARG", "BLE", "DTZ", "ERA", "EXE", "ICN", "ISC",
     "PGH", "PIE", "PL", "PT", "PYI", "RET", "RSE", "RUF",
     "SIM", "SLF", "T10", "TID", "UP", "YTT",
 ]
@@ -48,12 +97,20 @@ ignore = [
     "PLR2004", # Magic value used in comparison
     "Q000",    # Single quotes found but double quotes preferred
     "Q003",    # Change outer quotes (conflicts with the single-quote formatter)
+    "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed
+    "G004",    # Logging statement uses an f-string — the CPG house style
+    "EXE001",  # Shebang present but file not executable (the job scripts are run as
+               # `python3 <path>`, and the bit is not what makes that work)
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
     "S101",   # asserts are the standard pytest idiom
     "SLF001", # tests legitimately reach into module privates
+    # A test takes fixtures and returns None. Annotating that on every one is noise that
+    # obscures the few signatures where a type says something.
+    "ANN001",
+    "ANN201",
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -72,5 +129,28 @@ max-statements = 80
 max-locals = 25
 
 [tool.pyright]
-pythonVersion = "3.12"
+pythonVersion = "3.11"
 typeCheckingMode = "standard"
+# Hail and cpg-flow ship no type information for large parts of their surface.
+reportMissingTypeStubs = false
+
+[tool.bumpversion]
+current_version = "0.1.0"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
+serialize = ["{major}.{minor}.{patch}"]
+allow_dirty = false
+
+tag = true
+tag_name = "v{new_version}"
+tag_message = "Bump version: {current_version} → {new_version}"
+sign_tags = true
+
+commit = true
+message = "Bump version: {current_version} → {new_version}"
+commit_args = ""
+
+# The image tag CI publishes comes from the Dockerfile, so the two versions move together.
+[[tool.bumpversion.files]]
+filename = "Dockerfile"
+search = "ENV VERSION={current_version}"
+replace = "ENV VERSION={new_version}"

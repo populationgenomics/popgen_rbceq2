@@ -2,12 +2,15 @@
 
 ## What Popgen_RBCeq2 is
 A pipeline that produces an estimate of the blood type for each individual in the input cohort.
-- __In__: Variant calls in gVCF format.
-- __Structure__: A Nextflow pipeline that converts the input into the correct format for RBCeq2, which it then calls.
-- __Out__: Three TSV files:
-  1. `<SGID>.geno.tsv` to genotype calls,
-  2. `<SGID>.pheno_alphanumeric.tsv` to alphanumeric phenotype,
-  3. `<SGID>.pheno_numeric.tsv` to numeric phenotype.
+- __In__: Variant calls in gVCF format, for the sequencing groups of one or more Metamist cohorts.
+- __Structure__: A [cpg-flow](https://github.com/populationgenomics/cpg-flow) workflow that converts each input into the correct format for RBCeq2, calls RBCeq2, flags the calls whose supporting sites were low quality, and concatenates the per-sample results per cohort.
+- __Out__: Three TSV files per sequencing group, plus a QC TSV, and a combined copy of each per cohort:
+  1. `<SGID>.geno.tsv` genotype calls,
+  2. `<SGID>.pheno_alphanumeric.tsv` alphanumeric phenotype,
+  3. `<SGID>.pheno_numeric.tsv` numeric phenotype,
+  4. `<SGID>.qc.tsv` per-system quality flags, in the same one-column-per-system layout so it joins to the calls by column.
+
+Each is registered in Metamist as an Analysis, with the calls or flags parsed into its `meta`.
 
 ## Why it exists
 
@@ -20,24 +23,31 @@ to provide insights into blood-group frequencies in these underrepresented popul
 blood drive initiatives.
 
 ## Who is this for?
-This pipeline is for PopGen team members at CPG to identify individual blood groups and 
-estimate frequency of blood groups across their datasets. 
+This pipeline is for PopGen team members at CPG to identify individual blood groups and
+estimate frequency of blood groups across their datasets.
 
 ## Core Thesis
 The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented cohort gVCFs with estimated blood groups.
 
 ## Load-bearing design principles
-**gVCF -> VCF conversion + filtering (`filter_and_convert.nf`)**
-- RBCeq2 cannot read gVCFs: Its variant encoder rejects any ALT ending in `>`, so the `<NON_REF>` symbolic allele present on every gVCF record (both ref blocks and real variants like G,`<NON_REF>`) falls through to a fallback that mis-keys the variant and never matches the database. RBCeq2 does not error, it silently reverts affected systems to reference (observed: ABO -> Undetermined on HG00096). `filter_and_convert.nf` therefore splits multiallelics (`bcftools norm -m -any`) and drops `<NON_REF>` (`view -e 'ALT="<NON_REF>"'`) so only clean biallelic records reach RBCeq2. RBCeq2 also has no depth/quality filtering, so depth/GQ filtering must happen upstream. Both are handled at conversion:
-1. `bcftools norm -m -any`: splits multiallelic records to one ALT per row. RBCeq2 evaluates one allele at a time and misreads multiallelic sites, so this precedes filtering.
-2. `bcftools view -e 'ALT="<NON_REF>" || FMT/DP="." || FMT/DP < min_depth || FMT/GQ="." || FMT/GQ < min_gq'`: drops `<NON_REF>` records and missing/sub-threshold depth or GQ. The explicit `="."` checks are required because a missing value does not reliably fail a `<` comparison in `bcftools`; without them, no-data sites pass the filter.
-3. `--trim-alt-alleles`: drops ALT alleles not carried by any surviving genotype call.
+
+**gVCF -> VCF conversion (`FilterAndConvertGvcfsForRbceq2`)**
+- RBCeq2 cannot read gVCFs: its variant encoder rejects any ALT ending in `>`, so the `<NON_REF>` symbolic allele present on every gVCF record (both ref blocks and real variants like `G,<NON_REF>`) falls through to a fallback that mis-keys the variant and never matches the database. RBCeq2 does not error, it silently reverts affected systems to reference (observed: ABO -> Undetermined on HG00096). The conversion therefore splits multiallelics (`bcftools norm -m -any`) and drops `<NON_REF>` (`view -e 'ALT="<NON_REF>"'`) so only clean biallelic records reach RBCeq2, then trims ALT alleles no surviving genotype carries.
+- The order matters: `norm -m -any` must precede the `<NON_REF>` exclusion. `ALT="<NON_REF>"` matches if *any* ALT matches, so filtering an unsplit gVCF would delete every variant in the file.
+
+**Report low-quality sites; do not remove them**
+- RBCeq2 has no depth or quality filtering of its own, and reads a blood-group site absent from its input as a *confident homozygous reference call*. Dropping a borderline genotype therefore does not produce a no-call — it manufactures a wild-type call at a site that defines an antigen.
+- So genotypes are not filtered on DP or GQ. DRAGEN has already hard-filtered these gVCFs. `FlagBloodGroupCallQc` instead reports per-system flags (`LOWQ`, `DEL`, `NOCOV`, `NA`) naming the defining site and what the caller reported there, and the thresholds are recorded alongside the flags so a reader can tell what `LOWQ` meant on that run. See the [README](../README.md) for how to read a flag.
+- This reverses an earlier decision to delete sub-threshold sites. Deletion was not neutral: it moved uncertain calls to false reference rather than removing them from analysis.
 
 **Regions BED generation from RBCeq2's own `db.tsv`**
-- RBCeq2 internally restricts VCFs it handles to regions only appearing in its `db.tsv` database. It does this via a `build_intervals()` function. By far the biggest time-sink is the filter and conversion step using `bcftools` as it parses the entire genome. 
-- Clear time saving: We build a BED file from the `db.tsv` the same way RBCeq2 does and restrict all input gVCF files to these regions. This DRAMATICALLY improves run times from ~50min-1hr to a couple of minutes.
-- Pre-generated BED is located in root: `bg_regions.GRCh38.bed`. As well as the script to generate it `gen_bg_bed.py`. The script itself is almost an exact copy of `build_intervals()` used in RBCeq2.
-- Note: no dependency on RBCeq2's implementation in this process means BED file can drift if upstream RBCeq2 changes `build_intervals()`.
+- RBCeq2 internally restricts the VCFs it handles to regions appearing in its `db.tsv` database, via a `build_intervals()` function. The biggest time-sink is the filter-and-convert step, because `bcftools` otherwise parses the entire genome.
+- Clear time saving: we build a BED from `db.tsv` the same way RBCeq2 does and restrict every input gVCF to those regions. This takes run times from ~50min-1hr to a couple of minutes.
+- The BED is generated by `scripts/gen_bg_resources.py` (almost an exact copy of RBCeq2's `build_intervals()`) and committed under `src/popgen_rbceq2/resources/`, so a run is reproducible against a known database version rather than whatever the tool ships today.
+- Note: because this re-implements rather than calls RBCeq2, the BED can drift if upstream changes `build_intervals()`. It must stay a strict superset of every coordinate RBCeq2 reads, or calls go silently wrong. Regenerate it whenever the pinned RBCeq2 version moves.
+
+**The DAG lives in one file**
+- Stage classes carry no dependency information. `stages/pipeline.py` declares every edge and every Metamist registration, so the pipeline shape is readable in one place and a stage cannot quietly acquire an undeclared input. Tests fail if a stage reads an upstream it did not declare, or if a wired stage is unreachable from the requested set.
 
 ## Scope boundaries & ecosystem
 ### Scope
@@ -45,11 +55,13 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
 - Not a fork or fix of RBCeq2
 - Not the source/maintainer of blood-group data/knowledge
 - No phasing (yet)
+- No calling of structural-variant-defined alleles (ABCC1, ATP11C, CD99), which needs the DRAGEN SV and CNV VCFs rather than the gVCF alone
 
 ### Ecosystem
 - **RBCeq2**: the genotyper
-- **bcftools**
-- **Nextflow/Seqera**: workflow orchestrator and platform to manage workflows
+- **bcftools**: the gVCF conversion and the per-site DP/GQ extract
+- **cpg-flow**: CPG's workflow framework, over Hail Batch
+- **analysis-runner**: how a run is launched, and where its config comes from
 - **Metamist**: CPG's sample metadata system. Source of truth for inputs and where results are registered.
 
 ## Relevant external repositories and resources.
@@ -57,10 +69,12 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
 
 ## Bets & open questions.
 - Currently do not have phased data. This leads to multiple blood-group phenotypes assigned to individuals. All outputs are registered in the analysis object on metamist, regardless of this uncertainty.
-- Decision to remove sites that do not meet `min_depth`/`min_gq` instead of labelling them as `"./."` (no calls). Converting low quality sites to `"./."` would lead to false-positives at blood-group loci. Compared to the current implementation of deleting low quality sites leading to false-reference and therefore removed from analysis (except at Lane loci where they are added back in as hom-ref).
+- The QC thresholds (`min_depth = 10`, `min_gq = 20`) are deliberately quiet and gnomAD-aligned. They are there to catch the tail, not to reproduce a hard filter — raising them towards DP 20 / GQ 30 flags most of a typical sample's systems and makes the annotation useless. `min_gq` must sit on a gVCF GQ band edge to mean anything exact.
+- The blood type is recorded in an Analysis `meta`, not on the SequencingGroup record. If it needs to be queryable directly on the SG, that is a SequencingGroup update mutation we have not written.
 
 ## The current slice.
-An implementation of RBCeq2 using Nextflow in CPG's infrastructure. Not yet running on production data.
+An implementation of RBCeq2 as a cpg-flow workflow in CPG's infrastructure, ported from the
+prototype stages in `ourdna_genomic_atlas`. Not yet running on production data from this repo.
 
 ## Domain terms
 [See GLOSSARY.md](../GLOSSARY.md)
