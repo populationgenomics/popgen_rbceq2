@@ -342,6 +342,35 @@ def test_one_base_reference_block_is_assessed_on_its_dp():
     assert (coverage.dp, coverage.gq, coverage.source) == (31, 38, 'site')
 
 
+def test_multi_base_reference_block_starting_on_the_site_is_still_a_block():
+    """A block that happens to begin on the defining site is a span, not a call at it."""
+    # Blocks are banded on GQ, so a block boundary can land on any coordinate, including a
+    # defining one. Reading the source off the branch that found the record rather than off
+    # the record rendered these as a call at the site, dropping the span and MIN_DP.
+    records = [_record('chr20', 20000000, 'T', '<NON_REF>', end=20001310, dp=31, gq=38, min_dp=8)]
+    coverage = _resolved(records, 'chr20', 20000000)
+    assert (coverage.dp, coverage.gq, coverage.source) == (31, 38, 'block')
+    assert coverage.record.min_dp == 8
+
+
+def test_a_block_starting_on_the_site_reports_its_span_and_min_dp():
+    """The flag for such a block names it as a block, as it does for one spanning in."""
+    records = [_record('chr1', 3774964, 'A', '<NON_REF>', end=3775064, dp=26, gq=15, min_dp=19)]
+    site = _site(chrom='chr1', pos=3774964, ref='A', alt='G', system='VEL')
+    coverage = _resolved(records, 'chr1', 3774964)
+    assert flag_site(site, coverage, MIN_DEPTH, MIN_GQ) == 'LOWQ:1:3774964(A>G,block=101bp,DP=26,MIN_DP=19,GQ=15)'
+
+
+def test_a_variant_at_the_site_is_still_a_call_even_beside_a_block_starting_there():
+    """The real ALT is preferred first, and a variant record is a call at the site."""
+    records = [
+        _record('chr1', 3774964, 'A', '<NON_REF>', end=3775064, dp=26, gq=15, min_dp=19),
+        _record('chr1', 3774964, 'A', 'G', dp=19, gq=45),
+    ]
+    coverage = _resolved(records, 'chr1', 3774964)
+    assert (coverage.dp, coverage.gq, coverage.source) == (19, 45, 'site')
+
+
 def test_real_alt_record_wins_over_the_non_ref_twin_at_the_same_position():
     """Where a split leaves two records at one position, the real ALT is chosen."""
     # `bcftools norm -m -any` splits every GVCF variant into the real ALT plus a

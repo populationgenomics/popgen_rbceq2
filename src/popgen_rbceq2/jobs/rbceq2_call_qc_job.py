@@ -283,7 +283,12 @@ def resolve_coverage(records: list[GvcfRecord], chrom: str, pos: int) -> Coverag
         # path there. Either serves for DP/GQ; the gt/alt of an at-site record are NOT
         # reliable evidence of what rbceq2 read.
         real_alt = [r for r in at_site if r.alt != NON_REF]
-        return _coverage_from((real_alt or at_site)[0], 'site')
+        chosen = (real_alt or at_site)[0]
+        # Starting at the site does not make a record a call at it. Reference blocks are
+        # banded on GQ, so one can begin on any coordinate, including a defining one; that
+        # is still a span whose DP is a median over the band and whose MIN_DP the flag has
+        # to report. Read the source off the record, not off the branch that found it.
+        return _coverage_from(chosen, 'block' if chosen.is_block else 'site')
     # Nothing starts at the site, so the chosen record reaches it from an earlier POS: a
     # reference block spanning it, or a deletion whose REF swallows it. A deletion starting
     # at the site itself is not this case. Its first REF base is the retained anchor, and
