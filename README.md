@@ -44,6 +44,7 @@ Sequencing groups without a gVCF are skipped, not failed.
 |---|---|
 | [`stages/pipeline.py`](src/popgen_rbceq2/stages/pipeline.py) | the DAG: what each stage depends on, what it registers in Metamist, and `REQUESTED_STAGES` |
 | [`stages/blood_group_genotyping/`](src/popgen_rbceq2/stages/blood_group_genotyping) | one undecorated stage class per module |
+| [`stages/blood_group_qc/`](src/popgen_rbceq2/stages/blood_group_qc) | one undecorated stage class per module |
 | [`stage_support.py`](src/popgen_rbceq2/stage_support.py) | `wire()`, output prefixes, the config-section convention, job configuration |
 | [`analysis_meta.py`](src/popgen_rbceq2/analysis_meta.py) | what each Analysis records in its `meta` |
 | [`jobs/`](src/popgen_rbceq2/jobs) | scripts a stage runs in a batch job, invoked by path |

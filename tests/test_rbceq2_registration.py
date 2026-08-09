@@ -45,7 +45,7 @@ def test_call_qc_meta_parses_the_flags_and_records_the_thresholds(shm_tmp_path: 
 
     meta = analysis_meta.call_qc(str(qc_path))
 
-    assert meta['blood_group_qc'] == {
+    assert meta['blood_group_qc_flags'] == {
         'JK': 'PASS',
         'VEL': 'LOWQ:1:3774964(A>G,DP=8,GQ=45)',
         'FUT2': 'NA',

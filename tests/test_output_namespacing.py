@@ -114,9 +114,11 @@ def test_analysis_keys_name_real_output_keys(mock_cohort, mock_sequencing_group)
     assert analysis_keys_of(qc_stage) <= set(outputs_of(qc_stage, mock_sequencing_group))
 
     genotype_stage = pipeline.GenotypeBloodGroupsWithRbceq2()
+    assert genotype_stage.analysis_type == 'blood_group_genotyping'
     assert analysis_keys_of(genotype_stage) <= set(outputs_of(genotype_stage, mock_sequencing_group))
 
     combine_stage = pipeline.CombineRbceq2OutputsPerCohort()
+    assert combine_stage.analysis_type == 'blood_group_genotyping'
     assert analysis_keys_of(combine_stage) <= set(outputs_of(combine_stage, mock_cohort))
 
 

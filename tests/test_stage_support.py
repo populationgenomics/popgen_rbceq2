@@ -9,6 +9,7 @@ upstream it forgot to declare.
 import argparse
 import ast
 import importlib.resources
+import inspect
 import pathlib
 import re
 import shlex
@@ -229,8 +230,20 @@ _STAGE_ARG_INDEX = {
 }
 
 _STAGE_SOURCES = sorted(
-    pathlib.Path(pipeline.__file__).parent.joinpath('blood_group_genotyping').glob('*.py'),
+    # One level down from pipeline.py, so a new stage subpackage is picked up on its own.
+    pathlib.Path(pipeline.__file__).parent.glob('*/*.py'),
 )
+assert len(_STAGE_SOURCES) > 0
+
+
+def test_stage_sources_cover_every_wired_stage():
+    # The glob pins where implementations live. A stage module it misses — deeper nesting, or
+    # a module beside pipeline.py — would drop out of
+    # test_stages_only_read_from_stages_they_require without failing anything.
+    sources = {source.resolve() for source in _STAGE_SOURCES}
+    for name, stage_decorator in _wired_stages().items():
+        impl_file = pathlib.Path(inspect.getfile(stage_decorator.__wrapped__)).resolve()
+        assert impl_file in sources, f'{name} is implemented in {impl_file}, which _STAGE_SOURCES misses'
 
 
 def _stages_read_by(class_node: ast.ClassDef) -> set[str]:

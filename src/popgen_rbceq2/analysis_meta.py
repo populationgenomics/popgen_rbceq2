@@ -63,7 +63,7 @@ def call_qc(output: str) -> dict[str, Any]:
             TSVs.
 
     Returns:
-        The Analysis meta. ``blood_group_qc`` maps each system to ``PASS``, a
+        The Analysis meta. ``blood_group_qc_flags`` maps each system to ``PASS``, a
         semicolon-joined ``LOWQ``/``NOCOV`` flag naming the failing site and its DP and GQ,
         or ``NA`` for a system rbceq2 called that has no defining site in the map, e.g.
         ``{'JK': 'PASS', 'VEL': 'LOWQ:1:3774964(A>G,DP=8,GQ=45)', 'FUT2': 'NA'}``. The
@@ -74,7 +74,7 @@ def call_qc(output: str) -> dict[str, Any]:
         'reference_genome': genome_build(),
         'min_depth': config_retrieve(['workflow', cfg, 'min_depth'], 10),
         'min_gq': config_retrieve(['workflow', cfg, 'min_gq'], 20),
-        'blood_group_qc': parse_single_row_rbceq2_tsv(cpg_utils.to_path(output).read_text()),
+        'blood_group_qc_flags': parse_single_row_rbceq2_tsv(cpg_utils.to_path(output).read_text()),
     }
 
 

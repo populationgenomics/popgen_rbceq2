@@ -1,7 +1,8 @@
 """Declares the pipeline DAG: which stages run, and what each depends on.
 
 Stage dependencies are declared only here. The stage classes in stages/blood_group_genotyping/
-are implementation-only. Read this file top to bottom to see the pipeline shape.
+and stages/blood_group_qc/ are implementation-only. Read this file top to bottom to see the
+pipeline shape.
 
 Everything cpg_flow needs to know about a stage is declared in its ``wire`` call: what it
 depends on via ``requires``, and what it records in Metamist via ``analysis_type`` /
@@ -14,7 +15,8 @@ has to hardcode its own name in a meta function.
 import cpg_flow.stage
 
 from popgen_rbceq2 import analysis_meta, stage_support
-from popgen_rbceq2.stages.blood_group_genotyping import call_qc, combine, filter_and_convert, genotype
+from popgen_rbceq2.stages.blood_group_genotyping import combine, filter_and_convert, genotype
+from popgen_rbceq2.stages.blood_group_qc import call_qc
 
 # --- Blood-group genotyping ----------------------------------------------------------
 # Starts from the DRAGEN gVCF on each sequencing group, so the branch has no upstream stage:
@@ -32,7 +34,7 @@ FilterAndConvertGvcfsForRbceq2: cpg_flow.stage.StageDecorator = stage_support.wi
 GenotypeBloodGroupsWithRbceq2: cpg_flow.stage.StageDecorator = stage_support.wire(
     genotype.GenotypeBloodGroupsWithRbceq2,
     requires=[FilterAndConvertGvcfsForRbceq2],
-    analysis_type='blood_group_qc',
+    analysis_type='blood_group_genotyping',
     analysis_keys=['geno'],
     update_analysis_meta=analysis_meta.blood_group_calls,
 )
@@ -45,10 +47,13 @@ FlagBloodGroupCallQc: cpg_flow.stage.StageDecorator = stage_support.wire(
     analysis_keys=['qc'],
     update_analysis_meta=analysis_meta.call_qc,
 )
+# Cohort calls Analysis, registered against the geno TSV alone. The cohort QC TSV gets no
+# Analysis of its own — cpg_flow's @stage takes a single analysis_type — and is reachable only
+# through the qc_path that analysis_meta.cohort_calls records in the meta.
 CombineRbceq2OutputsPerCohort: cpg_flow.stage.StageDecorator = stage_support.wire(
     combine.CombineRbceq2OutputsPerCohort,
     requires=[GenotypeBloodGroupsWithRbceq2, FlagBloodGroupCallQc],
-    analysis_type='blood_group_qc',
+    analysis_type='blood_group_genotyping',
     analysis_keys=['geno'],
     update_analysis_meta=analysis_meta.cohort_calls,
 )

@@ -7,7 +7,8 @@ import cpg_utils.hail_batch
 import hailtop.batch.job
 
 from popgen_rbceq2 import constants, stage_support
-from popgen_rbceq2.stages.blood_group_genotyping import call_qc, genotype
+from popgen_rbceq2.stages.blood_group_genotyping import genotype
+from popgen_rbceq2.stages.blood_group_qc import call_qc
 
 
 class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):

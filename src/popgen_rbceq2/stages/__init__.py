@@ -1,8 +1,12 @@
 """Stage implementations, grouped by the part of the pipeline they belong to.
 
 NO STAGES ARE DEFINED IN THIS FILE, and none are re-exported from it. Each stage is one
-undecorated class in its own module under a subpackage — `blood_group_genotyping/` — and the
-DAG connecting them is declared in `stages/pipeline.py` via `stage_support.wire`.
+undecorated class in its own module under two subpackages
+
+- `blood_group_genotyping/`
+- `blood_group_qc/`
+
+and the DAG connecting them is declared in `stages/pipeline.py` via `stage_support.wire`.
 
 Import the module and qualify the class (`genotype.GenotypeBloodGroupsWithRbceq2`) rather than
 re-exporting it. `wire` does not modify the class it is given: cpg_flow's `@stage` returns a new
