@@ -132,7 +132,9 @@ LOWQ:9:133255766(T>C,block=4.2kb,DP=26,MIN_DP=19,GQ=15)
   the deletion's own DP and GQ, and `GT=` says whether it removed the base on one haplotype
   or both.
 - The fourth has no call at that coordinate. Its numbers come from a 4.2kb reference block
-  spanning it, so `DP` is that block's median depth and `MIN_DP` its shallowest base.
+  covering it, so `DP` is that block's median depth and `MIN_DP` its shallowest base. The
+  block may start on the site or reach it from an earlier position; either way the numbers
+  describe the band, not the site, which is why `block=` is there.
 
 Set `min_depth` and `min_gq` in this stage's config section rather than the conversion stage's,
 since this is the stage that reports them. Keep them quiet. They exist to catch the tail,

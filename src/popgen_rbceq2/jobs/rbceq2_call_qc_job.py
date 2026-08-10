@@ -12,7 +12,7 @@ the semicolon-joined flags of the system's defining sites:
     NOCOV:1:3774964(A>G)                                   no record covers the site
     LOWQ:1:3774964(A>G,DP=19,GQ=15)                        a call at the site itself
     DEL:1:3774964(A>G,del=CATGA>C,GT=0/1,DP=30,GQ=50)      a deletion removed the base
-    LOWQ:1:3774964(A>G,block=101bp,DP=26,MIN_DP=19,GQ=15)  a reference block spans it
+    LOWQ:1:3774964(A>G,block=101bp,DP=26,MIN_DP=19,GQ=15)  a reference block covers it
 
 Within the parentheses the first field is always the allele the db defines the antigen on,
 and every later field is `key=value`. Which keys appear says what the numbers describe,
@@ -64,9 +64,14 @@ NON_REF = '<NON_REF>'
 EXTRACT_COLUMNS = ('chrom', 'pos', 'ref', 'alt', 'end', 'gt', 'dp', 'gq', 'min_dp')
 
 # Where a site's DP and GQ came from, which decides how the flag reads:
-#   site      a record starting at the coordinate, so the values describe the site itself
-#   block     a reference block spanning it, so the values describe the whole span
+#   site      a call at the coordinate, so the values describe the site itself
+#   block     a reference block covering it, whether it starts there or reaches it from an
+#             earlier POS, so the values describe the whole band rather than this one base
 #   deletion  a deletion whose REF span swallows it, so the defining base is not present
+#
+# Note that `site` is not simply "a record starting here". A reference block can begin on any
+# coordinate, including a defining one, and that is still a band. resolve_coverage reads this
+# off the record via `is_block`, not off the branch that found the record.
 CoverageSource = Literal['site', 'block', 'deletion']
 
 
