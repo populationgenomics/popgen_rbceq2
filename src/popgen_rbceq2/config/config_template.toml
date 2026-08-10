@@ -1,0 +1,28 @@
+# What a run has to supply, on top of popgen_rbceq2_default_config.toml. Copy this, fill it in,
+# and pass both to analysis-runner:
+#
+#   analysis-runner --dataset <dataset> --access-level test --output-dir '' \
+#     --config src/popgen_rbceq2/config/popgen_rbceq2_default_config.toml \
+#     --config my-cohort.toml \
+#     --description "rbceq2 blood-group genotyping for <cohort>" \
+#     --image australia-southeast1-docker.pkg.dev/cpg-common/images/popgen_rbceq2:<tag> \
+#     popgen_rbceq2
+#
+# Configs merge left to right, so this one wins over the defaults.
+
+[workflow]
+# Metamist cohort IDs to genotype. Every sequencing group in them with a gVCF is included;
+# those without one are skipped, not failed.
+input_cohorts = ['COH123']
+sequencing_type = 'genome'
+
+# Uncomment to run part of the branch only. Stage names are the class names.
+# only_stages = ['FilterAndConvertGvcfsForRbceq2', 'GenotypeBloodGroupsWithRbceq2']
+
+# Uncomment to rebuild a stage whose outputs already exist.
+# force_stages = ['FlagBloodGroupCallQc']
+
+[references]
+# Only set this if the gVCFs were called against something other than the default GRCh38, and
+# resources/bg_*.<build>.* have been generated for it.
+# genome_build = 'GRCh38'

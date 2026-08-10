@@ -1,0 +1,64 @@
+# Defaults for the popgen_rbceq2 workflow. A run's own config is merged over this one, so
+# anything set here can be overridden per run — see config_template.toml for the keys a run has
+# to supply.
+#
+# Every [workflow.<section>] table below is a stage's compute/tuning section, named after its
+# class (see stage_support.config_section). test_stage_support fails if a section here is not
+# read by a stage, so a renamed class cannot leave its tuning stranded.
+
+[workflow]
+name = 'popgen_rbceq2'
+# Path segment under each stage's output prefix. Bump to write a fresh tree rather than reusing
+# the previous run's outputs.
+version = 'v1'
+status_reporter = 'metamist'
+# driver_image =
+# sequencing_type = 'genome'
+# input_cohorts = []
+
+[references]
+# Build the gVCFs were called against. Selects the committed resources/bg_*.<genome>.* and is
+# passed to `rbceq2 --reference_genome`; a build with no committed resources fails at graph
+# construction. Only GRCh38 is generated today.
+genome_build = 'GRCh38'
+
+[workflow.filter_and_convert_gvcfs_for_rbceq2]
+# Sized higher than the other stages: this is the only one that localises the raw gVCF
+# (12-15Gb), and it needs disk for that plus the filtered output.
+cpu = 4
+memory = "highmem"
+storage = "40Gi"
+
+[workflow.genotype_blood_groups_with_rbceq2]
+cpu = 2
+memory = "standard"
+storage = "10Gi"
+
+[workflow.flag_blood_group_call_qc]
+cpu = 1
+memory = "standard"
+storage = "10Gi"
+# Flag a defining site whose FORMAT/DP is below this (or missing). A site inside a reference
+# block is assessed on the block's DP, which is the median depth across the band and so the
+# best available estimate for a site whose position in the block is unknowable. The block's
+# MIN_DP is a span floor that one shallow base can set, so it is reported in the flag
+# alongside the span rather than filtered on.
+min_depth = 10
+# Flag a defining site whose FORMAT/GQ is below this (or missing).
+#
+# Keep this on a GQ band edge. Our gVCFs are banded at 10/20/30/40 (each file declares the
+# bands: `##GVCFBlock=minGQ=20(inclusive),maxGQ=30(exclusive)` and so on). GQ is what blocks
+# are banded on, so a block's single GQ bounds every base in it exactly and no sub-threshold
+# base can hide inside a block that passes, but only for a threshold that is itself an edge.
+# 20 qualifies, as would 10, 30 or 40; a value like 25 does not, and would flag sites whose
+# real GQ is 26-29 from a block reporting 20.
+#
+# Deliberately quiet, and gnomAD-aligned: raising these towards a hard filter's values
+# (DP 20 / GQ 30) would flag most of a typical sample's systems and make the annotation
+# useless. See the README for what the thresholds were chosen against.
+min_gq = 20
+
+[workflow.combine_rbceq2_outputs_per_cohort]
+cpu = 2
+memory = "standard"
+storage = "10Gi"
