@@ -8,8 +8,9 @@ Everything cpg_flow needs to know about a stage is declared in its ``wire`` call
 depends on via ``requires``, and what it records in Metamist via ``analysis_type`` /
 ``analysis_keys`` / ``update_analysis_meta``.
 
-``wire`` puts the stage name into ``Analysis.meta`` itself, taken from the class, so no stage
-has to hardcode its own name in a meta function.
+cpg_flow records each stage's name in ``Analysis.meta`` itself; ``wire`` re-asserts it after
+the stage's meta function runs, so a meta function that sets ``stage`` cannot override the
+framework's value with a stale hand-typed name.
 """
 
 import cpg_flow.stage

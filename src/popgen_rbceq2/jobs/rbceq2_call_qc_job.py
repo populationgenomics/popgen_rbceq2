@@ -276,8 +276,12 @@ def resolve_coverage(records: list[GvcfRecord], chrom: str, pos: int) -> Coverag
     at_site = [r for r in covering if r.pos == pos]
     if at_site:
         # `bcftools norm -m -any` splits every GVCF variant into the real ALT plus a
-        # <NON_REF> twin at the same POS. Both carry identical DP/GQ, but only the real
-        # ALT is the record rbceq2 reads, and the twin has no END to mark it as a block.
+        # <NON_REF> twin at the same POS, carrying identical DP/GQ. Prefer the real ALT,
+        # but do not count on it reaching the extract: at a site that is a deletion's own
+        # anchor base, `--targets-overlap 2` drops the real-ALT record — an indel's variant
+        # span starts at POS+1 — and only the twin arrives, so the fallback is the normal
+        # path there. Either serves for DP/GQ; the gt/alt of an at-site record are NOT
+        # reliable evidence of what rbceq2 read.
         real_alt = [r for r in at_site if r.alt != NON_REF]
         return _coverage_from((real_alt or at_site)[0], 'site')
     # Nothing starts at the site, so the chosen record reaches it from an earlier POS: a
@@ -510,14 +514,25 @@ def main(
             f'{len(uncovered)} defining site(s) have no covering GVCF record '
             f'and are flagged {NOCOV}: {listed}{ellipsis}'
         )
+    qc_tsv = build_qc_tsv(to_path(geno_tsv).read_text(), system_flags)
+
+    # Two populations, counted separately: system_flags covers every system in the site map,
+    # while the QC TSV only has columns for the systems rbceq2 put in the geno TSV. A flagged
+    # system rbceq2 did not emit is dropped from the TSV, so this log is the only place it
+    # shows up.
+    emitted = set(qc_tsv.splitlines()[0].split('\t')[1:])
     flagged = sorted(system for system, flag in system_flags.items() if flag != PASS)
+    emitted_flagged = [system for system in flagged if system in emitted]
     named = f': {", ".join(flagged)}' if flagged else ''
     logger.info(
-        f'{len(flagged)}/{len(system_flags)} systems flagged, on DP<{min_depth}, GQ<{min_gq}, '
+        f'{len(flagged)}/{len(system_flags)} site-map systems flagged, on DP<{min_depth}, GQ<{min_gq}, '
         f'a deleted defining base or no coverage{named}'
     )
+    logger.info(
+        f'{len(emitted_flagged)}/{len(emitted)} QC TSV systems carry a flag; '
+        f'{len(flagged) - len(emitted_flagged)} flagged system(s) have no geno TSV column and are not in the TSV'
+    )
 
-    qc_tsv = build_qc_tsv(to_path(geno_tsv).read_text(), system_flags)
     to_path(output).write_text(qc_tsv)
     logger.info(f'Wrote blood-group QC TSV -> {output}')
 

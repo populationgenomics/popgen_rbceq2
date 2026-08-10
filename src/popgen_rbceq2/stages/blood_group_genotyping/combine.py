@@ -1,5 +1,7 @@
 """Concatenates a cohort's per-sequencing-group TSVs into combined cohort TSVs."""
 
+import json
+
 import cpg_flow.stage
 import cpg_flow.targets
 import cpg_utils
@@ -14,8 +16,10 @@ from popgen_rbceq2.stages.blood_group_qc import call_qc
 class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):
     """Concatenate a cohort's per-SG rbceq2 TSVs and QC TSVs into combined cohort TSVs.
 
-    The per-SG TSV paths are resolved from the workflow dependency graph
-    and passed to the job, restricted to this cohort's sequencing groups.
+    The per-SG TSV paths are resolved from the workflow dependency graph, restricted to this
+    cohort's sequencing groups, and written to a JSON manifest the job reads. A manifest
+    rather than repeated flags because the command line grows with the cohort: at four paths
+    per sequencing group, argv would exceed ARG_MAX around ~3,000 of them.
 
     The QC TSV is a fourth output rather than a member of constants.RBCEQ2_TSV_KEYS: it comes
     from FlagBloodGroupCallQc, not from rbceq2, and the keys drive rbceq2's own resource group.
@@ -47,6 +51,15 @@ class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):
         }
         grouped['qc'] = [str(tsvs['qc']) for sg_id, tsvs in per_sg_qc.items() if sg_id in cohort_sg_ids]
 
+        # With the paths in a manifest, build_python_command's empty-list guard no longer
+        # covers the zero-eligible-SGs case, so it is checked here, where the cause can be
+        # named. The job re-checks each list on its own side.
+        if not cohort_sg_ids:
+            raise ValueError(f'Cohort {cohort.id} has no sequencing groups with a gVCF; there is nothing to combine')
+
+        manifest = stage_support.get_output_prefix(cohort, self.name, category='tmp') / f'{cohort.id}.manifest.json'
+        manifest.write_text(json.dumps(grouped, indent=2))
+
         b: cpg_utils.hail_batch.Batch = cpg_utils.hail_batch.get_batch()
         j: hailtop.batch.job.BashJob = b.new_bash_job(self.name, self.get_job_attrs(cohort) | {'tool': 'rbceq2'})
         j = stage_support.configure_job(j, self, cpu=2, memory='standard', storage='10Gi')
@@ -56,10 +69,7 @@ class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):
             'output-pheno-numeric': str(outputs['pheno_numeric']),
             'output-pheno-alphanumeric': str(outputs['pheno_alphanumeric']),
             'output-qc': str(outputs['qc']),
-            'geno': grouped['geno'],
-            'pheno-numeric': grouped['pheno_numeric'],
-            'pheno-alphanumeric': grouped['pheno_alphanumeric'],
-            'qc': grouped['qc'],
+            'manifest': str(manifest),
         }
         j.command(stage_support.build_python_command('rbceq2_gather_job.py', args))
 

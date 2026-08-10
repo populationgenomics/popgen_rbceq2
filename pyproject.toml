@@ -8,7 +8,7 @@ description = "Blood-group genotyping with RBCeq2, as a cpg-flow workflow"
 readme = "README.md"
 version = "0.1.0"
 # cpg-flow is pinned to this range; the cpg_hail base image ships Python 3.11.
-requires-python = ">=3.10,<3.12"
+requires-python = ">=3.11,<3.12"
 classifiers = [
     'Environment :: Console',
     'Intended Audience :: Science/Research',

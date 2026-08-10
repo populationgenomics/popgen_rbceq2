@@ -103,7 +103,6 @@ jobs:
       - name: 'build image with get_next_version'
         run: |
           docker build . -f Dockerfile \
-          --build-arg VERSION=${{ matrix.tag }} \
           --tag ${{ env.IMAGES_PREFIX }}/${{ matrix.name }}:${{ steps.sanitize.outputs.branch }}-${{ matrix.tag }} \
           --tag ${{ env.IMAGES_PREFIX }}/${{ matrix.name }}:${{ steps.sanitize.outputs.branch }}-latest
 
@@ -183,7 +182,6 @@ jobs:
         run: |
           docker build \
             $CLI_ARGS \
-            --build-arg VERSION="$IMAGE_TAG" \
             --tag "$IMAGE_FULL_TAG" \
             --tag "$IMAGE_LATEST_TAG" \
             "$IMAGE_PATH"

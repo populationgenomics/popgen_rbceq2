@@ -12,8 +12,6 @@ name = 'popgen_rbceq2'
 # the previous run's outputs.
 version = 'v1'
 status_reporter = 'metamist'
-# whether or not to key sequencing groups by their external ID
-use_external_id = true
 # driver_image =
 # sequencing_type = 'genome'
 # input_cohorts = []
@@ -35,9 +33,6 @@ storage = "40Gi"
 cpu = 2
 memory = "standard"
 storage = "10Gi"
-# Emit rbceq2 per-sample PDF reports (captured as <sg>_PDFs.tar.gz). Off by
-# default — per-sample PDFs are heavy at cohort scale.
-output_pdfs = false
 
 [workflow.flag_blood_group_call_qc]
 cpu = 1

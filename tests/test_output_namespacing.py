@@ -6,7 +6,6 @@ type error to catch it, so they are asserted literally here.
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -31,43 +30,6 @@ def analysis_keys_of(stage) -> set[str]:
     """The keys the stage registers an Analysis against, asserted present."""
     assert stage.analysis_keys is not None
     return set(stage.analysis_keys)
-
-
-@pytest.fixture
-def mock_cohort(mocker, shm_tmp_path: Path):
-    """A cohort in a dataset with known bucket prefixes, and an active workflow to name them."""
-    set_config(
-        {'workflow': {'name': 'popgen_rbceq2', 'version': 'v1', 'sequencing_type': 'genome'}},
-        shm_tmp_path / 'config.toml',
-    )
-
-    mock_wf = MagicMock()
-    mock_wf.name = 'popgen_rbceq2'
-    mock_wf.status_reporter = MagicMock()
-    mocker.patch('cpg_flow.workflow.get_workflow', return_value=mock_wf)
-    mocker.patch('cpg_flow.stage.get_workflow', return_value=mock_wf)
-
-    mock_dataset = MagicMock()
-    mock_dataset.prefix.side_effect = lambda category=None: Path(
-        'gs://bucket-tmp' if category == 'tmp' else 'gs://bucket',
-    )
-
-    cohort = MagicMock()
-    cohort.dataset = mock_dataset
-    cohort.name = 'test-cohort'
-    cohort.id = 'test-cohort'
-    cohort.get_sequencing_groups.return_value = [MagicMock() for _ in range(3)]
-    return cohort
-
-
-@pytest.fixture
-def mock_sequencing_group(mock_cohort):
-    """A sequencing group with a gVCF, for the SequencingGroupStage outputs."""
-    sg = MagicMock()
-    sg.dataset = mock_cohort.dataset
-    sg.id = 'SG000001'
-    sg.gvcf = 'gs://bucket/SG000001.g.vcf.gz'
-    return sg
 
 
 def test_filter_and_convert_output_namespacing(mock_sequencing_group):

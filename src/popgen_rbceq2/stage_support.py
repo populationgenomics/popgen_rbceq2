@@ -42,11 +42,13 @@ ExpectedOutputs: TypeAlias = dict[str, str | cpg_utils.Path | list[str | cpg_uti
 
 
 def _with_stage_name(output: str, *, fn: 'Callable[[str], dict] | None', stage_name: str) -> dict:
-    """Add the stage name to whatever the stage's own meta function returns.
+    """Apply the stage's own meta function, then re-assert the stage name over its result.
 
-    ``stage`` is reserved and always the class name: it is applied last, so a function that
-    sets it cannot put a stale name in Metamist. That is the whole point of deriving it here
-    rather than in the function.
+    cpg_flow already records ``stage=<class name>`` in every Analysis meta (via
+    ``get_job_attrs``), but the status reporter merges the meta function's dict in last, so a
+    function that set ``stage`` itself would override the framework's value with a hand-typed
+    one. Re-applying the class name after the function closes that hole; deriving anything
+    here is not the point.
 
     A partial over this is what wire hands to cpg_flow. It is a module-level function rather
     than a closure because cpg_flow ships the callable into a Hail PythonJob, where it is

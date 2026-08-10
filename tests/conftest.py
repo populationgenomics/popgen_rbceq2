@@ -7,10 +7,13 @@ there is no Hail initialisation and no credentials are needed.
 import os
 from pathlib import Path
 from unittest import mock
+from unittest.mock import MagicMock
 
 import pytest
 from cpg_utils.cloud import DockerImage
 from google.auth import environment_vars
+
+from tests.helpers import set_config
 
 
 @pytest.fixture(scope='session', autouse=True)
@@ -60,3 +63,40 @@ def dummy_gcp_project():
     """A project name, so code reaching for one does not fail on its absence."""
     with mock.patch.dict(os.environ, {environment_vars.PROJECT: 'dummy-project-for-tests'}):
         yield
+
+
+@pytest.fixture
+def mock_cohort(mocker, shm_tmp_path: Path):
+    """A cohort in a dataset with known bucket prefixes, and an active workflow to name them."""
+    set_config(
+        {'workflow': {'name': 'popgen_rbceq2', 'version': 'v1', 'sequencing_type': 'genome'}},
+        shm_tmp_path / 'config.toml',
+    )
+
+    mock_wf = MagicMock()
+    mock_wf.name = 'popgen_rbceq2'
+    mock_wf.status_reporter = MagicMock()
+    mocker.patch('cpg_flow.workflow.get_workflow', return_value=mock_wf)
+    mocker.patch('cpg_flow.stage.get_workflow', return_value=mock_wf)
+
+    mock_dataset = MagicMock()
+    mock_dataset.prefix.side_effect = lambda category=None: Path(
+        'gs://bucket-tmp' if category == 'tmp' else 'gs://bucket',
+    )
+
+    cohort = MagicMock()
+    cohort.dataset = mock_dataset
+    cohort.name = 'test-cohort'
+    cohort.id = 'test-cohort'
+    cohort.get_sequencing_groups.return_value = [MagicMock() for _ in range(3)]
+    return cohort
+
+
+@pytest.fixture
+def mock_sequencing_group(mock_cohort):
+    """A sequencing group with a gVCF, for the SequencingGroupStage outputs."""
+    sg = MagicMock()
+    sg.dataset = mock_cohort.dataset
+    sg.id = 'SG000001'
+    sg.gvcf = 'gs://bucket/SG000001.g.vcf.gz'
+    return sg

@@ -14,7 +14,7 @@ renamed stage cannot leave a stale literal behind. See its docstring.
 from typing import Any
 
 import cpg_utils
-from cpg_utils.config import config_retrieve, genome_build
+from cpg_utils.config import genome_build
 
 from popgen_rbceq2.constants import RBCEQ2_VERSION
 
@@ -66,14 +66,14 @@ def call_qc(output: str) -> dict[str, Any]:
         The Analysis meta. ``blood_group_qc_flags`` maps each system to ``PASS``, a
         semicolon-joined ``LOWQ``/``NOCOV`` flag naming the failing site and its DP and GQ,
         or ``NA`` for a system rbceq2 called that has no defining site in the map, e.g.
-        ``{'JK': 'PASS', 'VEL': 'LOWQ:1:3774964(A>G,DP=8,GQ=45)', 'FUT2': 'NA'}``. The
-        thresholds are recorded alongside, since a flag means nothing without them.
+        ``{'JK': 'PASS', 'VEL': 'LOWQ:1:3774964(A>G,DP=8,GQ=45)', 'FUT2': 'NA'}``.
+
+    The ``min_depth``/``min_gq`` thresholds the flags were produced at are not read here:
+    the stage's ``queue_jobs`` puts them in the static Analysis meta from the same values it
+    hands the job, so a re-read of config could not disagree with what ran.
     """
-    cfg = 'flag_blood_group_call_qc'
     return {
         'reference_genome': genome_build(),
-        'min_depth': config_retrieve(['workflow', cfg, 'min_depth'], 10),
-        'min_gq': config_retrieve(['workflow', cfg, 'min_gq'], 20),
         'blood_group_qc_flags': parse_single_row_rbceq2_tsv(cpg_utils.to_path(output).read_text()),
     }
 

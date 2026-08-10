@@ -250,7 +250,8 @@ def _stages_read_by(class_node: ast.ClassDef) -> set[str]:
     """The stages this class body passes to inputs.as_*, read from the source.
 
     A stage is named `<module>.<Class>` at the call site, so the attribute is what identifies
-    it — the module alias in front carries no information the DAG cares about.
+    it — the module alias in front carries no information the DAG cares about. The stage can
+    arrive positionally or as `stage=`; both spellings are legal cpg_flow, so both are read.
     """
     names: set[str] = set()
     for node in ast.walk(class_node):
@@ -261,6 +262,8 @@ def _stages_read_by(class_node: ast.ClassDef) -> set[str]:
             continue
         index = _STAGE_ARG_INDEX[func.attr]
         stage_arg = node.args[index] if len(node.args) > index else None
+        if stage_arg is None:
+            stage_arg = next((kw.value for kw in node.keywords if kw.arg == 'stage'), None)
         if isinstance(stage_arg, ast.Attribute):
             names.add(stage_arg.attr)
         elif isinstance(stage_arg, ast.Name):
@@ -286,6 +289,18 @@ def test_stages_only_read_from_stages_they_require(source):
             f'{node.name} reads from {sorted(undeclared)} but does not require them. '
             f'Add them to the requires= for this stage in stages/pipeline.py.'
         )
+
+
+def test_stages_read_by_sees_a_keyword_passed_stage():
+    # inputs.as_path(sg, stage=..., key=...) is legal cpg_flow; reading only positional args
+    # would let that spelling bypass the undeclared-upstream guard above.
+    class_node = ast.parse(
+        'class S:\n'
+        '    def queue_jobs(self, sequencing_group, inputs):\n'
+        "        inputs.as_path(sequencing_group, stage=call_qc.FlagBloodGroupCallQc, key='qc')\n",
+    ).body[0]
+    assert isinstance(class_node, ast.ClassDef)
+    assert _stages_read_by(class_node) == {'FlagBloodGroupCallQc'}
 
 
 def test_requested_stages_has_no_duplicates():
@@ -320,12 +335,16 @@ _EXPECTED = {
 }
 
 
+# [workflow] tables that belong to stage_support features, not to a stage's config section.
+_NON_STAGE_TABLES = {'output_versions'}
+
+
 def _default_config_stage_sections() -> set[str]:
     """The [workflow.<section>] tables in the default config that a stage should be reading."""
     toml_path = importlib.resources.files('popgen_rbceq2') / 'config' / 'popgen_rbceq2_default_config.toml'
     with toml_path.open('rb') as fh:
         workflow = tomllib.load(fh).get('workflow', {})
-    return {key for key, value in workflow.items() if isinstance(value, dict)}
+    return {key for key, value in workflow.items() if isinstance(value, dict) and key not in _NON_STAGE_TABLES}
 
 
 def _fake_config_retrieve(values: Mapping[tuple, object]) -> Callable[..., object]:
@@ -527,13 +546,13 @@ def test_build_python_command_rejects_an_empty_list():
 
 
 def test_build_python_command_bool_true_is_bare_flag():
-    cmd = stage_support.build_python_command(_JOB, {'output-pdfs': True})
-    assert cmd.rstrip().endswith('--output-pdfs')  # is_flag: flag present, no value
+    cmd = stage_support.build_python_command(_JOB, {'overwrite': True})
+    assert cmd.rstrip().endswith('--overwrite')  # is_flag: flag present, no value
 
 
 def test_build_python_command_bool_false_and_none_are_omitted():
-    cmd = stage_support.build_python_command(_JOB, {'output-pdfs': False, 'optional': None, 'keep': 'yes'})
-    assert 'output-pdfs' not in cmd
+    cmd = stage_support.build_python_command(_JOB, {'overwrite': False, 'optional': None, 'keep': 'yes'})
+    assert 'overwrite' not in cmd
     assert 'optional' not in cmd
     assert '--keep yes' in cmd
 

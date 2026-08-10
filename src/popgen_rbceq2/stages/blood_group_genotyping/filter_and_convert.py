@@ -57,6 +57,7 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
         prefix = stage_support.get_sg_output_prefix(sequencing_group, stage_name=self.name, category='tmp')
         return {
             'vcf': prefix / f'{sequencing_group.id}.converted.vcf.gz',
+            'index': prefix / f'{sequencing_group.id}.converted.vcf.gz.tbi',
             'defining_sites': prefix / f'{sequencing_group.id}.defining_sites.tsv',
         }
 

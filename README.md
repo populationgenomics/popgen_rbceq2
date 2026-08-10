@@ -23,6 +23,9 @@ analysis-runner \
   popgen_rbceq2
 ```
 
+On a first run, append `--dry_run` after `popgen_rbceq2`: it checks the config and builds the
+stage graph without submitting any jobs, so a config mistake costs seconds rather than a batch.
+
 Configs merge left to right, so your file overrides
 [the defaults](src/popgen_rbceq2/config/popgen_rbceq2_default_config.toml). Set at least
 `workflow.input_cohorts` and `workflow.sequencing_type`; see
