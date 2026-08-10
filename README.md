@@ -190,7 +190,7 @@ Filtering on MIN_DP instead of DP would change one system on this sample: RHCE, 
 block reporting `DP=10,MIN_DP=9`. Across all blocks, MIN_DP fell below `min_depth` while DP did
 not for 0.20% of them, never over 78 bases.
 
-94% of defining sites resolve from a spanning block rather than a record of their own, which is
+94% of defining sites resolve from a reference block rather than a call of their own, which is
 why the flag reports `block=<span>`.
 
 ## Committed resources

@@ -361,7 +361,7 @@ def _render_int(value: int | None) -> str:
 def _render_metrics(coverage: Coverage) -> str:
     """Render the depth and GQ a site was judged on, and where they came from.
 
-    A spanning block also reports its MIN_DP, which is not what the site was judged on but
+    A reference block also reports its MIN_DP, which is not what the site was judged on but
     bounds how low any single base in the span went, so the gap between the two is visible
     at the point of reading rather than having to be assumed.
 
@@ -370,7 +370,7 @@ def _render_metrics(coverage: Coverage) -> str:
 
     Returns:
         `DP=<n>,GQ=<n>`, prefixed for a record that is not a call at the site: `del=`/`GT=`
-        for a deletion, or `block=`/`MIN_DP=` for a spanning block. Every field is
+        for a deletion, or `block=`/`MIN_DP=` for a reference block. Every field is
         `key=value`, so which keys appear says what the numbers describe. A missing metric
         renders as `.`, to distinguish it from a reported zero.
     """

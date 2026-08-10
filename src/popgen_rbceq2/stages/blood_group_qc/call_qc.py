@@ -25,7 +25,7 @@ class FlagBloodGroupCallQc(cpg_flow.stage.SequencingGroupStage):
     threshold the run did not use.
 
     A flag names both the defining site and what the caller reported at it, which are not
-    always the same thing: the DP and GQ can come from a reference block spanning the
+    always the same thing: the DP and GQ can come from a reference block covering the
     coordinate, or from a deletion that removed the base the antigen is defined on (`DEL`).
     Systems whose only defining alleles are large structural variants have no assessable
     site and are reported `NA` rather than `PASS`.
