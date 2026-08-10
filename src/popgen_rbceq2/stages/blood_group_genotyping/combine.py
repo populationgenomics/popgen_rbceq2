@@ -21,6 +21,12 @@ class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):
     rather than repeated flags because the command line grows with the cohort: at four paths
     per sequencing group, argv would exceed ARG_MAX around ~3,000 of them.
 
+    Each path is keyed by its sequencing group rather than listed, because rbceq2 does not put
+    one in the file: it labels the row with the base name of the VCF it read. The manifest key
+    is what the job keys the combined rows on, so the cohort TSVs carry CPG IDs rather than
+    `<sg>.converted.vcf` and join to Metamist. The manifest also carries the cohort's
+    sequencing groups, which every combined TSV has to end up covering.
+
     The QC TSV is a fourth output rather than a member of constants.RBCEQ2_TSV_KEYS: it comes
     from FlagBloodGroupCallQc, not from rbceq2, and the keys drive rbceq2's own resource group.
     """
@@ -38,27 +44,29 @@ class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):
 
         # Per-SG TSVs from the upstream SequencingGroupStages, restricted to this cohort.
         # Both stages skip a sequencing group with no gVCF — the same set excluded here — so
-        # the two input lists cover the same samples. Every row carries its own sample id in
-        # column 1, so the combined TSVs join per sample without relying on row order.
+        # the two input maps should cover the same sequencing groups; the manifest's
+        # `sequencing_groups` is what holds them to it.
         per_sg: dict[str, dict[str, cpg_utils.Path]] = inputs.as_dict_by_target(
             genotype.GenotypeBloodGroupsWithRbceq2,
         )
         per_sg_qc: dict[str, dict[str, cpg_utils.Path]] = inputs.as_dict_by_target(call_qc.FlagBloodGroupCallQc)
         cohort_sg_ids: set[str] = {sg.id for sg in cohort.get_sequencing_groups(only_active=True) if sg.gvcf}
-        grouped: dict[str, list[str]] = {
-            key: [str(tsvs[key]) for sg_id, tsvs in per_sg.items() if sg_id in cohort_sg_ids]
+        grouped: dict[str, dict[str, str]] = {
+            key: {sg_id: str(tsvs[key]) for sg_id, tsvs in per_sg.items() if sg_id in cohort_sg_ids}
             for key in constants.RBCEQ2_TSV_KEYS
         }
-        grouped['qc'] = [str(tsvs['qc']) for sg_id, tsvs in per_sg_qc.items() if sg_id in cohort_sg_ids]
+        grouped['qc'] = {sg_id: str(tsvs['qc']) for sg_id, tsvs in per_sg_qc.items() if sg_id in cohort_sg_ids}
 
         # With the paths in a manifest, build_python_command's empty-list guard no longer
         # covers the zero-eligible-SGs case, so it is checked here, where the cause can be
-        # named. The job re-checks each list on its own side.
+        # named. The job re-checks each map on its own side.
         if not cohort_sg_ids:
             raise ValueError(f'Cohort {cohort.id} has no sequencing groups with a gVCF; there is nothing to combine')
 
+        # The key names are shared with the job by convention, not by a shared constant, the
+        # same way the four path keys already are. read_manifest raises on any disagreement.
         manifest = stage_support.get_output_prefix(cohort, self.name, category='tmp') / f'{cohort.id}.manifest.json'
-        manifest.write_text(json.dumps(grouped, indent=2))
+        manifest.write_text(json.dumps({'sequencing_groups': sorted(cohort_sg_ids)} | grouped, indent=2))
 
         b: cpg_utils.hail_batch.Batch = cpg_utils.hail_batch.get_batch()
         j: hailtop.batch.job.BashJob = b.new_bash_job(self.name, self.get_job_attrs(cohort) | {'tool': 'rbceq2'})
