@@ -15,6 +15,7 @@ Lane's paper); RBCeq2 adds the reference allele to complete the genotype.
 - `<NON_REF>`: sentinel symbolic ALT in gVCFs; breaks RBCeq2.
 - `build_intervals` / regions / flank: how RBCeq2 (and the committed `bg_regions.<genome>.bed`) derive read regions from `db.tsv` (±500 kb).
 - `Undetermined`: placeholder output value meaning RBCeq2 couldn't resolve a system, not read as "reference."
+- `NOT_REPORTED`: cell value in the combined cohort TSVs for a system RBCeq2 emitted no column for in that sample's own file. Distinct from `NA` (system checked by QC but no assessable defining site) and `Undetermined` (RBCeq2 called the system but couldn't resolve it).
 - geno / pheno_numeric / pheno_alphanumeric: the three output TSVs.
 - `Metamist`: CPG's sample-metadata system.
 - `analysis-runner`: CPG's tool to launch workflows.

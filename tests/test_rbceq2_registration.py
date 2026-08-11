@@ -13,7 +13,13 @@ import pytest
 from click.testing import CliRunner
 
 from popgen_rbceq2 import analysis_meta
-from popgen_rbceq2.jobs.rbceq2_gather_job import MANIFEST_KEYS, concat_tsvs, main
+from popgen_rbceq2.jobs.rbceq2_gather_job import (
+    MANIFEST_KEYS,
+    NOT_REPORTED,
+    SEQUENCING_GROUPS_KEY,
+    concat_tsvs,
+    main,
+)
 from popgen_rbceq2.stages import pipeline
 from tests.helpers import set_config
 
@@ -136,29 +142,170 @@ def test_cohort_calls_meta_points_at_the_sibling_qc_tsv():
     assert meta['pheno_numeric_path'] == 'gs://bucket/combined.COH1.pheno_numeric.tsv'
 
 
-def test_concat_tsvs_keeps_one_header_and_every_sample_row():
-    first = 'UUID: a\tJK\tVEL\nSG000001\tPASS\tLOWQ:1:3774964(A>G,DP=8,GQ=45)\n'
-    second = 'UUID: b\tJK\tVEL\nSG000002\tPASS\tPASS\n'
+# rbceq2 labels a row with the base name of the VCF it read, not the sample column, so a
+# per-SG TSV says `<sg>.converted.vcf`. Tests feed that form so they exercise the relabelling
+# every real input goes through.
+def _rbceq2_tsv(uuid: str, systems: str, sg: str, cells: str) -> str:
+    return f'UUID: {uuid}\t{systems}\n{sg}.converted.vcf\t{cells}\n'
 
-    assert concat_tsvs([first, second]).splitlines() == [
+
+def test_concat_tsvs_keys_rows_on_the_sequencing_group_not_rbceq2s_label():
+    # The whole point of keying the manifest by sequencing group: rbceq2 writes an
+    # intermediate file name in column 1, which no Metamist query can join to.
+    first = _rbceq2_tsv('a', 'JK\tVEL', 'SG000001', 'PASS\tLOWQ:1:3774964(A>G,DP=8,GQ=45)')
+    second = _rbceq2_tsv('b', 'JK\tVEL', 'SG000002', 'PASS\tPASS')
+
+    assert concat_tsvs([('SG000001', first), ('SG000002', second)]).splitlines() == [
         'UUID: a\tJK\tVEL',
         'SG000001\tPASS\tLOWQ:1:3774964(A>G,DP=8,GQ=45)',
         'SG000002\tPASS\tPASS',
     ]
 
 
-def _write_per_sg(tmp_path: Path, sg: str, key: str, cell: str) -> Path:
+def test_concat_tsvs_raises_when_rbceq2s_label_names_another_sequencing_group():
+    # A path keyed under the wrong sequencing group, or a converted VCF renamed out from under
+    # the assumption. Relabelling regardless would put one sample's calls under another's ID,
+    # which is worse than the shift this whole job exists to prevent.
+    tsv = _rbceq2_tsv('a', 'JK\tVEL', 'SG000002', 'PASS\tPASS')
+
+    with pytest.raises(ValueError, match='does not name this sequencing group'):
+        concat_tsvs([('SG000001', tsv)])
+
+
+def test_concat_tsvs_raises_on_a_file_holding_more_than_one_sample_row():
+    # One sequencing group is keyed to one file, so a second row has no ID to be keyed on.
+    tsv = 'UUID: a\tJK\nSG000001.converted.vcf\tJK*01/JK*01\nSG000002.converted.vcf\tJK*01/JK*02\n'
+
+    with pytest.raises(ValueError, match='Expected one sample row'):
+        concat_tsvs([('SG000001', tsv)])
+
+
+def test_concat_tsvs_aligns_cells_by_system_when_the_column_sets_differ():
+    # rbceq2 emits a column only for a blood group it found a matching allele for, one frame
+    # per run, so two sequencing groups can disagree on the column set. Appending the second
+    # row under the first sample's header would file VEL's flag under FUT2.
+    first = _rbceq2_tsv('a', 'FUT2\tJK\tVEL', 'SG000001', 'PASS\tPASS\tLOWQ:1:3774964(A>G,DP=8,GQ=45)')
+    second = _rbceq2_tsv('b', 'JK\tVEL', 'SG000002', 'PASS\tNA')
+
+    assert concat_tsvs([('SG000001', first), ('SG000002', second)]).splitlines() == [
+        'UUID: a\tFUT2\tJK\tVEL',
+        'SG000001\tPASS\tPASS\tLOWQ:1:3774964(A>G,DP=8,GQ=45)',
+        f'SG000002\t{NOT_REPORTED}\tPASS\tNA',
+    ]
+
+
+def test_concat_tsvs_covers_a_system_only_a_later_sample_reports():
+    # The union is taken across every input, not just the first, so a system the first sample
+    # is missing still gets a column rather than dropping that sample's call on the floor.
+    first = _rbceq2_tsv('a', 'JK', 'SG000001', 'JK*01/JK*02')
+    second = _rbceq2_tsv('b', 'JK\tVEL', 'SG000002', 'JK*01/JK*01\tVEL*01/VEL*01')
+
+    assert concat_tsvs([('SG000001', first), ('SG000002', second)]).splitlines() == [
+        'UUID: a\tJK\tVEL',
+        f'SG000001\tJK*01/JK*02\t{NOT_REPORTED}',
+        'SG000002\tJK*01/JK*01\tVEL*01/VEL*01',
+    ]
+
+
+def test_concat_tsvs_sorts_the_union_rather_than_appending_unseen_systems():
+    # The union has to come out in rbceq2's own alphabetical order, not first-seen order. Every
+    # other case here has the first sample's columns already sorting the same as the union, so
+    # an implementation that appended unseen systems to the end would pass all of them and
+    # still write a cohort header disagreeing with every per-sample file it was built from.
+    first = _rbceq2_tsv('a', 'VEL', 'SG000001', 'VEL*01/VEL*01')
+    second = _rbceq2_tsv('b', 'ABO\tVEL', 'SG000002', 'ABO*A1.01/ABO*O.01.01\tVEL*01/VEL*02')
+
+    assert concat_tsvs([('SG000001', first), ('SG000002', second)]).splitlines() == [
+        'UUID: a\tABO\tVEL',
+        f'SG000001\t{NOT_REPORTED}\tVEL*01/VEL*01',
+        'SG000002\tABO*A1.01/ABO*O.01.01\tVEL*01/VEL*02',
+    ]
+
+
+def test_concat_tsvs_realigns_a_sample_whose_columns_are_in_a_different_order():
+    # The same column set in a different order is the cell shift in its purest form: the row
+    # lengths match, so nothing about the file looks wrong, and every cell lands under the
+    # wrong system.
+    first = _rbceq2_tsv('a', 'JK\tVEL', 'SG000001', 'JK*01/JK*02\tVEL*01/VEL*01')
+    second = _rbceq2_tsv('b', 'VEL\tJK', 'SG000002', 'VEL*01/VEL*02\tJK*01/JK*01')
+
+    assert concat_tsvs([('SG000001', first), ('SG000002', second)]).splitlines() == [
+        'UUID: a\tJK\tVEL',
+        'SG000001\tJK*01/JK*02\tVEL*01/VEL*01',
+        'SG000002\tJK*01/JK*01\tVEL*01/VEL*02',
+    ]
+
+
+def test_concat_tsvs_raises_on_a_row_that_does_not_match_its_own_header():
+    # Differing column sets between samples are expected; a row that disagrees with the
+    # header it was written under is a corrupt file, and filling it in would invent cells.
+    with pytest.raises(ValueError, match='Ragged TSV'):
+        concat_tsvs([('SG000001', 'UUID: a\tJK\tVEL\nSG000001.converted.vcf\tPASS\n')])
+
+
+def test_concat_tsvs_raises_on_a_repeated_system_column():
+    # Matching cells to columns by name means a repeated name has no answer: keeping either
+    # cell drops the other, and the row is the right length, so nothing else here would catch
+    # it. The row count check would not; the union would just be one column short.
+    tsv = _rbceq2_tsv('a', 'JK\tJK', 'SG000001', 'JK*01/JK*02\tJK*01/JK*01')
+
+    with pytest.raises(ValueError, match='Repeated system column'):
+        concat_tsvs([('SG000001', tsv)])
+
+
+def test_concat_tsvs_raises_on_a_sample_with_no_system_columns():
+    # The union fill covers samples whose column sets differ, not a sample rbceq2 reported
+    # nothing for. Filling such a row would launder a broken per-sample run into all four
+    # cohort TSVs as a row of NOT_REPORTED.
+    first = _rbceq2_tsv('a', 'JK', 'SG000001', 'JK*01/JK*02')
+    second = 'UUID: b\nSG000002.converted.vcf\n'
+
+    with pytest.raises(ValueError, match='SG000002: the TSV has no system columns'):
+        concat_tsvs([('SG000001', first), ('SG000002', second)])
+
+
+def test_concat_tsvs_warning_names_the_samples_it_filled_capped_at_ten(caplog: pytest.LogCaptureFixture):
+    # Whoever chases the warning needs a sequencing group to start from, not just a count,
+    # but a cohort-sized list would swamp the log — the list caps at ten plus an ellipsis.
+    sgs = [f'SG{i:06d}' for i in range(1, 13)]
+    contents = [(sgs[0], _rbceq2_tsv('a', 'JK\tVEL', sgs[0], 'JK*01/JK*02\tVEL*01/VEL*01'))]
+    contents += [(sg, _rbceq2_tsv('b', 'JK', sg, 'JK*01/JK*01')) for sg in sgs[1:]]
+
+    with caplog.at_level('WARNING', logger='popgen_rbceq2.jobs.rbceq2_gather_job'):
+        concat_tsvs(contents)
+
+    (message,) = [r.message for r in caplog.records if NOT_REPORTED in r.message]
+    assert f'VEL (11/12 samples: {", ".join(sgs[1:11])} ...)' in message
+
+
+def test_concat_tsvs_is_empty_when_given_no_inputs():
+    assert concat_tsvs([]) == ''
+
+
+def _write_per_sg(tmp_path: Path, sg: str, key: str, cell: str, label: str | None = None) -> str:
+    """Write one per-SG TSV and return its path.
+
+    Args:
+        tmp_path: Directory to write into.
+        sg: The sequencing group the file belongs to.
+        key: Output type, naming the file.
+        cell: The VEL cell, so a test can put a flag there.
+        label: What rbceq2 wrote in column 1, defaulting to the `<sg>.converted.vcf` it
+            really writes. Set it to something else to stand in for a miskeyed file.
+    """
     path = tmp_path / f'{sg}.{key}.tsv'
-    path.write_text(f'UUID: {sg}\tJK\tVEL\n{sg}\tPASS\t{cell}\n')
-    return path
+    path.write_text(f'UUID: {sg}\tJK\tVEL\n{label or f"{sg}.converted.vcf"}\tPASS\t{cell}\n')
+    return str(path)
 
 
-def _manifest_for(tmp_path: Path, sgs: tuple[str, ...]) -> dict[str, list[str]]:
-    """Write per-SG TSVs and return the {key: [path, ...]} manifest dict the gather job reads."""
-    return {key: [str(_write_per_sg(tmp_path, sg, key, 'PASS')) for sg in sgs] for key in MANIFEST_KEYS}
+def _manifest_for(tmp_path: Path, sgs: tuple[str, ...]) -> dict:
+    """Write per-SG TSVs and return the manifest dict the gather job reads."""
+    return {SEQUENCING_GROUPS_KEY: list(sgs)} | {
+        key: {sg: _write_per_sg(tmp_path, sg, key, 'PASS') for sg in sgs} for key in MANIFEST_KEYS
+    }
 
 
-def _gather_args(tmp_path: Path, manifest: dict[str, list[str]]) -> list[str]:
+def _gather_args(tmp_path: Path, manifest: dict) -> list[str]:
     args: list[str] = []
     for key in MANIFEST_KEYS:
         args += [f'--output-{key.replace("_", "-")}', str(tmp_path / f'combined.{key}.tsv')]
@@ -171,19 +318,18 @@ def test_gather_writes_a_combined_qc_tsv_alongside_the_call_tsvs(shm_tmp_path: P
     result = CliRunner().invoke(main, _gather_args(shm_tmp_path, _manifest_for(shm_tmp_path, ('SG000001', 'SG000002'))))
 
     assert result.exit_code == 0, result.output
-    for key in ('geno', 'pheno_numeric', 'pheno_alphanumeric', 'qc'):
+    for key in MANIFEST_KEYS:
         combined = (shm_tmp_path / f'combined.{key}.tsv').read_text().splitlines()
         assert len(combined) == 3, f'{key}: expected one header plus two sample rows'
+        assert [line.split('\t')[0] for line in combined[1:]] == ['SG000001', 'SG000002']
 
 
 def test_gather_keeps_the_detailed_site_level_flag_in_the_cohort_qc_tsv(shm_tmp_path: Path):
     # The cohort file is the one most readers open, so it carries the full flag rather than
     # a coarse category — the category is recoverable as the text before the first colon.
     flag = 'LOWQ:1:3774964(A>G,DP=8,GQ=45)'
-    manifest = _manifest_for(shm_tmp_path, ('SG000001',))
-    manifest['qc'].append(str(_write_per_sg(shm_tmp_path, 'SG000002', 'qc', flag)))
-    for key in ('geno', 'pheno_numeric', 'pheno_alphanumeric'):
-        manifest[key].append(str(_write_per_sg(shm_tmp_path, 'SG000002', key, 'PASS')))
+    manifest = _manifest_for(shm_tmp_path, ('SG000001', 'SG000002'))
+    manifest['qc']['SG000002'] = _write_per_sg(shm_tmp_path, 'SG000002', 'qc', flag)
 
     result = CliRunner().invoke(main, _gather_args(shm_tmp_path, manifest))
 
@@ -194,7 +340,7 @@ def test_gather_keeps_the_detailed_site_level_flag_in_the_cohort_qc_tsv(shm_tmp_
 def test_gather_raises_when_a_qc_input_is_missing(shm_tmp_path: Path):
     # A silently short cohort QC TSV would read as "every sample passed".
     manifest = _manifest_for(shm_tmp_path, ('SG000001',))
-    manifest['qc'].append(str(shm_tmp_path / 'SG000002.qc.tsv'))
+    manifest['qc']['SG000002'] = str(shm_tmp_path / 'SG000002.qc.tsv')
 
     result = CliRunner().invoke(main, _gather_args(shm_tmp_path, manifest))
 
@@ -204,7 +350,7 @@ def test_gather_raises_when_a_qc_input_is_missing(shm_tmp_path: Path):
 
 def test_gather_requires_at_least_one_qc_input(shm_tmp_path: Path):
     manifest = _manifest_for(shm_tmp_path, ('SG000001',))
-    manifest['qc'] = []
+    manifest['qc'] = {}
 
     result = CliRunner().invoke(main, _gather_args(shm_tmp_path, manifest))
 
@@ -222,6 +368,70 @@ def test_gather_rejects_a_manifest_with_the_wrong_keys(shm_tmp_path: Path):
 
     assert result.exit_code != 0
     assert 'exactly the keys' in str(result.exception)
+
+
+def test_gather_rejects_a_manifest_without_the_sequencing_groups_key(shm_tmp_path: Path):
+    # Without it there is nothing to hold the four types to the same set, and a short type
+    # would write a plausible file covering fewer samples than the cohort holds.
+    manifest = _manifest_for(shm_tmp_path, ('SG000001',))
+    del manifest[SEQUENCING_GROUPS_KEY]
+
+    result = CliRunner().invoke(main, _gather_args(shm_tmp_path, manifest))
+
+    assert result.exit_code != 0
+    assert 'exactly the keys' in str(result.exception)
+
+
+def test_gather_raises_when_a_tsv_carries_another_sequencing_groups_calls(shm_tmp_path: Path):
+    # rbceq2's label is the only evidence in the file of which sample it describes, so a path
+    # keyed under the wrong sequencing group would otherwise be relabelled into place.
+    manifest = _manifest_for(shm_tmp_path, ('SG000001',))
+    manifest['geno']['SG000001'] = _write_per_sg(
+        shm_tmp_path, 'SG000001', 'geno', 'PASS', label='SG000999.converted.vcf'
+    )
+
+    result = CliRunner().invoke(main, _gather_args(shm_tmp_path, manifest))
+
+    assert result.exit_code != 0
+    assert 'does not name this sequencing group' in str(result.exception)
+
+
+def test_gather_raises_when_one_output_type_covers_fewer_samples_than_the_others(shm_tmp_path: Path):
+    # The QC TSVs and the call TSVs are gathered independently, so nothing but the manifest's
+    # sequencing_groups holds them to the same samples. A cohort QC file short of a sample
+    # reads as though that sample passed.
+    manifest = _manifest_for(shm_tmp_path, ('SG000001', 'SG000002'))
+    del manifest['qc']['SG000001']  # drop its QC input, keeping its calls
+
+    result = CliRunner().invoke(main, _gather_args(shm_tmp_path, manifest))
+
+    assert result.exit_code != 0
+    assert 'Combined qc TSV covers the wrong sequencing groups' in str(result.exception)
+    assert '1 missing (SG000001), 0 unexpected (none)' in str(result.exception)
+
+
+def test_gather_raises_when_an_output_type_carries_a_sample_the_cohort_does_not_hold(shm_tmp_path: Path):
+    # The other direction: a keyed path for a sequencing group outside `sequencing_groups`,
+    # as a stale entry from an inactivated sample would be. Its file exists and parses, so
+    # only the coverage check can name it.
+    manifest = _manifest_for(shm_tmp_path, ('SG000001', 'SG000002'))
+    manifest[SEQUENCING_GROUPS_KEY] = ['SG000001']
+
+    result = CliRunner().invoke(main, _gather_args(shm_tmp_path, manifest))
+
+    assert result.exit_code != 0
+    assert 'Combined geno TSV covers the wrong sequencing groups' in str(result.exception)
+    assert '0 missing (none), 1 unexpected (SG000002)' in str(result.exception)
+
+
+def test_gather_row_order_is_sorted_not_manifest_order(shm_tmp_path: Path):
+    # The manifest maps' insertion order follows the stage's dict-of-targets iteration, which
+    # nothing pins across runs; the combined file has to be byte-identical anyway.
+    result = CliRunner().invoke(main, _gather_args(shm_tmp_path, _manifest_for(shm_tmp_path, ('SG000002', 'SG000001'))))
+
+    assert result.exit_code == 0, result.output
+    combined = (shm_tmp_path / 'combined.geno.tsv').read_text().splitlines()
+    assert [line.split('\t')[0] for line in combined[1:]] == ['SG000001', 'SG000002']
 
 
 def test_combine_stage_writes_the_manifest_the_job_reads(mocker, mock_cohort, shm_tmp_path: Path):
@@ -264,8 +474,8 @@ def test_combine_stage_writes_the_manifest_the_job_reads(mocker, mock_cohort, sh
 
     assert output is not None
     assert json.loads(manifest_path.read_text()) == {
-        key: [f'gs://bucket/SG000001.{key}.tsv', f'gs://bucket/SG000002.{key}.tsv'] for key in MANIFEST_KEYS
-    }
+        SEQUENCING_GROUPS_KEY: ['SG000001', 'SG000002'],
+    } | {key: {sg: f'gs://bucket/{sg}.{key}.tsv' for sg in ('SG000001', 'SG000002')} for key in MANIFEST_KEYS}
     command = batch.new_bash_job.return_value.command.call_args.args[0]
     assert f'--manifest {manifest_path}' in command
 
@@ -282,4 +492,26 @@ def test_combine_stage_raises_on_a_cohort_with_no_gvcf_sequencing_groups(mock_co
     inputs.as_dict_by_target.side_effect = [{}, {}]
 
     with pytest.raises(ValueError, match='no sequencing groups with a gVCF'):
+        pipeline.CombineRbceq2OutputsPerCohort().queue_jobs(mock_cohort, inputs)
+
+
+def test_combine_stage_raises_at_graph_construction_when_an_upstream_map_is_short(mock_cohort):
+    # The gather job's coverage check would also catch this, but only after every per-SG job
+    # has run; the stage holds both sets when it builds the manifest, so a divergence between
+    # the upstream skip predicates fails before anything is scheduled.
+    sgs = []
+    for sg_id in ('SG000001', 'SG000002'):
+        sg = MagicMock()
+        sg.id = sg_id
+        sg.gvcf = f'gs://bucket/{sg_id}.g.vcf.gz'
+        sgs.append(sg)
+    mock_cohort.get_sequencing_groups.return_value = sgs
+    inputs = MagicMock()
+    inputs.as_dict_by_target.side_effect = [
+        # rbceq2 TSVs for SG000001 only; QC TSVs for both.
+        {'SG000001': {key: f'gs://bucket/SG000001.{key}.tsv' for key in MANIFEST_KEYS[:3]}},
+        {sg.id: {'qc': f'gs://bucket/{sg.id}.qc.tsv'} for sg in sgs},
+    ]
+
+    with pytest.raises(ValueError, match=r'no upstream geno TSV for 1 sequencing group\(s\).*SG000002'):
         pipeline.CombineRbceq2OutputsPerCohort().queue_jobs(mock_cohort, inputs)
