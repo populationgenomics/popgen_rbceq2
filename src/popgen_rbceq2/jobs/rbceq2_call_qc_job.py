@@ -12,7 +12,7 @@ the semicolon-joined flags of the system's defining sites:
     NOCOV:1:3774964(A>G)                                   no record covers the site
     LOWQ:1:3774964(A>G,DP=19,GQ=15)                        a call at the site itself
     DEL:1:3774964(A>G,del=CATGA>C,GT=0/1,DP=30,GQ=50)      a deletion removed the base
-    LOWQ:1:3774964(A>G,block=101bp,DP=26,MIN_DP=19,GQ=15)  a reference block spans it
+    LOWQ:1:3774964(A>G,block=101bp,DP=26,MIN_DP=19,GQ=15)  a reference block covers it
 
 Within the parentheses the first field is always the allele the db defines the antigen on,
 and every later field is `key=value`. Which keys appear says what the numbers describe,
@@ -64,9 +64,14 @@ NON_REF = '<NON_REF>'
 EXTRACT_COLUMNS = ('chrom', 'pos', 'ref', 'alt', 'end', 'gt', 'dp', 'gq', 'min_dp')
 
 # Where a site's DP and GQ came from, which decides how the flag reads:
-#   site      a record starting at the coordinate, so the values describe the site itself
-#   block     a reference block spanning it, so the values describe the whole span
+#   site      a call at the coordinate, so the values describe the site itself
+#   block     a reference block covering it, whether it starts there or reaches it from an
+#             earlier POS, so the values describe the whole band rather than this one base
 #   deletion  a deletion whose REF span swallows it, so the defining base is not present
+#
+# Note that `site` is not simply "a record starting here". A reference block can begin on any
+# coordinate, including a defining one, and that is still a band. resolve_coverage reads this
+# off the record via `is_block`, not off the branch that found the record.
 CoverageSource = Literal['site', 'block', 'deletion']
 
 
@@ -283,7 +288,12 @@ def resolve_coverage(records: list[GvcfRecord], chrom: str, pos: int) -> Coverag
         # path there. Either serves for DP/GQ; the gt/alt of an at-site record are NOT
         # reliable evidence of what rbceq2 read.
         real_alt = [r for r in at_site if r.alt != NON_REF]
-        return _coverage_from((real_alt or at_site)[0], 'site')
+        chosen = (real_alt or at_site)[0]
+        # Starting at the site does not make a record a call at it. Reference blocks are
+        # banded on GQ, so one can begin on any coordinate, including a defining one; that
+        # is still a span whose DP is a median over the band and whose MIN_DP the flag has
+        # to report. Read the source off the record, not off the branch that found it.
+        return _coverage_from(chosen, 'block' if chosen.is_block else 'site')
     # Nothing starts at the site, so the chosen record reaches it from an earlier POS: a
     # reference block spanning it, or a deletion whose REF swallows it. A deletion starting
     # at the site itself is not this case. Its first REF base is the retained anchor, and
@@ -351,7 +361,7 @@ def _render_int(value: int | None) -> str:
 def _render_metrics(coverage: Coverage) -> str:
     """Render the depth and GQ a site was judged on, and where they came from.
 
-    A spanning block also reports its MIN_DP, which is not what the site was judged on but
+    A reference block also reports its MIN_DP, which is not what the site was judged on but
     bounds how low any single base in the span went, so the gap between the two is visible
     at the point of reading rather than having to be assumed.
 
@@ -360,7 +370,7 @@ def _render_metrics(coverage: Coverage) -> str:
 
     Returns:
         `DP=<n>,GQ=<n>`, prefixed for a record that is not a call at the site: `del=`/`GT=`
-        for a deletion, or `block=`/`MIN_DP=` for a spanning block. Every field is
+        for a deletion, or `block=`/`MIN_DP=` for a reference block. Every field is
         `key=value`, so which keys appear says what the numbers describe. A missing metric
         renders as `.`, to distinguish it from a reported zero.
     """
