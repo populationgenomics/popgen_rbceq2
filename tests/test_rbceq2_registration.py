@@ -253,6 +253,31 @@ def test_concat_tsvs_raises_on_a_repeated_system_column():
         concat_tsvs([('SG000001', tsv)])
 
 
+def test_concat_tsvs_raises_on_a_sample_with_no_system_columns():
+    # The union fill covers samples whose column sets differ, not a sample rbceq2 reported
+    # nothing for. Filling such a row would launder a broken per-sample run into all four
+    # cohort TSVs as a row of NOT_REPORTED.
+    first = _rbceq2_tsv('a', 'JK', 'SG000001', 'JK*01/JK*02')
+    second = 'UUID: b\nSG000002.converted.vcf\n'
+
+    with pytest.raises(ValueError, match='SG000002: the TSV has no system columns'):
+        concat_tsvs([('SG000001', first), ('SG000002', second)])
+
+
+def test_concat_tsvs_warning_names_the_samples_it_filled_capped_at_ten(caplog: pytest.LogCaptureFixture):
+    # Whoever chases the warning needs a sequencing group to start from, not just a count,
+    # but a cohort-sized list would swamp the log — the list caps at ten plus an ellipsis.
+    sgs = [f'SG{i:06d}' for i in range(1, 13)]
+    contents = [(sgs[0], _rbceq2_tsv('a', 'JK\tVEL', sgs[0], 'JK*01/JK*02\tVEL*01/VEL*01'))]
+    contents += [(sg, _rbceq2_tsv('b', 'JK', sg, 'JK*01/JK*01')) for sg in sgs[1:]]
+
+    with caplog.at_level('WARNING', logger='popgen_rbceq2.jobs.rbceq2_gather_job'):
+        concat_tsvs(contents)
+
+    (message,) = [r.message for r in caplog.records if NOT_REPORTED in r.message]
+    assert f'VEL (11/12 samples: {", ".join(sgs[1:11])} ...)' in message
+
+
 def test_concat_tsvs_is_empty_when_given_no_inputs():
     assert concat_tsvs([]) == ''
 
@@ -385,6 +410,30 @@ def test_gather_raises_when_one_output_type_covers_fewer_samples_than_the_others
     assert '1 missing (SG000001), 0 unexpected (none)' in str(result.exception)
 
 
+def test_gather_raises_when_an_output_type_carries_a_sample_the_cohort_does_not_hold(shm_tmp_path: Path):
+    # The other direction: a keyed path for a sequencing group outside `sequencing_groups`,
+    # as a stale entry from an inactivated sample would be. Its file exists and parses, so
+    # only the coverage check can name it.
+    manifest = _manifest_for(shm_tmp_path, ('SG000001', 'SG000002'))
+    manifest[SEQUENCING_GROUPS_KEY] = ['SG000001']
+
+    result = CliRunner().invoke(main, _gather_args(shm_tmp_path, manifest))
+
+    assert result.exit_code != 0
+    assert 'Combined geno TSV covers the wrong sequencing groups' in str(result.exception)
+    assert '0 missing (none), 1 unexpected (SG000002)' in str(result.exception)
+
+
+def test_gather_row_order_is_sorted_not_manifest_order(shm_tmp_path: Path):
+    # The manifest maps' insertion order follows the stage's dict-of-targets iteration, which
+    # nothing pins across runs; the combined file has to be byte-identical anyway.
+    result = CliRunner().invoke(main, _gather_args(shm_tmp_path, _manifest_for(shm_tmp_path, ('SG000002', 'SG000001'))))
+
+    assert result.exit_code == 0, result.output
+    combined = (shm_tmp_path / 'combined.geno.tsv').read_text().splitlines()
+    assert [line.split('\t')[0] for line in combined[1:]] == ['SG000001', 'SG000002']
+
+
 def test_combine_stage_writes_the_manifest_the_job_reads(mocker, mock_cohort, shm_tmp_path: Path):
     # The per-SG paths travel to the job in a manifest, not argv: at four repeated flags per
     # sequencing group the command line would outgrow ARG_MAX around ~3,000 of them.
@@ -443,4 +492,26 @@ def test_combine_stage_raises_on_a_cohort_with_no_gvcf_sequencing_groups(mock_co
     inputs.as_dict_by_target.side_effect = [{}, {}]
 
     with pytest.raises(ValueError, match='no sequencing groups with a gVCF'):
+        pipeline.CombineRbceq2OutputsPerCohort().queue_jobs(mock_cohort, inputs)
+
+
+def test_combine_stage_raises_at_graph_construction_when_an_upstream_map_is_short(mock_cohort):
+    # The gather job's coverage check would also catch this, but only after every per-SG job
+    # has run; the stage holds both sets when it builds the manifest, so a divergence between
+    # the upstream skip predicates fails before anything is scheduled.
+    sgs = []
+    for sg_id in ('SG000001', 'SG000002'):
+        sg = MagicMock()
+        sg.id = sg_id
+        sg.gvcf = f'gs://bucket/{sg_id}.g.vcf.gz'
+        sgs.append(sg)
+    mock_cohort.get_sequencing_groups.return_value = sgs
+    inputs = MagicMock()
+    inputs.as_dict_by_target.side_effect = [
+        # rbceq2 TSVs for SG000001 only; QC TSVs for both.
+        {'SG000001': {key: f'gs://bucket/SG000001.{key}.tsv' for key in MANIFEST_KEYS[:3]}},
+        {sg.id: {'qc': f'gs://bucket/{sg.id}.qc.tsv'} for sg in sgs},
+    ]
+
+    with pytest.raises(ValueError, match=r'no upstream geno TSV for 1 sequencing group\(s\).*SG000002'):
         pipeline.CombineRbceq2OutputsPerCohort().queue_jobs(mock_cohort, inputs)

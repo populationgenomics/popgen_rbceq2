@@ -44,8 +44,8 @@ class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):
 
         # Per-SG TSVs from the upstream SequencingGroupStages, restricted to this cohort.
         # Both stages skip a sequencing group with no gVCF — the same set excluded here — so
-        # the two input maps should cover the same sequencing groups; the manifest's
-        # `sequencing_groups` is what holds them to it.
+        # the two input maps must cover the same sequencing groups; checked below, and the
+        # manifest's `sequencing_groups` holds the job to it again at runtime.
         per_sg: dict[str, dict[str, cpg_utils.Path]] = inputs.as_dict_by_target(
             genotype.GenotypeBloodGroupsWithRbceq2,
         )
@@ -62,6 +62,17 @@ class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):
         # named. The job re-checks each map on its own side.
         if not cohort_sg_ids:
             raise ValueError(f'Cohort {cohort.id} has no sequencing groups with a gVCF; there is nothing to combine')
+
+        # A map short of the cohort means the upstream skip predicates have diverged from the
+        # gVCF check above. The gather job would catch it too, but only after every per-SG job
+        # has run; failing at graph construction costs nothing. (The maps cannot exceed
+        # cohort_sg_ids: they are filtered by it above.)
+        for key, path_map in grouped.items():
+            if missing := sorted(cohort_sg_ids - set(path_map)):
+                raise ValueError(
+                    f'Cohort {cohort.id}: no upstream {key} TSV for {len(missing)} sequencing '
+                    f'group(s) with a gVCF: {", ".join(missing[:10])}'
+                )
 
         # The key names are shared with the job by convention, not by a shared constant, the
         # same way the four path keys already are. read_manifest raises on any disagreement.

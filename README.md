@@ -112,6 +112,7 @@ A system is `PASS`, or carries the semicolon-joined flags of its defining sites:
 | `DEL` | a deletion the sample carries removed the base the antigen is defined on |
 | `NOCOV` | no gVCF record covers the site |
 | `NA` | the system has no assessable defining site, so it was never checked |
+| `NOT_REPORTED` | cohort TSVs only: rbceq2 emitted no column for this system for this sample, so there was no cell to copy |
 
 Read a flag as two parts: the site the database defines, then what the caller reported there.
 The first field in the parentheses is always the database's allele; every later field is
@@ -142,6 +143,13 @@ filter, which would flag most of a typical sample's systems.
 ### `CombineRbceq2OutputsPerCohort`
 
 Concatenate the per-sequencing-group TSVs into cohort TSVs and register a cohort-level Analysis.
+
+The cohort TSVs differ from the per-sequencing-group files they are built from in two ways.
+Column 1 carries the CPG sequencing-group ID rather than rbceq2's own row label (the name of
+the intermediate VCF it read), so the rows join to Metamist. And the columns are the union of
+every sample's systems, sorted: where a sample's own file had no column for a system, the cell
+reads `NOT_REPORTED`. That differs from `NA`, which means the QC job checked the system but it
+has no assessable defining site; `NOT_REPORTED` means rbceq2 emitted no column at all.
 
 ## Reference-block depth and GQ bands
 

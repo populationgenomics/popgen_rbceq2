@@ -14,11 +14,13 @@ cohort file rather than coarsening it to a category.
 
 Rows are keyed by sequencing group, which the manifest supplies rather than the file. RBCeq2
 does not read the VCF's sample column: it labels a row with the base name of the VCF it was
-given, so a per-SG TSV says ``<sequencing group>.converted.vcf`` — an intermediate file name,
-which carries the sequencing-group ID only because ``FilterAndConvertGvcfsForRbceq2`` happens
-to name its output that way. A cohort file keyed on it would not join to Metamist, so column 1
-is rewritten to the sequencing group the manifest paired the file with, and rbceq2's own label
-is checked against it rather than trusted.
+given — ``Path.stem``, which strips only the final extension, so the conversion stage's
+``<sg>.converted.vcf.gz`` appears as ``<sequencing group>.converted.vcf`` — an intermediate
+file name, which carries the sequencing-group ID only because
+``FilterAndConvertGvcfsForRbceq2`` happens to name its output that way. A cohort file keyed
+on it would not join to Metamist, so column 1 is rewritten to the sequencing group the
+manifest paired the file with, and rbceq2's own label is checked against it rather than
+trusted.
 
 Only the cohort files are relabelled. The per-SG TSVs keep whatever rbceq2 wrote, including
 the QC TSV, which copies the cell from the geno TSV. Each of those is registered against one
@@ -26,8 +28,9 @@ sequencing group, so its own Analysis already says whose file it is and nothing 
 cell: ``analysis_meta.parse_single_row_rbceq2_tsv`` drops column 0 by position.
 
 Cells are matched to columns by system name, not by position. RBCeq2 emits a column only
-for a blood group one of whose alleles had all its defining variants in that sample's VCF
-(``core_logic.data_procesing.raw_results``), and writes one frame per run, so a per-sample
+for a blood group one of whose alleles had all its defining variants in that sample's VCF,
+and writes one frame per run (``main.py`` builds each result frame with
+``pd.DataFrame.from_dict`` over that run's found blood groups), so a per-sample
 TSV can carry that sample's systems and no others. Two sequencing groups could therefore
 disagree on the column set, and appending a row under another sample's header would shift
 every cell after the first difference. Observed rbceq2 output is a constant 48 systems for
@@ -135,16 +138,21 @@ def _keyed_row(sg_id: str, text: str) -> tuple[str, SampleRow]:
         RBCeq2's leading header cell, and the sample row keyed on `sg_id`.
 
     Raises:
-        ValueError: The file does not hold exactly one sample row, or rbceq2's own label for
-            that row does not name `sg_id`.
+        ValueError: The file does not hold exactly one sample row, the row carries no system
+            columns at all, or rbceq2's own label for that row does not name `sg_id`.
     """
     header_cell, rows = _parse_sample_tsv(text)
     if len(rows) != 1:
         raise ValueError(f'Expected one sample row for {sg_id}, got {len(rows)}')
+    if not rows[0].cell_by_system:
+        # The union fill covers samples whose column sets differ, not a sample rbceq2
+        # reported nothing for: a row of nothing but NOT_REPORTED is a broken run, not data.
+        raise ValueError(f'{sg_id}: the TSV has no system columns, only the ID column')
     # rbceq2 labels the row with the base name of the VCF it read, so this is
     # `<sequencing group>.converted.vcf`. Checking the part before the first `.` catches a
-    # file paired with the wrong sequencing group, and catches the conversion stage being
-    # renamed out from under the assumption rather than letting it relabel a cohort silently.
+    # file paired with the wrong sequencing group. It pins only the `<sg>.` prefix: a rename
+    # of the conversion output that drops the prefix fails loudly rather than relabelling a
+    # cohort silently, while extension drift (`.filtered.vcf`, a lost `.gz`) still passes.
     labelled = rows[0].sample_id.split('.', 1)[0]
     if labelled != sg_id:
         raise ValueError(
@@ -204,10 +212,11 @@ def concat_tsvs(contents: list[tuple[str, str]]) -> str:
             cells.append(cell)
         out.append('\t'.join([row.sample_id, *cells]))
     if absent_from:
-        counted = '; '.join(f'{system} ({len(ids)}/{len(rows)})' for system, ids in sorted(absent_from.items()))
+        counted = '; '.join(
+            f'{system} ({len(ids)}/{len(rows)} samples: {_named(ids)})' for system, ids in sorted(absent_from.items())
+        )
         logger.warning(
-            f'Filled with {NOT_REPORTED} where rbceq2 reported no column — '
-            f'{len(absent_from)} system(s), samples affected: {counted}'
+            f'Filled with {NOT_REPORTED} where rbceq2 reported no column — {len(absent_from)} system(s): {counted}'
         )
     return '\n'.join(out) + '\n'
 
@@ -236,7 +245,9 @@ def _combine(paths: dict[str, str], out_path: str, label: str, expected: frozens
         raise ValueError(f'No blood-group {label} inputs provided for {out_path}')
     contents: list[tuple[str, str]] = []
     bad: list[str] = []
-    for sg_id, path in paths.items():
+    # Sorted so the combined file is byte-identical across runs: the manifest map's insertion
+    # order comes from the stage's dict-of-targets iteration, which nothing pins.
+    for sg_id, path in sorted(paths.items()):
         tp = to_path(path)
         if not tp.exists():
             bad.append(f'missing: {path}')
@@ -275,7 +286,8 @@ def _combine(paths: dict[str, str], out_path: str, label: str, expected: frozens
 @click.option(
     '--manifest',
     required=True,
-    help=f'JSON manifest: {SEQUENCING_GROUPS_KEY}, plus one {{sequencing group: path}} map per MANIFEST_KEYS key',
+    help=f'JSON manifest: {SEQUENCING_GROUPS_KEY}, plus one {{sequencing group: path}} map per key: '
+    + ', '.join(MANIFEST_KEYS),
 )
 def main(
     output_geno: str,
