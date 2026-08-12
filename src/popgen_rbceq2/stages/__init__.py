@@ -21,4 +21,5 @@ https://cpg-populationanalysis.atlassian.net/wiki/spaces/ST/pages/185597962/Pipe
 
 A stage's class name also derives its `[workflow.<section>]` config section, so renaming one
 means renaming that section — see stage_support.config_section.
+test
 """
