@@ -15,10 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      # Pinned to the same version as .pre-commit-config.yaml. Unpinned, a ruff release
+      # turns every open PR red without anyone changing code, which is how the 0.16
+      # markdown formatting change broke main.
       - name: Ruff lint
-        run: uvx ruff check .
+        run: uvx ruff@0.16.3 check .
       - name: Ruff format check
-        run: uvx ruff format --check .
+        run: uvx ruff@0.16.3 format --check .
 
   typecheck:
     runs-on: ubuntu-latest
