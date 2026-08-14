@@ -34,8 +34,8 @@ MIN_DEPTH = 10
 MIN_GQ = 20
 
 # GRCh38 primary-assembly contig lengths, to assert every shipped coordinate exists. The
-# v2.4.1 db has ABCC1*01N.01 on chr16 carrying ABCC4's chr13 coordinate verbatim, which is
-# past the end of chr16 in both builds.
+# db still has ABCC1*01N.01 on chr16 carrying ABCC4's chr13 coordinate verbatim (unchanged
+# from v2.4.1 to v2.4.3), which is past the end of chr16 in both builds.
 GRCH38_CONTIG_LENGTHS = {
     'chr1': 248956422, 'chr2': 242193529, 'chr3': 198295559, 'chr4': 190214555,
     'chr5': 181538259, 'chr6': 170805979, 'chr7': 159345973, 'chr8': 145138636,
@@ -73,11 +73,13 @@ def _db_row(chrom='chr1', genotype='VEL*01.01', genome='3774964_A_G', genotype_a
         ('25321858_ref_no_phenotype', (25321858, 'ref', '.', '.')),
         # A large indel, which the db writes with `>` rather than `_`.
         ('159205730_TGTCCTGGCACAGCTG>T', (159205730, 'var', 'TGTCCTGGCACAGCTG', 'T')),
-        # Structural variants, in the db's two spellings: `del`/`ins` with a size, and
+        # Structural variants, in the db's two spellings: `del`/`ins`/`dup` with a size, and
         # RHD/RHCE's `DEL`/`INS` with a base count. Neither word is a sequence.
         ('95018451_del_21kb', (95018451, 'sv', 'del', '21kb')),
         ('25272546_DEL_148', (25272546, 'sv', 'DEL', '148')),
         ('144001284_ins_83bp', (144001284, 'sv', 'ins', '83bp')),
+        # `dup` arrived with v2.4.3's GYP hybrid alleles.
+        ('144120545_dup_20kb', (144120545, 'sv', 'dup', '20kb')),
         # RBCeq2's own unsupported notations; parse_positions skips these too, so they are
         # absent from the regions BED and must be absent from the map.
         ('unknown_del', None),
@@ -173,7 +175,8 @@ def test_duplicate_tokens_across_rows_are_deduplicated():
 
 def test_lowercase_chrom_is_normalised_to_gvcf_contig_form():
     """A lower-case db contig is normalised to GVCF form."""
-    # One v2.4.1 db row carries `chrx`; it has to match the GVCF's chrX.
+    # A v2.4.1 db row carried `chrx`, fixed upstream by v2.4.3; the normalisation stays,
+    # because a contig that does not match the GVCF's chrX is NOCOV in every sample.
     rows = [_db_row(chrom='chrx', genotype='XK*01', genome='37685689_G_A')]
     assert bg_db.site_system_map(rows, 'GRCh38')[0].chrom == 'chrX'
 
@@ -235,7 +238,7 @@ def test_committed_map_carries_only_sequence_alleles():
 def test_committed_sites_fall_inside_their_contigs():
     """No committed defining site is past the end of its contig."""
     # An off-contig coordinate is unreachable, so it is NOCOV in every sample forever and
-    # reads as a mappability problem rather than the db error it is. v2.4.1 puts ABCC4's
+    # reads as a mappability problem rather than the db error it is. The db puts ABCC4's
     # chr13 coordinate on ABCC1's chr16 row, which is past the end of chr16 in both builds.
     for site in load_site_systems(_resource('bg_site_systems.GRCh38.tsv')):
         length = GRCH38_CONTIG_LENGTHS[site.chrom]

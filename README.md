@@ -222,9 +222,10 @@ construction rather than per sequencing group.
 ### Structural-variant entries
 
 The database defines some alleles by a multi-kb event rather than a sequence, written
-`<pos>_del_<N>kb`, `<pos>_DEL_<N>` or `<pos>_ins_<N>bp`. One base of DP and GQ cannot say
-whether a sample carries a 21kb deletion, so `gen_bg_resources.py` excludes these from the
-defining-sites BED and the site-to-system map: 60 of the database's 1828 site rows at v2.4.1.
+`<pos>_del_<N>kb`, `<pos>_dup_<N>kb`, `<pos>_DEL_<N>` or `<pos>_ins_<N>bp`. One base of DP
+and GQ cannot say whether a sample carries a 21kb deletion, so `gen_bg_resources.py` excludes
+these from the defining-sites BED and the site-to-system map: 72 of the database's 1872 site
+rows at v2.4.3.
 Their positions stay in the regions BED, because rbceq2's own `parse_positions` keeps them and
 the BED must stay a superset of what rbceq2 reads.
 

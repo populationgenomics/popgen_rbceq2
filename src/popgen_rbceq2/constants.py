@@ -5,7 +5,7 @@
 # the tag resolves the image, so both come from one literal here rather than drifting.
 # Bump when the image is bumped, and regenerate resources/bg_*.<genome>.* against the
 # db.tsv from the new version (scripts/gen_bg_resources.py).
-RBCEQ2_VERSION = '2.4.1'
+RBCEQ2_VERSION = '2.4.3'
 RBCEQ2_IMAGE_TAG = f'{RBCEQ2_VERSION}-1'
 
 # rbceq2 emits one TSV per type per sample: <out>.geno.tsv etc. This drives rbceq2's own
