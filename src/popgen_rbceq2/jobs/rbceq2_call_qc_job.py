@@ -46,7 +46,7 @@ NOCOV = 'NOCOV'
 DELETED = 'DEL'
 # A system RBCeq2 called but that has no assessable defining site in the map: either the db
 # gives it no coordinate, or its only defining alleles are structural variants that one
-# base of DP/GQ cannot speak to (ABCC1, ATP11C and CD99 at rbceq2 2.4.1). Never assessed,
+# base of DP/GQ cannot speak to (ABCC1, ATP11C and CD99 at rbceq2 2.4.3). Never assessed,
 # so neither PASS nor LOWQ is honest.
 NOT_ASSESSED = 'NA'
 

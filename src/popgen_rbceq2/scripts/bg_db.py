@@ -5,7 +5,7 @@ BED that restricts the GVCF conversion, the defining-sites BED that the QC extra
 targets, and the site -> blood-group-system map that turns extracted DP/GQ into a
 per-system flag. Deriving all three here keeps them describing one site set.
 
-`parse_positions` and `build_intervals` mirror `rbceq2.IO.vcf` (v2.4.1), so the regions
+`parse_positions` and `build_intervals` mirror `rbceq2.IO.vcf` (v2.4.3), so the regions
 BED is a superset of the coordinates RBCeq2 itself reads.
 """
 
@@ -24,9 +24,9 @@ _KLF = 'KLF'
 _NO_COORDINATE = frozenset({'', '.', 'na'})
 
 # Leading word of a db token naming a structural variant rather than an allele, in either
-# case: `del`/`ins` with a size (`95018451_del_21kb`) and RHD/RHCE's `DEL`/`INS` with a
-# base count (`25272546_DEL_148`).
-_SV_WORDS = frozenset({'del', 'ins'})
+# case: `del`/`ins`/`dup` with a size (`95018451_del_21kb`) and RHD/RHCE's `DEL`/`INS` with
+# a base count (`25272546_DEL_148`).
+_SV_WORDS = frozenset({'del', 'ins', 'dup'})
 
 # A REF or ALT sequence. Anything else at a coordinate that is not a lane site or an SV
 # notation is a db form this module has not been taught, and raises rather than being
@@ -131,10 +131,10 @@ def parse_positions(cell: str | None) -> list[int]:
 def parse_defining_token(token: str) -> tuple[int, SiteKind, str, str] | None:
     """Parse one db coordinate token.
 
-    Recognises the forms occurring in v2.4.1's db: `3774964_A_G` (a variant),
-    `207331122_ref` (a lane site), `95018451_del_21kb` and `25272546_DEL_148` (structural
-    variants), any of those with a trailing `_no_phenotype` note, and
-    `159205730_TGTCC...>T` (a large indel, written with `>` rather than `_`).
+    Recognises the forms occurring in v2.4.3's db: `3774964_A_G` (a variant),
+    `207331122_ref` (a lane site), `95018451_del_21kb`, `144120545_dup_20kb` and
+    `25272546_DEL_148` (structural variants), any of those with a trailing `_no_phenotype`
+    note, and `159205730_TGTCC...>T` (a large indel, written with `>` rather than `_`).
 
     Args:
         token: One comma-separated token from a db genome column.
@@ -205,7 +205,7 @@ def site_system_map(rows: Iterable[dict[str, str]], genome: str) -> list[Definin
     SV sites are excluded. One base's DP and GQ cannot say whether a sample carries a 21kb
     deletion, so assessing an SV-defined allele at its start coordinate would report a
     quality for something the check never looked at. A system whose only defining alleles
-    are SVs therefore has no row here and is reported as not assessed. At v2.4.1 that is
+    are SVs therefore has no row here and is reported as not assessed. At v2.4.3 that is
     ABCC1, ATP11C and CD99.
 
     Args:
