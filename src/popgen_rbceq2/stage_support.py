@@ -28,6 +28,8 @@ import cpg_utils.config
 import hailtop.batch.job
 import hailtop.batch.resource
 
+from popgen_rbceq2 import constants
+
 # Values accepted by build_python_command: paths, localised batch resources, and scalars. None
 # is a member because an optional argument is passed as None and omitted from the command, so a
 # stage can hand over a config value it did not find without branching around the call.
@@ -209,15 +211,27 @@ def job_script(name: str) -> str:
 
 
 def _output_version(stage_name: str) -> str:
-    """The version segment for a stage's outputs: its own pin if set, else the workflow's."""
+    """The version segment for a stage's outputs: `rbceq2_<tool version>_<release>`.
+
+    The tool-version half is derived from constants.RBCEQ2_VERSION, so a tool bump always
+    lands in a fresh tree and the segment can never drift from the version actually run. The
+    release half is ours — the stage's own output_versions pin if set, else workflow.version —
+    bumped only when a pipeline change alters the outputs (deliberately not the image tag,
+    which moves on rebuilds that change nothing about the outputs).
+    """
     pinned = cpg_utils.config.config_retrieve(['workflow', 'output_versions', stage_name], None)
-    return pinned or cpg_utils.config.config_retrieve(['workflow', 'version'], 'v1')
+    release = pinned or cpg_utils.config.config_retrieve(['workflow', 'version'], 'v1')
+    return f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_{release}'
 
 
 def get_output_prefix(cohort: cpg_flow.targets.Cohort, stage_name: str, category: str | None = None) -> cpg_utils.Path:
     """Standardised output prefix for CohortStage outputs.
 
-    Format: cohort.dataset.prefix() / workflow.name / stage_name / cohort.id / version
+    Format: cohort.dataset.prefix() / workflow.name / rbceq2_<tool version>_<release> / stage_name / cohort.id
+
+    The version segment sits directly under the workflow name so one release is one browsable
+    tree; see _output_version for what its two halves mean. A stage with its own
+    output_versions pin writes under its pinned release's tree instead.
 
     cohort.id is a path segment, so a different set of sequencing groups is a different cohort
     and therefore a different tree — outputs from one cohort can never be mistaken for another's.
@@ -225,9 +239,9 @@ def get_output_prefix(cohort: cpg_flow.targets.Cohort, stage_name: str, category
     return (
         cohort.dataset.prefix(category=category)
         / cpg_flow.workflow.get_workflow().name
+        / _output_version(stage_name)
         / stage_name
         / cohort.id
-        / _output_version(stage_name)
     )
 
 
@@ -238,14 +252,16 @@ def get_sg_output_prefix(
 ) -> cpg_utils.Path:
     """Standardised output prefix for SequencingGroupStage outputs.
 
-    Format: sg.dataset.prefix() / workflow.name / stage_name / sg.id / version
+    Format: sg.dataset.prefix() / workflow.name / rbceq2_<tool version>_<release> / stage_name / sg.id
+
+    See get_output_prefix and _output_version for what the version segment means.
     """
     return (
         sequencing_group.dataset.prefix(category=category)
         / cpg_flow.workflow.get_workflow().name
+        / _output_version(stage_name)
         / stage_name
         / sequencing_group.id
-        / _output_version(stage_name)
     )
 
 

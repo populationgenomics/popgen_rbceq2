@@ -9,10 +9,15 @@ from pathlib import Path
 
 import pytest
 
+from popgen_rbceq2 import constants
 from popgen_rbceq2.stages import pipeline
 from tests.helpers import set_config
 
 pytestmark = pytest.mark.fast
+
+# The combined tool+release version segment the prefix helpers derive; tests build the same
+# string so a tool bump moves the expectations with it.
+VERSION_SEGMENT = f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_v1'
 
 
 def outputs_of(stage, target) -> dict:
@@ -37,7 +42,7 @@ def test_filter_and_convert_output_namespacing(mock_sequencing_group):
     # one breaks the rbceq2 run or the QC flag with no type error. The converted VCF is an
     # intermediate only the next two stages read, so it lands in tmp.
     output = outputs_of(pipeline.FilterAndConvertGvcfsForRbceq2(), mock_sequencing_group)
-    prefix = Path('gs://bucket-tmp') / 'popgen_rbceq2' / 'FilterAndConvertGvcfsForRbceq2' / 'SG000001' / 'v1'
+    prefix = Path('gs://bucket-tmp') / 'popgen_rbceq2' / VERSION_SEGMENT / 'FilterAndConvertGvcfsForRbceq2' / 'SG000001'
     assert str(output['vcf']) == str(prefix / 'SG000001.converted.vcf.gz')
     assert str(output['defining_sites']) == str(prefix / 'SG000001.defining_sites.tsv')
 
@@ -46,7 +51,7 @@ def test_genotype_output_namespacing(mock_sequencing_group):
     # rbceq2 names its own files <out>_<key>.tsv; these are where they land after write_output,
     # and analysis_meta.blood_group_calls derives the pheno path from the geno one.
     output = outputs_of(pipeline.GenotypeBloodGroupsWithRbceq2(), mock_sequencing_group)
-    prefix = Path('gs://bucket') / 'popgen_rbceq2' / 'GenotypeBloodGroupsWithRbceq2' / 'SG000001' / 'v1'
+    prefix = Path('gs://bucket') / 'popgen_rbceq2' / VERSION_SEGMENT / 'GenotypeBloodGroupsWithRbceq2' / 'SG000001'
     assert str(output['geno']) == str(prefix / 'SG000001.geno.tsv')
     assert str(output['pheno_numeric']) == str(prefix / 'SG000001.pheno_numeric.tsv')
     assert str(output['pheno_alphanumeric']) == str(prefix / 'SG000001.pheno_alphanumeric.tsv')
@@ -66,7 +71,7 @@ def test_the_rbceq2_log_is_not_registered_in_metamist(mock_sequencing_group):
 
 def test_call_qc_output_namespacing(mock_sequencing_group):
     output = outputs_of(pipeline.FlagBloodGroupCallQc(), mock_sequencing_group)
-    prefix = Path('gs://bucket') / 'popgen_rbceq2' / 'FlagBloodGroupCallQc' / 'SG000001' / 'v1'
+    prefix = Path('gs://bucket') / 'popgen_rbceq2' / VERSION_SEGMENT / 'FlagBloodGroupCallQc' / 'SG000001'
     assert str(output['qc']) == str(prefix / 'SG000001.qc.tsv')
 
 
@@ -75,7 +80,7 @@ def test_combine_output_namespacing(mock_cohort):
     # name, and analysis_meta.cohort_calls derives the QC path from the geno filename, so
     # the shared `combined.<cohort>.<key>.tsv` shape is load-bearing.
     output = outputs_of(pipeline.CombineRbceq2OutputsPerCohort(), mock_cohort)
-    prefix = Path('gs://bucket') / 'popgen_rbceq2' / 'CombineRbceq2OutputsPerCohort' / 'test-cohort' / 'v1'
+    prefix = Path('gs://bucket') / 'popgen_rbceq2' / VERSION_SEGMENT / 'CombineRbceq2OutputsPerCohort' / 'test-cohort'
     assert str(output['geno']) == str(prefix / 'combined.test-cohort.geno.tsv')
     assert str(output['qc']) == str(prefix / 'combined.test-cohort.qc.tsv')
 
@@ -119,4 +124,6 @@ def test_output_version_can_be_pinned_per_stage(mock_sequencing_group, shm_tmp_p
         shm_tmp_path / 'pinned.toml',
     )
     output = outputs_of(pipeline.FlagBloodGroupCallQc(), mock_sequencing_group)
-    assert str(output['qc']).endswith('FlagBloodGroupCallQc/SG000001/v2/SG000001.qc.tsv')
+    assert str(output['qc']).endswith(
+        f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_v2/FlagBloodGroupCallQc/SG000001/SG000001.qc.tsv',
+    )

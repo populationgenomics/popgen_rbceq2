@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 from click.testing import CliRunner
 
-from popgen_rbceq2 import analysis_meta
+from popgen_rbceq2 import analysis_meta, constants
 from popgen_rbceq2.jobs.rbceq2_gather_job import (
     MANIFEST_KEYS,
     NOT_REPORTED,
@@ -499,8 +499,9 @@ def test_combine_stage_writes_the_manifest_the_job_reads(mocker, mock_cohort, sh
     ]
     batch = MagicMock()
     mocker.patch('cpg_utils.hail_batch.get_batch', return_value=batch)
+    version_segment = f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_v1'
     manifest_path = (
-        shm_tmp_path / 'popgen_rbceq2' / 'CombineRbceq2OutputsPerCohort' / 'test-cohort' / 'v1'
+        shm_tmp_path / 'popgen_rbceq2' / version_segment / 'CombineRbceq2OutputsPerCohort' / 'test-cohort'
     ) / 'test-cohort.manifest.json'
     manifest_path.parent.mkdir(parents=True)  # gs:// needs no directories; this local stand-in does
 
