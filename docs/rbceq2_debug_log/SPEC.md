@@ -1,10 +1,10 @@
 # Design Spec: capture the rbceq2 debug log
 
-**Status:** DRAFT, for review. Do not implement until the design is approved.
+**Status:** AGREED. Ready to implement.
 **Area:** rbceq2 blood-group genotyping pipeline (`GenotypeBloodGroupsWithRbceq2`), in `popgen_rbceq2`.
 **Author:** Joshua Schmidt · **Reviewers:** (fill in)
 
-Run rbceq2 with `--debug` and save the per sample log to GCS and Metamist.
+Run rbceq2 with `--debug` and save the per sample log to GCS.
 
 ## Findings
 
@@ -19,9 +19,9 @@ Run rbceq2 with `--debug` and save the per sample log to GCS and Metamist.
 - Add `--debug` to the command, always on. Collaborators want the verbose output on every run.
 - Add a `log` key to `expected_outputs` on the genotype stage, kept out of `RBCEQ2_TSV_KEYS`. That constant drives the TSV resource group and the cohort combine job, so a log listed there would be treated as a fourth TSV to concatenate. The alternative is to add it to the constant and filter it out at each place the constant is used.
 - Rename the log inside the job. Fail unless the glob matches exactly one file, which catches loguru rotating the log at 50 MB.
-- Add a `RegisterRbceq2Log` stage typed `blood_group_log` that simply copies the log file, thus generating a registerable output. cpg_flow gives a stage one analysis type and runs every `analysis_keys` entry through the same meta callback, so registering the log from the genotype stage would type it as `blood_group_genotyping` and hand it to `blood_group_calls`, which parses the geno TSV and would fail. An alternative is to have a single cohort level stage that bundles every per sample log into a single registered file, which needs far fewer jobs but drops per sample lookup.
-- Write the log to the main dataset prefix beside the TSVs, not tmp, because a registered Analysis cannot point at a file that gets cleaned up.
+- Do not record the log in Metamist. Nothing downstream reads it, and stages inside this pipeline take each other's outputs by path through the cpg-flow graph rather than through Metamist, so a Metamist record would only earn its keep if something outside this pipeline had to find the log. Registering it is also awkward: cpg-flow allows one analysis type per stage and runs every registered output through the same meta callback, and ours parses the geno TSV, so the log would need a stage of its own whose only work was copying a file we had already written.
+- Write the log to the main dataset prefix beside the TSVs, not tmp, so it is still there when someone asks why a call was made.
 
 ## Open questions
 
-- One copy job per sequencing group is cheap, but is a job per sample acceptable at cohort scale?
+None outstanding. The Metamist question was settled by team consensus on 2026-08-17: the log is written but not registered.
