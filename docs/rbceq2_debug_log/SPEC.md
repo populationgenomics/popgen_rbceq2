@@ -1,6 +1,6 @@
 # Design Spec: capture the rbceq2 debug log
 
-**Status:** AGREED. Ready to implement.
+**Status:** IMPLEMENTED in `GenotypeBloodGroupsWithRbceq2`. Kept as the record of why.
 **Area:** rbceq2 blood-group genotyping pipeline (`GenotypeBloodGroupsWithRbceq2`), in `popgen_rbceq2`.
 **Author:** Joshua Schmidt · **Reviewers:** (fill in)
 

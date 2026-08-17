@@ -14,7 +14,10 @@ class GenotypeBloodGroupsWithRbceq2(cpg_flow.stage.SequencingGroupStage):
     """Run rbceq2 blood-group genotyping on a sequencing group.
 
     One bash job consumes the filtered VCF from FilterAndConvertGvcfsForRbceq2 and emits three
-    TSVs (geno, pheno_numeric, pheno_alphanumeric).
+    TSVs (geno, pheno_numeric, pheno_alphanumeric) plus rbceq2's own run log.
+
+    The log is written to GCS but not registered in Metamist, and --debug is unconditional. See
+    "The rbceq2 run log" in the README for why, and docs/rbceq2_debug_log/SPEC.md.
 
     The Analysis this registers records the inferred blood type in its meta (see
     analysis_meta.blood_group_calls); it does NOT write the blood type onto the SequencingGroup
@@ -28,7 +31,14 @@ class GenotypeBloodGroupsWithRbceq2(cpg_flow.stage.SequencingGroupStage):
         if not sequencing_group.gvcf:
             return None
         prefix = stage_support.get_sg_output_prefix(sequencing_group, self.name)
-        return {key: prefix / f'{sequencing_group.id}.{key}.tsv' for key in constants.RBCEQ2_TSV_KEYS}
+        outputs: stage_support.ExpectedOutputs = {
+            key: prefix / f'{sequencing_group.id}.{key}.tsv' for key in constants.RBCEQ2_TSV_KEYS
+        }
+        # Kept out of RBCEQ2_TSV_KEYS: that constant drives rbceq2's TSV resource group and the
+        # cohort combine job, which would treat a log listed there as a fourth TSV to concatenate.
+        outputs['log'] = prefix / f'{sequencing_group.id}.log.txt'
+
+        return outputs
 
     def queue_jobs(
         self,
@@ -63,13 +73,24 @@ class GenotypeBloodGroupsWithRbceq2(cpg_flow.stage.SequencingGroupStage):
         # Resource-group keys are the dot form (<sg>.geno.tsv on write); the {root}_<key>.tsv
         # templates capture rbceq2's underscore-named local output.
         j.declare_resource_group(out={f'{k}.tsv': f'{{root}}_{k}.tsv' for k in constants.RBCEQ2_TSV_KEYS})
+        # The log is renamed off rbceq2's runtime uuid4 name, and exactly one match is required
+        # so a loguru rotation cannot be silently truncated. README, "The rbceq2 run log".
         cmd = f"""
             set -euxo pipefail
-            rbceq2 --vcf {vcf['vcf.gz']} --out {j.out} --reference_genome {cpg_utils.config.genome_build()}
+            rbceq2 --vcf {vcf['vcf.gz']} --out {j.out} --reference_genome {cpg_utils.config.genome_build()} --debug
+            shopt -s nullglob
+            logs=( {j.out}_*_log.txt )
+            shopt -u nullglob
+            if [ ${{#logs[@]}} -ne 1 ]; then
+                echo "ERROR: expected exactly one rbceq2 log, found ${{#logs[@]}}: ${{logs[*]-}}" >&2
+                exit 1
+            fi
+            mv "${{logs[0]}}" {j.log}
         """
 
         j.command(cmd)
         # Hail names resource-group outputs <dest>.<key>, so this writes <sg>.geno.tsv etc.
         b.write_output(j.out, dest=str(prefix / sequencing_group.id))
+        b.write_output(j.log, str(outputs['log']))
 
         return self.make_outputs(sequencing_group, data=outputs, jobs=[j])

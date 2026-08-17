@@ -87,6 +87,40 @@ def test_call_qc_stage_meta_records_the_thresholds_it_gave_the_job(mocker, mock_
     assert '--min-gq 25' in command
 
 
+def test_genotype_job_runs_rbceq2_in_debug_and_captures_the_log(mocker, mock_sequencing_group, shm_tmp_path: Path):
+    # --debug is what turns rbceq2's log from a version banner into the per blood group account
+    # of which filters removed which alleles, and the log is renamed off its uuid4 name so the
+    # path can be declared. Exactly one match is required: loguru rotates the log at 50 MB, and
+    # taking the live segment alone would silently drop everything written before the rotation.
+    set_config(
+        {
+            'references': {'genome_build': 'GRCh38'},
+            'workflow': {
+                'name': 'popgen_rbceq2',
+                'version': 'v1',
+                'sequencing_type': 'genome',
+                'driver_image': 'stub-driver:1.0',
+            },
+        },
+        shm_tmp_path / 'debug.toml',
+    )
+    batch = MagicMock()
+    mocker.patch('cpg_utils.hail_batch.get_batch', return_value=batch)
+    inputs = MagicMock()
+    inputs.as_path.return_value = 'gs://bucket/SG000001.converted.vcf.gz'
+
+    output = pipeline.GenotypeBloodGroupsWithRbceq2().queue_jobs(mock_sequencing_group, inputs)
+
+    assert output is not None
+    command = batch.new_bash_job.return_value.command.call_args.args[0]
+    assert '--debug' in command
+    assert '_*_log.txt' in command
+    assert '-ne 1 ]' in command
+    # Without nullglob a no-match expands to the literal pattern, so the count would be 1 and
+    # the mv would fail on a file named `*` instead of reporting that no log was written.
+    assert 'shopt -s nullglob' in command
+
+
 @pytest.mark.usefixtures('qc_config')
 def test_call_qc_meta_does_not_set_stage(shm_tmp_path: Path):
     # cpg-flow injects meta.stage as the Stage class name via get_job_attrs; setting it
