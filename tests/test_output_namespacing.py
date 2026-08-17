@@ -50,6 +50,18 @@ def test_genotype_output_namespacing(mock_sequencing_group):
     assert str(output['geno']) == str(prefix / 'SG000001.geno.tsv')
     assert str(output['pheno_numeric']) == str(prefix / 'SG000001.pheno_numeric.tsv')
     assert str(output['pheno_alphanumeric']) == str(prefix / 'SG000001.pheno_alphanumeric.tsv')
+    # rbceq2's run log, renamed off its uuid4 name by the job. In the main prefix beside the
+    # TSVs, not tmp, so it is still there when someone asks why a call was made.
+    assert str(output['log']) == str(prefix / 'SG000001.log.txt')
+
+
+def test_the_rbceq2_log_is_not_registered_in_metamist(mock_sequencing_group):
+    # Team decision, docs/rbceq2_debug_log/SPEC.md: the log is written but not registered.
+    # Adding it to analysis_keys would not just add a row — cpg-flow runs every key through the
+    # same update_analysis_meta, and blood_group_calls parses the geno TSV, so it would fail.
+    genotype_stage = pipeline.GenotypeBloodGroupsWithRbceq2()
+    assert 'log' in outputs_of(genotype_stage, mock_sequencing_group)
+    assert 'log' not in analysis_keys_of(genotype_stage)
 
 
 def test_call_qc_output_namespacing(mock_sequencing_group):

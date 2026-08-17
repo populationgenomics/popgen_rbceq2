@@ -94,9 +94,39 @@ Two things to preserve when changing this stage:
 ### `GenotypeBloodGroupsWithRbceq2` (per sequencing group)
 
 Run rbceq2 in the pinned image and write its three TSVs (`geno`, `pheno_numeric`,
-`pheno_alphanumeric`). Each sequencing group's calls are registered as a custom Metamist
-Analysis, with the calls parsed into its `meta`. This does not write the blood type onto the
-SequencingGroup record.
+`pheno_alphanumeric`), plus rbceq2's own run log. Each sequencing group's calls are registered
+as a custom Metamist Analysis, with the calls parsed into its `meta`. This does not write the
+blood type onto the SequencingGroup record.
+
+#### The rbceq2 run log
+
+rbceq2 writes a log on every run whether or not `--debug` is passed; the flag only raises it
+from INFO to DEBUG. At INFO it is a version banner and the arguments used. At DEBUG it adds the
+per blood group account of which filters removed which candidate alleles, which is what makes it
+possible to answer why a given antigen was called. Measured cost is tens of KB per sample
+(2.7 KB at INFO against 36 to 55 KB at DEBUG), so `--debug` is unconditional rather than
+configurable: a run that was not made verbose cannot be explained after the fact without
+repeating it.
+
+Two things about capturing it:
+
+- rbceq2 names the log `<out>_<uuid>_log.txt`, using a `uuid4` generated at runtime, so the path
+  cannot be declared in `expected_outputs` and the job renames the file. The uuid is not lost by
+  renaming: rbceq2 also writes it into each TSV as the index header, which is what ties a log
+  back to the calls it explains.
+- The rename requires exactly one match. loguru is configured to rotate the log at 50 MB, and if
+  it ever did, moving the live segment alone would silently discard everything written before
+  the rotation. `nullglob` is set first so that no match expands to nothing rather than to the
+  literal pattern, which would otherwise be counted as one file and fail later on a file
+  named `*`.
+
+The log is written to GCS but deliberately **not** registered in Metamist. Nothing downstream
+reads it, and stages take each other's outputs by path through the cpg-flow graph rather than
+through Metamist, so a record would only earn its keep if something outside this pipeline had to
+find the log. Registering it would also need a stage of its own, because cpg-flow allows one
+analysis type per stage and runs every `analysis_keys` entry through the same
+`update_analysis_meta` callback, and this stage's callback parses the geno TSV. See
+[`docs/rbceq2_debug_log/SPEC.md`](docs/rbceq2_debug_log/SPEC.md).
 
 ### `FlagBloodGroupCallQc` (per sequencing group)
 
