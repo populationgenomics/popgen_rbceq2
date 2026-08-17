@@ -8,8 +8,9 @@
 
 [workflow]
 name = 'popgen_rbceq2'
-# Path segment under each stage's output prefix. Bump to write a fresh tree rather than reusing
-# the previous run's outputs.
+# Our release version: the trailing half of the rbceq2_<tool version>_<release> path segment
+# above the stage directories, so one release is one tree. Bump only when a pipeline change
+# alters the outputs — the tool-version half already separates rbceq2 bumps.
 version = 'v1'
 status_reporter = 'metamist'
 # driver_image =
