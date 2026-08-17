@@ -66,7 +66,14 @@ markers = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-extend-exclude = [".venv", "build", "dist"]
+# Markdown is excluded because ruff formats Python code blocks inside .md from 0.16 on.
+# Our docs use code blocks illustratively: they are aligned for reading, elided, and not
+# always valid Python, so formatting them fights the docs rather than improving them.
+extend-exclude = [".venv", "build", "dist", "*.md"]
+# `extend-exclude` is ignored for explicitly-passed paths, and pre-commit always passes paths
+# explicitly, so without this a hand-run or hooked `ruff format docs/....md` still rewrites the
+# examples. Matches popgen-collaborative-ai-coding-template.
+force-exclude = true
 
 [tool.ruff.format]
 quote-style = "single"
