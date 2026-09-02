@@ -1,6 +1,7 @@
 # Design Spec: post-hoc genotyping of off-target defining sites in exomes
 
-**Status:** IMPLEMENTED. Kept as the record of why.
+**Status:** IMPLEMENTED and validated on a real cohort — see
+[`RESULTS.md`](./RESULTS.md) for the run and its measurements. Kept as the record of why.
 **Area:** rbceq2 blood-group genotyping pipeline (`FilterAndConvertGvcfsForRbceq2` →
 `GenotypeBloodGroupsWithRbceq2` → `FlagBloodGroupCallQc`), in `popgen_rbceq2`.
 **Author:** Joshua Schmidt · **Reviewers:** (fill in)
@@ -277,10 +278,9 @@ Environment facts worth keeping:
 - **The masked reference is safe for these CRAMs.** They were aligned to unmasked hg38;
   the two builds share all 3,366 contig names, and the 786 differing checksums are all HLA
   contigs. Every blood-group defining site is on chr1-22 or chrX.
-- **GATK's `gs://` NIO access works** — a probe against a real CRAM and reference reached
-  `Starting traversal`. Runtime on real data is still unverified: that probe streamed the
-  3Gb reference too, which the stage does not do, and it did not finish inside seven
-  minutes from a laptop. Confirm on the first real batch.
+- **GATK's `gs://` NIO access works**, and is cheap: 132s and $0.004 per sample in batch,
+  measured on the validation run. A laptop probe could only get as far as `Starting
+  traversal`, because it streamed the 3Gb reference too, which the stage does not do.
 
 The hole-finding rule is expressed twice — in awk in the merge, and as
 `GvcfRecord.covers` in the QC job — because the merge runs in the bcftools image, which

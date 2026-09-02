@@ -89,6 +89,11 @@ Only the caller stopped early, so this stage runs GATK HaplotypeCaller in GVCF m
 padded defining-site intervals. Sites more than ~250bp off both capture designs sit at ~0x and
 are not recoverable at any padding. Re-running DRAGEN across a cohort is not affordable.
 
+Measured on 10 exomes: the recall lifts assessable defining coordinates from 89.7% to 97.4%,
+and a recovered site that passes is indistinguishable from a DRAGEN-called one (median depth 73
+against 76, identical median GQ of 99), for 132s and $0.004 per sample. Full numbers in
+[`docs/rbceq2_posthoc_exome/RESULTS.md`](docs/rbceq2_posthoc_exome/RESULTS.md).
+
 Three things to preserve when changing this stage:
 
 - **The CRAM is streamed, not localised.** The `gs://` path goes straight to `-I` and GATK
