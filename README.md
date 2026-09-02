@@ -39,7 +39,8 @@ To run part of the branch only, restrict the graph:
 only_stages = ["FilterAndConvertGvcfsForRbceq2", "GenotypeBloodGroupsWithRbceq2"]
 ```
 
-Sequencing groups without a gVCF are skipped, not failed.
+Sequencing groups without a gVCF are skipped, not failed. Exome sequencing groups get one
+extra stage, `PosthocGenotypeOffTargetSites`; genome runs are unaffected by it.
 
 ## How the code is laid out
 
@@ -64,6 +65,59 @@ renames its section; `test_stage_support` fails if the two ever disagree.
 
 ## What the stages do
 
+### `PosthocGenotypeOffTargetSites` (per sequencing group, exomes only)
+
+Call the blood-group defining sites again from the CRAM, to fill the blind spots the exome
+capture leaves. Skipped for a genome, and for an exome with no CRAM or no gVCF.
+
+DRAGEN calls an exome against the capture-target BED with no `--vc-target-bed-padding`, so gVCF
+emission hard-stops on the BED edges. A defining coordinate outside the capture gets **no record
+at all** — not a low-quality one, none — and rbceq2 reads a site missing from its input as a
+confident homozygous reference call. `NOCOV` makes that visible, but the system stays
+unassessable.
+
+The reads are usually there. Measured over 20 DRAGEN 3.7.8 exomes (5 Twist VCGS, 15 Agilent
+CREv2) in August 2026:
+
+| | |
+|---|---|
+| non-HPA defining coordinates off-target per capture design | ~165 of 1,599 |
+| of those, within 1-100bp of a target edge with 40-110x MAPQ>=20 depth | ~105 |
+| assessable non-HPA coordinates, before and after | 91.7% -> ~98% |
+
+Only the caller stopped early, so this stage runs GATK HaplotypeCaller in GVCF mode over the
+padded defining-site intervals. Sites more than ~250bp off both capture designs sit at ~0x and
+are not recoverable at any padding. Re-running DRAGEN across a cohort is not affordable.
+
+Three things to preserve when changing this stage:
+
+- **The CRAM is streamed, not localised.** The `gs://` path goes straight to `-I` and GATK
+  reads it over NIO, pulling only the blocks `-L` asks for. The interval list is 199 regions
+  over 136kb, so this reads megabytes where localising would move gigabytes per sample.
+- **The reference must be the one the CRAM was aligned against**, the DRAGEN masked assembly38
+  at `references.broad.ref_fasta`. CRAM stores reads differentially against a reference, so
+  decoding with a different assembly does not fail loudly, it yields wrong bases. The mackenzie
+  DRAGEN 3.7.8 CRAMs were aligned to unmasked hg38, which shares all 3,366 contig names with
+  the masked build; the 786 contigs whose checksums differ are all HLA, and every blood-group
+  defining site is on a primary chromosome, so nothing this stage reads is affected.
+- **CRAM 3.0 only.** GATK 4.6.2.0 rejects CRAM 3.1 outright (`CRAM version 3.1 is not
+  supported`). CPG's CRAMs are 3.0 today, so this is a trap for the future rather than a
+  current problem.
+- **`--dragen-mode`, and no re-alignment.** The primary calls being supplemented come from
+  DRAGEN 3.7.8, so the supplement is made as close to DRAGEN-equivalent as a re-call can be.
+  Reads are used as aligned: no DRAGMAP. There is no DRAGstr model for the sample, so STR
+  genotyping is not fully DRAGEN-equivalent — accepted for now, worth revisiting if post-hoc
+  indel calls near STRs look discordant.
+
+The stage calls every assessable defining site, not only the off-target ones, because which
+sites are off-target depends on the sample's capture kit and nothing is saved by knowing:
+the whole interval list is 136kb either way. Deciding what to **keep** is the conversion
+stage's job.
+
+The output gVCF goes to tmp and registers no Metamist Analysis. It is an intermediate the
+conversion stage consumes through the cpg-flow graph, and what a reader needs — that a call
+rests on a recovered site — reaches Metamist as a `POSTHOC` flag on the QC TSV instead.
+
 ### `FilterAndConvertGvcfsForRbceq2` (per sequencing group)
 
 Convert a gVCF into a VCF rbceq2 can read, using `bcftools`. This is the only stage that reads
@@ -74,10 +128,58 @@ writes two outputs:
   because it breaks rbceq2, unused ALT alleles are trimmed, and a tabix index is written
   alongside because rbceq2 fetches blood-group regions by coordinate.
 - `defining_sites`, holding FORMAT/GT, DP and GQ at every allele-defining coordinate for the
-  QC stage. Do not derive this from the converted VCF: dropping `<NON_REF>` removes every
-  reference block, and a reference block is what covers a defining site where no variant was
-  called. GT tells the QC stage whether a deletion removed a defining base on one haplotype
-  or both.
+  QC stage, plus `INFO/POSTHOC` naming the caller that supplied each record. Do not derive this
+  from the converted VCF: dropping `<NON_REF>` removes every reference block, and a reference
+  block is what covers a defining site where no variant was called. GT tells the QC stage
+  whether a deletion removed a defining base on one haplotype or both.
+
+The `POSTHOC` column is extracted on every run, genome and exome alike, where it reads `.` for
+each record. One extract format everywhere means the parser needs no per-sequencing-type branch
+to know how many columns to expect.
+
+#### Merging the post-hoc calls (exomes only)
+
+For an exome, this stage also merges in `PosthocGenotypeOffTargetSites`'s gVCF before the
+extract and the conversion run. The fill rule is **empirical and per sample**: a post-hoc record
+survives only at a defining site the DRAGEN gVCF has no record covering, so DRAGEN wins wherever
+both speak.
+
+No capture BED is consulted, anywhere. The holes are found by asking the DRAGEN gVCF itself
+which defining sites it has no record spanning, so a capture BED that misdescribes the real
+footprint of a sample cannot overwrite a DRAGEN call or hide a hole. A genome sequencing group
+has no post-hoc input and its command is unchanged.
+
+Four details that are easy to get wrong:
+
+- Hole-finding reads covered spans with `--targets-overlap 1`, not the `2` the extract uses.
+  Mode 1 asks whether the **record** overlaps, which is what `%END` reports and what the QC
+  counts as covering; mode 2 asks whether the **variant** does, and drops a deletion anchored on
+  the site itself. Using mode 2 would make a covered site look like a hole and let a post-hoc
+  record displace a DRAGEN call.
+- A kept post-hoc reference block is kept whole, so one straddling a capture edge can also
+  reach a defining site DRAGEN called. Two records then cover that site, which is why
+  `resolve_coverage` prefers the one with no `INFO/POSTHOC`. Splitting blocks on the boundary
+  is the alternative and is not worth it.
+- **Zero-depth post-hoc records are dropped.** Given `-L`, HaplotypeCaller emits a reference
+  block across the whole interval, including stretches with no reads, as `DP=0,GQ=0`. Keeping
+  those would put a record over every hole and retire `NOCOV` for exomes entirely: a site with
+  no reads would read `LOWQ(DP=0)`, which says "poor data" where the truth is "no data".
+- **`INFO/POSTHOC` is declared on the intermediate for every run**, genome included, even
+  though only exome records ever carry a value. `bcftools query` fails outright on a tag the
+  header does not define rather than rendering `.`, so without the unconditional declaration
+  the extract aborts on every genome run.
+
+The supplement is stripped to the fields the pipeline reads (GT, DP, GQ, MIN_DP, END), which
+keeps `concat` from having to reconcile two callers' definitions of tags nothing reads.
+
+The job **fails** if the CRAM and the gVCF name different samples, rather than relabelling the
+supplement to match. They are two outputs of one DRAGEN run, so disagreeing means they are not
+a matched pair, and the failure being guarded against is a CRAM registered against the wrong
+sequencing group — which would write another individual's genotypes into this one's call at
+precisely the sites with no other evidence. Note the embedded sample name is not always the
+sequencing-group ID: across the mackenzie DRAGEN 3.7.8 outputs some samples carry an older CPG
+ID in both the CRAM read group and the gVCF. That is fine, because the check compares the two
+files with each other rather than either against the filename.
 
 Two things to preserve when changing this stage:
 
@@ -138,11 +240,15 @@ A system is `PASS`, or carries the semicolon-joined flags of its defining sites:
 
 | flag | meaning |
 |---|---|
-| `LOWQ` | DP or GQ below threshold, or missing |
+| `NOCOV` | no record from either caller covers the site |
 | `DEL` | a deletion the sample carries removed the base the antigen is defined on |
-| `NOCOV` | no gVCF record covers the site |
+| `LOWQ` | DP or GQ below threshold, or missing |
+| `POSTHOC` | the site passes, but only the post-hoc caller reported it |
 | `NA` | the system has no assessable defining site, so it was never checked |
 | `NOT_REPORTED` | cohort TSVs only: rbceq2 emitted no column for this system for this sample, so there was no cell to copy |
+
+Severity runs `NOCOV` > `DEL` > `LOWQ` > `POSTHOC` > `PASS`, and that is the order the checks
+are applied in. A recovered site that also fails a threshold reads as `LOWQ`, not `POSTHOC`.
 
 Read a flag as two parts: the site the database defines, then what the caller reported there.
 The first field in the parentheses is always the database's allele; every later field is
@@ -153,6 +259,7 @@ NOCOV:6:31992067(CGT>C)
 LOWQ:9:133255766(T>C,DP=19,GQ=15)
 DEL:1:3774964(A>G,del=CATGA>C,GT=0/1,DP=30,GQ=50)
 LOWQ:9:133255766(T>C,block=4.2kb,DP=26,MIN_DP=19,GQ=15)
+POSTHOC:1:159204893(T>C,src=gatk-hc-4.6.2.0,DP=42,GQ=99)
 ```
 
 - The first has no covering record at all, so there are no metrics to report. That differs
@@ -166,6 +273,15 @@ LOWQ:9:133255766(T>C,block=4.2kb,DP=26,MIN_DP=19,GQ=15)
   covering it, so `DP` is that block's median depth and `MIN_DP` its shallowest base. The
   block may start on the site or reach it from an earlier position; either way the numbers
   describe the band, not the site, which is why `block=` is there.
+- The fifth clears both thresholds, but DRAGEN never reported this site: the exome capture
+  stopped short of it and `src=` names the caller that filled it. This is a provenance flag,
+  not a quality one, and it exists so a recovered site can never be mistaken for one the
+  primary caller supported. `src=` appears on any flag whose numbers came from the post-hoc
+  caller, so a failing recovered site reads `LOWQ:...(T>C,src=gatk-hc-4.6.2.0,DP=6,GQ=12)`.
+
+The job's log counts quality-flagged systems and post-hoc-only systems separately, so a
+successful exome run — where recovering sites is the point — does not read as a cohort that got
+worse.
 
 Set `min_depth` and `min_gq` in this stage's config section rather than the conversion stage's,
 since this is the stage that reports them. Keep them quiet. They exist to catch the tail,
@@ -240,14 +356,23 @@ runtime, so a run is reproducible against a known database version:
 |---|---|
 | `bg_regions.<genome>.bed` | merged ±500kb intervals around the blood-group genes |
 | `bg_defining_sites.<genome>.bed` | the allele-defining coordinates |
+| `bg_defining_sites_padded.<genome>.bed` | merged ±250bp around those, the post-hoc caller's intervals |
 | `bg_site_systems.<genome>.tsv` | `chrom/pos/ref/alt/kind/system` rows |
 
 When you bump the rbceq2 image, bump `RBCEQ2_VERSION` in
-[`constants.py`](src/popgen_rbceq2/constants.py) and regenerate all three with
+[`constants.py`](src/popgen_rbceq2/constants.py) and regenerate all four with
 [`scripts/gen_bg_resources.py`](src/popgen_rbceq2/scripts/gen_bg_resources.py) against the
-`db.tsv` from that same version. One parse writes all three, so they always cover the same
+`db.tsv` from that same version. One parse writes all four, so they always cover the same
 sites. A build with no committed resources for the configured reference fails at graph
 construction rather than per sequencing group.
+
+The padded BED is built from the same non-SV sites the QC assesses, so a site the QC checks is
+always one the post-hoc caller could reach. Its ±250bp comes from the exome coverage analysis:
+past that, off-target sites sit at ~0x and no amount of padding recovers them. Padding is baked
+into the committed file rather than read from config — changing it means regenerating and
+committing, like every other resource. Keep it small: at 199 intervals over 136kb the CRAM can
+be streamed, and padding raised towards the ±500kb regions BED would quietly turn every exome
+job into a whole-CRAM read.
 
 ### Structural-variant entries
 

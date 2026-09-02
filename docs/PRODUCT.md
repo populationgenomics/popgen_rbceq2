@@ -40,6 +40,29 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
 - So genotypes are not filtered on DP or GQ. DRAGEN has already hard-filtered these gVCFs. `FlagBloodGroupCallQc` instead reports per-system flags (`LOWQ`, `DEL`, `NOCOV`, `NA`) naming the defining site and what the caller reported there, and the thresholds are recorded alongside the flags so a reader can tell what `LOWQ` meant on that run. See the [README](../README.md) for how to read a flag.
 - This reverses an earlier decision to delete sub-threshold sites. Deletion was not neutral: it moved uncertain calls to false reference rather than removing them from analysis.
 
+**Post-hoc recall of off-target sites, for exomes only (`PosthocGenotypeOffTargetSites`)**
+- An exome gVCF is called against a capture-target BED with no padding, so DRAGEN stops emitting
+  at the BED edges. ~165 of 1,599 non-HPA defining coordinates fall outside the capture per
+  design, and they arrive as *no record at all* rather than a poor one — the exact input rbceq2
+  reads as a confident homozygous reference call.
+- The reads are usually there. ~105 of those sites sit within 100bp of a target edge with
+  40-110x MAPQ>=20 depth in the CRAM, the FY GATA Duffy-null promoter sites among them. Only the
+  caller stopped early, so we call those sites again from the CRAM with GATK HaplotypeCaller in
+  `--dragen-mode`, streaming ~136kb of padded intervals rather than localising the CRAM. This
+  takes assessable non-HPA coordinates from 91.7% to ~98% per design. Re-running DRAGEN over a
+  cohort is not affordable, and sites >250bp off both designs are at ~0x and unrecoverable.
+- **The fill is empirical, never from capture metadata.** A post-hoc record is kept only where
+  the DRAGEN gVCF has no record covering a defining site; DRAGEN wins wherever both speak. No
+  capture BED is read anywhere in the pipeline, so a BED that misdescribes a sample's real
+  footprint cannot overwrite a primary call or hide a hole. This also means the same code is
+  correct for a capture kit we have never seen.
+- **A recovered site is never a silent `PASS`.** It carries a `POSTHOC` flag naming the caller,
+  because the antigen then rests on a different caller, without the sample's DRAGstr model, over
+  reads the capture design did not target. That is a fact a reviewer has to be able to see. The
+  severity order is `NOCOV` > `DEL` > `LOWQ` > `POSTHOC` > `PASS`, so a recovered site that also
+  fails a threshold still reports the quality problem first, and `NOCOV` keeps one meaning: no
+  record from either caller.
+
 **Regions BED generation from RBCeq2's own `db.tsv`**
 - RBCeq2 internally restricts the VCFs it handles to regions appearing in its `db.tsv` database, via a `build_intervals()` function. The biggest time-sink is the filter-and-convert step, because `bcftools` otherwise parses the entire genome.
 - Clear time saving: we build a BED from `db.tsv` the same way RBCeq2 does and restrict every input gVCF to those regions. This takes run times from ~50min-1hr to a couple of minutes.
@@ -51,7 +74,9 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
 
 ## Scope boundaries & ecosystem
 ### Scope
-- Not a variant caller
+- Not a variant caller, with one deliberate exception: `PosthocGenotypeOffTargetSites` calls
+  variants at blood-group defining sites an exome capture left uncalled. It exists to supply
+  the primary caller's blind spots, not to replace it, and it never overrides a DRAGEN call.
 - Not a fork or fix of RBCeq2
 - Not the source/maintainer of blood-group data/knowledge
 - No phasing (yet)
@@ -59,7 +84,8 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
 
 ### Ecosystem
 - **RBCeq2**: the genotyper
-- **bcftools**: the gVCF conversion and the per-site DP/GQ extract
+- **bcftools**: the gVCF conversion, the post-hoc merge, and the per-site DP/GQ extract
+- **GATK HaplotypeCaller**: the post-hoc caller for exome off-target defining sites
 - **cpg-flow**: CPG's workflow framework, over Hail Batch
 - **analysis-runner**: how a run is launched, and where its config comes from
 - **Metamist**: CPG's sample metadata system. Source of truth for inputs and where results are registered.
@@ -71,6 +97,28 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
 - Currently do not have phased data. This leads to multiple blood-group phenotypes assigned to individuals. All outputs are registered in the analysis object on metamist, regardless of this uncertainty.
 - The QC thresholds (`min_depth = 10`, `min_gq = 20`) are deliberately quiet and gnomAD-aligned. They are there to catch the tail, not to reproduce a hard filter — raising them towards DP 20 / GQ 30 flags most of a typical sample's systems and makes the annotation useless. `min_gq` must sit on a gVCF GQ band edge to mean anything exact.
 - The blood type is recorded in an Analysis `meta`, not on the SequencingGroup record. If it needs to be queryable directly on the SG, that is a SequencingGroup update mutation we have not written.
+- Post-hoc recall runs without a DRAGstr model for the sample, so `--dragen-mode` is not fully
+  DRAGEN-equivalent for STRs. Accepted to start with; revisit if post-hoc indel calls at
+  STR-adjacent defining sites look discordant with DRAGEN's at sites both callers reach.
+- Whether `POSTHOC` should count as flagged at all is a judgement, not a measurement. It is
+  flagged today because a recovered site is a different kind of evidence and a reviewer should
+  see it. If it turns out most exome systems carry one, the flag stops discriminating and the
+  right answer is probably a separate provenance column rather than quietly demoting it to
+  `PASS`.
+- The recall is exome-only. A genome gVCF has no capture edge to stop at, so there is nothing
+  for it to fix there — but that assumes any genome `NOCOV` site is genuinely unmappable rather
+  than merely uncalled, which we have not tested.
+- Post-hoc recall assumes the CRAM and the gVCF for a sequencing group are two outputs of the
+  same DRAGEN run. The stage refuses to merge when their sample names disagree rather than
+  relabelling, because the failure it is really guarding against is a CRAM registered against
+  the wrong sequencing group, and the cost of missing that is another individual's genotypes
+  in this one's blood-group call at the sites with no other evidence. Note that the embedded
+  sample name is not reliably the sequencing-group ID — some mackenzie DRAGEN 3.7.8 outputs
+  carry an older CPG ID in both files — so the check compares the two files with each other,
+  never either against the filename.
+- Which CRAM `sequencing_group.cram` resolves to is Metamist's call, and this dataset holds
+  more than one alignment set. The design rests on it being the one the gVCF came from, and
+  the sample-name check is the only thing enforcing that.
 
 ## The current slice.
 An implementation of RBCeq2 as a cpg-flow workflow in CPG's infrastructure, ported from the

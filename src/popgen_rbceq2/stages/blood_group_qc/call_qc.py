@@ -6,7 +6,7 @@ import cpg_utils.config
 import cpg_utils.hail_batch
 import hailtop.batch.job
 
-from popgen_rbceq2 import stage_support
+from popgen_rbceq2 import constants, stage_support
 from popgen_rbceq2.stages.blood_group_genotyping import filter_and_convert, genotype
 
 
@@ -83,9 +83,18 @@ class FlagBloodGroupCallQc(cpg_flow.stage.SequencingGroupStage):
         # Analysis, so record the path rather than leaving the two records unlinked; and the
         # thresholds are the values the job was actually given, not a re-read of config.
         # update_analysis_meta only receives the output path and could derive neither.
+        # posthoc_caller is recorded on every sequencing group, exome or genome, because it
+        # names the caller a POSTHOC flag in this TSV would refer to. On a genome there are no
+        # such flags and the key is inert; leaving it off there would mean the Analysis meta's
+        # shape depended on the sequencing type.
         return self.make_outputs(
             sequencing_group,
             data=outputs,
             jobs=[j],
-            meta={'blood_group_genotypes_path': geno_tsv, 'min_depth': min_depth, 'min_gq': min_gq},
+            meta={
+                'blood_group_genotypes_path': geno_tsv,
+                'min_depth': min_depth,
+                'min_gq': min_gq,
+                'posthoc_caller': constants.POSTHOC_CALLER,
+            },
         )

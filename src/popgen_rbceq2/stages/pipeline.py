@@ -16,7 +16,7 @@ framework's value with a stale hand-typed name.
 import cpg_flow.stage
 
 from popgen_rbceq2 import analysis_meta, stage_support
-from popgen_rbceq2.stages.blood_group_genotyping import combine, filter_and_convert, genotype
+from popgen_rbceq2.stages.blood_group_genotyping import combine, filter_and_convert, genotype, posthoc_genotype
 from popgen_rbceq2.stages.blood_group_qc import call_qc
 
 # --- Blood-group genotyping ----------------------------------------------------------
@@ -28,8 +28,19 @@ from popgen_rbceq2.stages.blood_group_qc import call_qc
 # below: cpg_flow matches stages on ``__name__``, which functools.wraps preserves, so the
 # reference resolves and the import stays one-way.
 
+# Exome only, and reads sequencing_group.cram directly, so it has no `requires` either. It
+# registers no Analysis: its gVCF is an intermediate the conversion stage consumes through the
+# graph, and the provenance a reader needs reaches Metamist as a POSTHOC flag on the QC TSV.
+# A genome sequencing group produces nothing here and the conversion stage below is unchanged
+# for it. See posthoc_genotype.applies_to for the gate both stages share.
+PosthocGenotypeOffTargetSites: cpg_flow.stage.StageDecorator = stage_support.wire(
+    posthoc_genotype.PosthocGenotypeOffTargetSites,
+)
+# Requires the post-hoc stage so an exome's conversion can merge its calls in where the DRAGEN
+# gVCF is silent at a defining site. cpg_flow runs the two in order per sequencing group.
 FilterAndConvertGvcfsForRbceq2: cpg_flow.stage.StageDecorator = stage_support.wire(
     filter_and_convert.FilterAndConvertGvcfsForRbceq2,
+    requires=[PosthocGenotypeOffTargetSites],
 )
 # Per-SG calls Analysis, output = the geno TSV.
 GenotypeBloodGroupsWithRbceq2: cpg_flow.stage.StageDecorator = stage_support.wire(

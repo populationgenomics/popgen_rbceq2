@@ -11,6 +11,7 @@ import pytest
 
 from popgen_rbceq2 import constants
 from popgen_rbceq2.stages import pipeline
+from popgen_rbceq2.stages.blood_group_genotyping import posthoc_genotype
 from tests.helpers import set_config
 
 pytestmark = pytest.mark.fast
@@ -45,6 +46,54 @@ def test_filter_and_convert_output_namespacing(mock_sequencing_group):
     prefix = Path('gs://bucket-tmp') / 'popgen_rbceq2' / VERSION_SEGMENT / 'FilterAndConvertGvcfsForRbceq2' / 'SG000001'
     assert str(output['vcf']) == str(prefix / 'SG000001.converted.vcf.gz')
     assert str(output['defining_sites']) == str(prefix / 'SG000001.defining_sites.tsv')
+
+
+def test_posthoc_output_namespacing(exome_sequencing_group):
+    # The conversion stage resolves the gVCF by this key, and derives the .tbi path by
+    # appending to it. Both live in tmp: the supplement is an intermediate, and the record of
+    # what it contributed is the POSTHOC flag in the QC TSV, not this file.
+    output = outputs_of(pipeline.PosthocGenotypeOffTargetSites(), exome_sequencing_group)
+    prefix = Path('gs://bucket-tmp') / 'popgen_rbceq2' / VERSION_SEGMENT / 'PosthocGenotypeOffTargetSites' / 'SG000001'
+    assert str(output['gvcf']) == str(prefix / 'SG000001.posthoc.g.vcf.gz')
+    assert str(output['index']) == str(prefix / 'SG000001.posthoc.g.vcf.gz.tbi')
+
+
+@pytest.mark.usefixtures('mock_cohort')
+def test_posthoc_registers_no_analysis():
+    # The supplement is consumed through the cpg-flow graph by path, so a Metamist record
+    # would have nothing reading it. Provenance reaches Metamist as a POSTHOC flag on the QC
+    # TSV instead, and the caller version in that stage's Analysis meta.
+    assert pipeline.PosthocGenotypeOffTargetSites().analysis_type is None
+
+
+def test_posthoc_is_skipped_for_a_genome(mock_sequencing_group):
+    # A genome gVCF is not called against a capture-target BED, so it has no edge for defining
+    # sites to fall outside of. Recalling from its CRAM would re-derive what DRAGEN already
+    # called, at the cost of a job per sequencing group.
+    assert pipeline.PosthocGenotypeOffTargetSites().expected_outputs(mock_sequencing_group) is None
+
+
+@pytest.mark.parametrize('missing', ['cram', 'gvcf'])
+def test_posthoc_is_skipped_when_an_exome_lacks_an_input(exome_sequencing_group, missing):
+    # Skipped, not failed, matching how the rest of the pipeline treats a sequencing group it
+    # cannot process. Without a CRAM there is nothing to call from; without a gVCF there are no
+    # primary calls to supplement, and the conversion stage produces nothing either.
+    setattr(exome_sequencing_group, missing, None)
+    assert pipeline.PosthocGenotypeOffTargetSites().expected_outputs(exome_sequencing_group) is None
+
+
+def test_the_conversion_stage_merges_posthoc_calls_for_exactly_the_sequencing_groups_it_runs_for(
+    mock_sequencing_group,
+    exome_sequencing_group,
+):
+    # The two stages gate on one predicate. If they could disagree, the conversion stage would
+    # ask cpg_flow for an output the post-hoc stage never produced, and the run would die at
+    # graph-build time on a subset of a cohort.
+    posthoc = pipeline.PosthocGenotypeOffTargetSites()
+    assert posthoc_genotype.applies_to(exome_sequencing_group)
+    assert posthoc.expected_outputs(exome_sequencing_group) is not None
+    assert not posthoc_genotype.applies_to(mock_sequencing_group)
+    assert posthoc.expected_outputs(mock_sequencing_group) is None
 
 
 def test_genotype_output_namespacing(mock_sequencing_group):

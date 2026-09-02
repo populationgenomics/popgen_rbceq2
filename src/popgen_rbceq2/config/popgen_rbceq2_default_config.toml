@@ -11,7 +11,11 @@ name = 'popgen_rbceq2'
 # Our release version: the trailing half of the rbceq2_<tool version>_<release> path segment
 # above the stage directories, so one release is one tree. Bump only when a pipeline change
 # alters the outputs — the tool-version half already separates rbceq2 bumps.
-version = 'v1'
+#
+# v2: the defining-sites extract gained a trailing INFO/POSTHOC column and the QC flags gained
+# the POSTHOC prefix and the src= metric. Both change every run, exome or genome, and an
+# extract written by v1 does not parse under v2 — a fresh tree is what keeps the two apart.
+version = 'v2'
 status_reporter = 'metamist'
 # driver_image =
 # sequencing_type = 'genome'
@@ -22,6 +26,15 @@ status_reporter = 'metamist'
 # passed to `rbceq2 --reference_genome`; a build with no committed resources fails at graph
 # construction. Only GRCh38 is generated today.
 genome_build = 'GRCh38'
+
+[workflow.posthoc_genotype_off_target_sites]
+# Exome sequencing groups only. Streams the CRAM from GCS over GATK's NIO support and calls
+# only the ~136kb of padded defining-site intervals, so almost nothing is read: the storage
+# below is for the localised reference (about 3Gb of fasta, .fai and .dict) and the few-Mb
+# output gVCF, not for the CRAM.
+cpu = 2
+memory = "standard"
+storage = "20Gi"
 
 [workflow.filter_and_convert_gvcfs_for_rbceq2]
 # Sized higher than the other stages: this is the only one that localises the raw gVCF
