@@ -109,16 +109,19 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
   for it to fix there — but that assumes any genome `NOCOV` site is genuinely unmappable rather
   than merely uncalled, which we have not tested.
 - Post-hoc recall assumes the CRAM and the gVCF for a sequencing group are two outputs of the
-  same DRAGEN run. The stage refuses to merge when their sample names disagree rather than
-  relabelling, because the failure it is really guarding against is a CRAM registered against
-  the wrong sequencing group, and the cost of missing that is another individual's genotypes
-  in this one's blood-group call at the sites with no other evidence. Note that the embedded
-  sample name is not reliably the sequencing-group ID — some mackenzie DRAGEN 3.7.8 outputs
-  carry an older CPG ID in both files — so the check compares the two files with each other,
-  never either against the filename.
-- Which CRAM `sequencing_group.cram` resolves to is Metamist's call, and this dataset holds
-  more than one alignment set. The design rests on it being the one the gVCF came from, and
-  the sample-name check is the only thing enforcing that.
+  same DRAGEN run, and **nothing in the pipeline enforces that**. The obvious enforcement,
+  requiring their sample names to match, was tried and rejected: in the mackenzie test exomes
+  a fraction of CRAM read groups carry a retired sequencing-group ID for the same individual,
+  because an upstream test-set script reheadered some inputs and not others. Failing on that
+  loses good data, and a genuinely swapped CRAM could carry a stale-but-matching name anyway,
+  so the check would give false confidence. The mismatch is logged. Real identity checking
+  belongs to somalier, whose output already sits beside these CRAMs, and wiring it in is the
+  obvious next step if this ever runs on data we trust less.
+- Which CRAM and gVCF `sequencing_group.cram`/`.gvcf` resolve to is Metamist's call, and this
+  dataset registers several of each per sequencing group. cpg-flow keeps whichever the API
+  returns last, with no ordering, so the pairing is not pinned by anything we control. It
+  currently lands on the DRAGEN 3.7.8 CRAM and the matching recal gVCF, which is what we want,
+  but registering another analysis would silently change it.
 
 ## The current slice.
 An implementation of RBCeq2 as a cpg-flow workflow in CPG's infrastructure, ported from the

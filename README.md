@@ -172,14 +172,15 @@ Four details that are easy to get wrong:
 The supplement is stripped to the fields the pipeline reads (GT, DP, GQ, MIN_DP, END), which
 keeps `concat` from having to reconcile two callers' definitions of tags nothing reads.
 
-The job **fails** if the CRAM and the gVCF name different samples, rather than relabelling the
-supplement to match. They are two outputs of one DRAGEN run, so disagreeing means they are not
-a matched pair, and the failure being guarded against is a CRAM registered against the wrong
-sequencing group — which would write another individual's genotypes into this one's call at
-precisely the sites with no other evidence. Note the embedded sample name is not always the
-sequencing-group ID: across the mackenzie DRAGEN 3.7.8 outputs some samples carry an older CPG
-ID in both the CRAM read group and the gVCF. That is fine, because the check compares the two
-files with each other rather than either against the filename.
+The supplement is relabelled to the primary gVCF's sample name, which `concat` requires, and a
+disagreement is **warned about, not failed on**. Failing would be the tempting reading — a CRAM
+and gVCF from one DRAGEN run should name one individual — but the read group is not usable as
+an identity check here. Across the mackenzie DRAGEN 3.7.8 test exomes it is simply stale: an
+upstream test-set script reheadered some inputs and not others, so gVCFs carry the current
+sequencing-group ID while a fraction of CRAMs still carry a retired one for the same
+individual. Rejecting those loses good data, and since a genuinely swapped CRAM could equally
+carry a stale-but-matching name, it would buy no real assurance either. Sample identity is
+somalier's job. The mismatch is logged so it stays greppable rather than silent.
 
 Two things to preserve when changing this stage:
 

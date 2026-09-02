@@ -112,19 +112,17 @@ Mechanically, as implemented:
    (`bcftools view -T <uncovered.bed> --targets-overlap 2 -e 'FORMAT/DP=0'`), strip it to
    the fields the pipeline reads, split multiallelics, and tag every kept record
    `INFO/POSTHOC=gatk-hc-<version>`.
-5. Assert the post-hoc and primary sample names are equal, then `bcftools concat -a`, which
-   merges the two indexed files in coordinate order.
+5. Relabel the supplement to the primary gVCF's sample name (warning on a mismatch, see
+   §10), then `bcftools concat -a`, which merges the two indexed files in coordinate order.
 6. Run the existing extract and conversion over `merged.vcf.gz`.
 
 Step 4's strip (`bcftools annotate -x`, keeping only END/GT/DP/GQ/MIN_DP) is what stops
 `concat` having to reconcile two callers' definitions of tags nothing downstream reads.
 Its `-e 'FORMAT/DP=0'` is what preserves `NOCOV` — see §10.
 
-Step 5 **fails** on a mismatch rather than renaming the supplement to match. The two files
-are outputs of one DRAGEN run, so a disagreement means the CRAM and the gVCF are not a
-matched pair; renaming would silently write another individual's genotypes into this one's
-call, at exactly the sites with no other evidence. `concat` also requires identical sample
-sets, so the assertion is what makes the concat legal rather than a separate concern.
+Step 5's relabel is what `concat` needs, since it requires identical sample sets. A
+mismatch is logged rather than fatal — see §10 for why the read-group name cannot serve as
+an identity check on this data.
 
 **Boundary overlap.** A post-hoc reference block can straddle a capture edge, covering
 one uncovered defining site and also one DRAGEN covers. Step 3 keeps the whole record, so
@@ -255,11 +253,19 @@ would have reached production:
   supplement record while keeping a tag nothing reads. Two carets is the correct form.
 - **An empty `-T` targets file is a hard error**, not an empty result
   (`Failed to read the targets`). The no-holes branch is required, not an optimisation.
-- **A blind sample rename was replaced by an assertion.** Across the mackenzie DRAGEN 3.7.8
-  outputs the embedded sample name differs from the sequencing-group ID in the filename for
-  some samples — the read group carries an older CPG ID — but the CRAM and its gVCF always
-  agree with each other. So a CRAM/gVCF disagreement is anomalous, and renaming would mask
-  the one case that matters: a CRAM registered against the wrong sequencing group.
+- **A sample-name assertion was tried and rejected on the evidence.** The intent was to catch
+  a CRAM registered against the wrong sequencing group. Checking the mackenzie DRAGEN 3.7.8
+  test exomes showed the signal is not usable: every recal gVCF carries the current
+  sequencing-group ID, but 4 of 10 CRAMs in the target cohort still carry a retired one for
+  the same individual, because an upstream test-set script reheadered some inputs and not
+  others. Asserting would have failed 40% of a known-good cohort, and a genuinely swapped
+  CRAM could carry a stale-but-matching name anyway. The supplement is relabelled to the
+  gVCF's name and the mismatch is logged. Identity belongs to somalier, whose output sits
+  beside these CRAMs; wiring it in is the follow-up if this runs on less trusted data.
+- **Metamist registers several CRAMs and gVCFs per sequencing group here**, and
+  `cpg_flow.metamist.get_analyses_by_sgid` keeps whichever the API returns last, unordered.
+  It currently selects the DRAGEN 3.7.8 CRAM and the matching recal gVCF — the pair we want —
+  but nothing pins that, so it is worth re-checking after any new analysis is registered.
 
 Environment facts worth keeping:
 
