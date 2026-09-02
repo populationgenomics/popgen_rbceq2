@@ -19,6 +19,26 @@ COH13420 is the only usable cohort at test level. The two 20260528 dragen cohort
 equivalent but their sequencing groups sit in the main Metamist project, so a test-level run
 cannot read them.
 
+### Scope: one capture design only
+
+**Every number below is Twist VCGS.** All ten samples are `TwistWES1VCGS1` at VCGS, confirmed
+two ways: Metamist assay metadata, and empirically from the data — the set of coordinates
+DRAGEN is silent at is a signature of the capture footprint, and all ten agree pairwise at
+Jaccard >= 0.99. A Twist/CREv2 mix would have split into two clusters.
+
+mackenzie as a whole is a mixture of Twist and several CREv2 variants
+(`AgilentCREv2WES`, `SSXTLICREV2`, `SSQXTCREV2`, `SSQXTCRE`), so **CREv2 is entirely
+unvalidated**. That matters because the ~165 off-target coordinates in the 2026-08 analysis
+were counted *per capture design* — the two designs miss different sites, so neither the hole
+count nor the recovery rate here transfers to CREv2 without measuring it.
+
+This is not a quick follow-up. The only sequencing groups in `mackenzie-test` carrying a
+DRAGEN 3.7.8 CRAM and recal gVCF pair are those same ten Twist samples. CREv2 samples exist at
+test level (COH13446 is 10x `AgilentCREv2WES`, COH13438 is 10x `SSXTLICREV2`) but none has ICA
+DRAGEN 3.7.8 output, so a CREv2 run would either need those outputs registered, or would have
+to accept whatever older CRAM/gVCF pair Metamist selects — a different alignment and calling
+combination, which tests something else.
+
 ## Outcome
 
 62 of 62 jobs succeeded, no failures, 8.9 minutes wall clock, $0.12 for the cohort.
@@ -40,7 +60,9 @@ intervals. Streaming stands.
 
 The merge found **167 to 169 defining sites per sample with no DRAGEN record at all**, against
 the ~165 the 2026-08 coverage analysis predicted from a different set of exomes. That is an
-independent check that the hole-finding measures what the analysis measured.
+independent check that the hole-finding measures what the analysis measured — for Twist. The
+hole sets are near-identical across the ten samples (Jaccard >= 0.99), which is what one
+capture design looks like and is why this cohort says nothing about CREv2.
 
 Not every hole can be filled, and that is the point of dropping zero-depth records: a site with
 no reads stays `NOCOV` rather than being dressed up as low-quality data.
@@ -128,6 +150,13 @@ and 2 of 10 is in line with RhD-negative population frequency. The residue is ro
 per sample in RHD, RHCE, C4A and C4B, some of which may be capture edges the recall could reach
 if the hole rule also treated a zero-depth primary record as silence. Worth measuring before
 acting on — it would change what `NOCOV` means for the primary caller too.
+
+**CREv2 needs its own run.** See the scope note above. The padded-sites BED is design-agnostic
+by construction — it pads every defining site rather than reading any capture BED — so there is
+no reason to expect CREv2 to fail. But the recovery *rate* is a property of the design's
+footprint and is unmeasured for it, and the 2026-08 analysis found the two designs miss
+different coordinates. Registering the ICA DRAGEN 3.7.8 outputs for a CREv2 test cohort is the
+cheapest way to get this.
 
 **HPA remains untouched.** Per-sample logs report 51 of 85 site-map systems quality-flagged,
 which looks worse than the cohort table does; 35 of those are HPA, whose database coordinates

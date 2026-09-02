@@ -108,6 +108,11 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
 - The recall is exome-only. A genome gVCF has no capture edge to stop at, so there is nothing
   for it to fix there — but that assumes any genome `NOCOV` site is genuinely unmappable rather
   than merely uncalled, which we have not tested.
+- Post-hoc recall is validated on **Twist VCGS only**. mackenzie mixes Twist with several CREv2
+  variants, and the two designs leave different defining coordinates off-target, so the measured
+  recovery rate does not transfer. The mechanism should be design-agnostic — the padded BED pads
+  every defining site and no capture BED is read anywhere — but that is an argument, not a
+  measurement. A CREv2 test cohort with DRAGEN 3.7.8 outputs registered is what would settle it.
 - Post-hoc recall assumes the CRAM and the gVCF for a sequencing group are two outputs of the
   same DRAGEN run, and **nothing in the pipeline enforces that**. The obvious enforcement,
   requiring their sample names to match, was tried and rejected: in the mackenzie test exomes
