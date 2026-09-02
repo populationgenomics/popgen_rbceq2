@@ -89,11 +89,15 @@ Only the caller stopped early, so this stage runs GATK HaplotypeCaller in GVCF m
 padded defining-site intervals. Sites more than ~250bp off both capture designs sit at ~0x and
 are not recoverable at any padding. Re-running DRAGEN across a cohort is not affordable.
 
-Measured on 10 Twist VCGS exomes: the recall lifts assessable defining coordinates from 89.7%
-to 97.4%, and a recovered site that passes is indistinguishable from a DRAGEN-called one
-(median depth 73 against 76, identical median GQ of 99), for 132s and $0.004 per sample. Those
-figures are for one capture design; CREv2 is unvalidated, and the two designs miss different
-coordinates. Full numbers and the scope limit in
+Measured on 20 exomes, 10 Twist VCGS and 10 Agilent CREv2: the recall lifts defining
+coordinates that have a covering record from 89.7% to 97.4% (Twist) and 89.8% to 97.2%
+(CREv2), for ~130s and $0.004 per sample. A recovered site that passes is indistinguishable
+from a DRAGEN-called one, with recovered depth tracking each cohort's own baseline (73 against
+76, and 141 against 150) at an identical median GQ of 99.
+
+The two designs gain the same amount but at **different sites** — hole sets agree at Jaccard
+0.99 within a design and 0.33 across them — which is what confirms the recall tracks real
+capture boundaries. Full numbers in
 [`docs/rbceq2_posthoc_exome/RESULTS.md`](docs/rbceq2_posthoc_exome/RESULTS.md).
 
 Three things to preserve when changing this stage:
