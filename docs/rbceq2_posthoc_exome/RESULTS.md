@@ -224,6 +224,54 @@ Every difference from the v2 CREv2 outputs is one of the intended changes:
 
 The Twist cohort is not re-run, for the sample-name reason above.
 
+## The v4 re-run of CREv2: the recall reaches the genotypes
+
+Batch [1136802](https://batch.hail.populationgenomics.org.au/batches/1136802), COH13446 again on
+`workflow.version = 'v4'`, after the review fixes of 2026-09-03: post-hoc records carry a FILTER
+rbceq2 accepts, the QC disregards a post-hoc block at an in-design hole, and the design gate
+keys on reference blocks. 63/63 jobs, 8.7 min, $0.11. Same inputs and cohort as v3.
+
+Every run before this one typed each recovered site as reference. HaplotypeCaller leaves FILTER
+`.` and rbceq2 excludes an allele whose defining variant is not literally `PASS`, so the 29
+post-hoc variant records in this cohort (2 to 5 per sample) reached rbceq2 in v3 and were
+discarded there. In v4 all 29 are `PASS`; none met the `LowDepth` rule (`DP<=1`). The trespass
+drop again fired on no record, and holes per sample (165 to 168) and kept records (55 to 73)
+are unchanged from v3.
+
+| | v3 | v4 |
+|---|---|---|
+| post-hoc variant records reaching rbceq2 | 29, all FILTER `.` | 29, all `PASS` |
+| geno cells identical to v3 | | 489/510 |
+| geno cells changed | | **21/510**, in 9 systems across 9 samples |
+| pheno cells changed (numeric / alphanumeric) | | 16 / 20 |
+| QC cells identical to v3 | | 510/510 |
+| cohort QC cells resting on a recovery | 234 | 234 |
+
+- **Every changed genotype rests on a recovery.** All 21 changed geno cells are on a system
+  whose QC cell carries `POSTHOC`; none changed anywhere else. The QC is byte-identical to v3
+  because it reads the extract, which the FILTER does not touch, so the flags that said "this
+  call rests on a recall" in v3 now describe calls that actually do.
+- **The systems that moved:** GYPB (4 samples, `GYPB*04` to `GYPB*04.06`, adding the
+  U+alteredU/GPB phenotype), KN (4, `KN*01.12` joining `KN*01.10`, which flips DACY/YCAD),
+  C4A and C4B (3 each, `*03` to `*01`/`*07`, extending the Ch/Rg phenotype from 2 or 4
+  antigens to 9), VEL (3, `VEL*01.01`, Vel+strong), and one each of ABO, FUT3, JK and LU.
+- **Two of those are the kind of change the flag exists for.** One sample's JK moves from
+  `JK*01/JK*02`, Jk(a+b+), to two null-allele candidates, Jk(a+b-) or Jk(a-b+), on a recovered
+  variant at chr18:45739309 with DP=81 and GQ=50. Another's LU moves from Lu(a-b+) to Lu(a+b+)
+  on recovered sites. Both are typable only because of the recall and both say so in the QC.
+- **Quality is carried by the QC flags, not by a QUAL filter, and it shows.** One sample's C4B
+  change rests on chr6:32029189 with DP=76 but GQ=1, flagged `LOWQ+POSTHOC`; the same site in
+  three other samples has GQ 99. One sample's C4A change rests on DP=4, GQ=12, also
+  `LOWQ+POSTHOC`. C4A and C4B are near-identical paralogs (see the zero-depth note below), so
+  a reader should weigh those four cells accordingly. The remaining 17 changed cells rest on
+  sites with GQ 42 to 99.
+- **A recovered variant need not change a call.** The one sample with no changed cell still
+  has 2 post-hoc variant records: its recovered alleles were already implied by the reference calls.
+
+This measures that the recall now reaches the genotypes and that every effect is labelled. It
+does not measure whether the new calls are right; there is no orthogonal typing for these
+samples. The v3 comparison above (QC counts, hole counts, gate behaviour) stands unchanged.
+
 ## Observations worth following up
 
 **Zero-depth *primary* records cannot be recovered.** Both callers were asked the same
