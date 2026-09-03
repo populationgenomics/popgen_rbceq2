@@ -13,14 +13,22 @@ from popgen_rbceq2.stages.blood_group_genotyping import posthoc_genotype
 
 # Which sites of a BED fall inside no span of another BED, as a BED.
 #
-# `awk -f <this> spans.bed sites.bed` prints the sites no span contains. A span is `[$2, $3)`,
-# 0-based half-open, so the program serves two inputs without change: the covered spans of
-# every DRAGEN record overlapping a defining site (bcftools' %END is POS + rlen - 1, which is
-# INFO/END for a reference block and POS + len(REF) - 1 for a variant, so `%POS0\t%END` is
-# that span and this containment test is the one `rbceq2_call_qc_job.GvcfRecord.covers`
+# `awk -v spans=spans.bed <this> spans.bed sites.bed` prints the sites no span contains. A span
+# is `[$2, $3)`, 0-based half-open, so the program serves two inputs without change: the covered
+# spans of every DRAGEN record overlapping a defining site (bcftools' %END is POS + rlen - 1,
+# which is INFO/END for a reference block and POS + len(REF) - 1 for a variant, so `%POS0\t%END`
+# is that span and this containment test is the one `rbceq2_call_qc_job.GvcfRecord.covers`
 # applies), and the capture design's target intervals. The two definitions of "covered" have
 # to agree — a site this calls uncovered is a site the QC would flag NOCOV — and
 # tests/test_posthoc_merge.py holds them together.
+#
+# The spans file is named by `-v spans=`, and must be, rather than being detected with the
+# usual `NR == FNR`. That idiom reads "still in the first file" only while the first file has
+# produced records, so an *empty* spans file makes awk take the sites file for the span list
+# and print nothing at all. Every caller below would then subtract the sites from themselves:
+# an empty covered.bed, which is what a gVCF with no record at any defining site produces,
+# would fill no holes and fail later blaming contig naming. `ARGIND` would say the same thing
+# more directly but is a gawk extension, and this runs under mawk.
 #
 # Extra BED columns and `track`/`browser` header lines are harmless: only $1-$3 are read, and a
 # header line becomes an empty span on a contig no site is on.
@@ -28,7 +36,7 @@ from popgen_rbceq2.stages.blood_group_genotyping import posthoc_genotype
 # Held as a plain string rather than inlined: the command below is an f-string, and every
 # brace in an awk program would have to be doubled.
 _SITES_OUTSIDE_SPANS_AWK = """
-NR == FNR { n = ++c[$1]; lo[$1, n] = $2 + 0; hi[$1, n] = $3 + 0; next }
+FILENAME == spans { n = ++c[$1]; lo[$1, n] = $2 + 0; hi[$1, n] = $3 + 0; next }
 { for (i = 1; i <= c[$1]; i++) if (lo[$1, i] <= $2 + 0 && $2 + 0 < hi[$1, i]) next; print }
 """
 
@@ -50,6 +58,15 @@ _TAG_POSTHOC_AWK = """
 _POSTHOC_HEADER_LINE = (
     '##INFO=<ID=POSTHOC,Number=1,Type=String,Description='
     '"Caller that supplied this record at a site the primary gVCF had no record for">'
+)
+
+
+# The INFO flag marking a post-hoc record whose span reaches a defining site the primary caller
+# already has a record for. Set from covered.bed inside the merge and stripped again before the
+# supplement is concatenated, so it reaches neither the merged file nor the extract.
+_COVERED_HEADER_LINE = (
+    '##INFO=<ID=COVERED,Number=0,Type=Flag,Description='
+    '"Overlaps a defining site the primary caller already has a record for">'
 )
 
 
@@ -121,10 +138,24 @@ def _merge_posthoc_commands(
     "outside" the design with DRAGEN records, and would have gated off three quarters of the
     recoveries while the run looked fine. That case fails the job.
 
-    A kept post-hoc reference block is kept whole, so one that straddles a capture edge can
-    also cover a defining site DRAGEN called. That leaves two records covering that site in
-    the merged file, which is why `resolve_coverage` prefers the record with no INFO/POSTHOC.
-    Splitting blocks on the boundary would be the alternative and is not worth it.
+    A record is selected for reaching a hole and is selected whole, so one anchored in a hole
+    can extend over a neighbouring defining site DRAGEN did call. Blood-group defining sites
+    are dense — most have another within 20bp — so this is the ordinary case near a capture
+    edge, not a corner one, and what happens next depends on what the record is.
+
+    A post-hoc **variant** that reaches a called base is dropped. Keeping it would hand rbceq2
+    two callers' alleles at one base with nothing to choose between them: a DRAGEN SNP at a
+    site, and a post-hoc deletion removing it. The QC could not report the conflict either,
+    because `resolve_coverage` prefers the primary record and so reads the site as an ordinary
+    PASS. The hole the dropped record would have filled goes back to reaching the QC as NOCOV,
+    which is the honest answer — DRAGEN wins wherever both speak, and here both spoke.
+
+    A post-hoc **reference block** that reaches a called base is kept whole. It asserts nothing
+    rbceq2 ever sees, since the conversion drops every <NON_REF>-only record before rbceq2
+    reads the file, and dropping the block instead would throw away the hole it was kept for.
+    That does leave two records covering the called site in the extract, which is why
+    `resolve_coverage` prefers the record with no INFO/POSTHOC. Splitting blocks on the
+    boundary would be the alternative and is not worth it.
 
     Fails rather than merging if the CRAM and the gVCF name different samples. They are two
     outputs of one DRAGEN run, so a disagreement means this sequencing group's inputs do not
@@ -153,8 +184,10 @@ def _merge_posthoc_commands(
 
         # The defining sites the capture design did not target, then those of them the DRAGEN
         # gVCF has no record at. Only that second set is filled.
-        awk '{_SITES_OUTSIDE_SPANS_AWK}' {design_bed} {sites_bed} > off_design_sites.bed
-        awk '{_SITES_OUTSIDE_SPANS_AWK}' covered.bed off_design_sites.bed > uncovered.bed
+        awk -v spans={design_bed} '{_SITES_OUTSIDE_SPANS_AWK}' \\
+            {design_bed} {sites_bed} > off_design_sites.bed
+        awk -v spans=covered.bed '{_SITES_OUTSIDE_SPANS_AWK}' \\
+            covered.bed off_design_sites.bed > uncovered.bed
 
         # A DRAGEN record at a site outside the design means the configured BED is not the one
         # the gVCF was called against. The likely case is a target-regions file where the gVCF
@@ -163,7 +196,7 @@ def _merge_posthoc_commands(
         sort uncovered.bed > uncovered.sorted.bed
         comm -23 off_design_sites.sorted.bed uncovered.sorted.bed > off_design_called.bed
         if [ -s off_design_called.bed ]; then
-            n_called=$(wc -l < off_design_called.bed)
+            n_called=$(wc -l < off_design_called.bed | tr -d ' ')
             echo "ERROR: DRAGEN has records at $n_called defining site(s) outside the capture design." >&2
             echo "{EXOME_DESIGN_KEY} = {design_key} is not the BED this gVCF was called against." >&2
             echo "For an Agilent design that usually means Regions configured where the gVCF" >&2
@@ -172,15 +205,27 @@ def _merge_posthoc_commands(
             exit 1
         fi
 
-        awk '{_SITES_OUTSIDE_SPANS_AWK}' covered.bed {sites_bed} > holes.bed
-        n_holes=$(wc -l < holes.bed)
-        n_fill=$(wc -l < uncovered.bed)
+        awk -v spans=covered.bed '{_SITES_OUTSIDE_SPANS_AWK}' covered.bed {sites_bed} > holes.bed
+        n_holes=$(wc -l < holes.bed | tr -d ' ')
+        n_fill=$(wc -l < uncovered.bed | tr -d ' ')
         echo "post-hoc: $n_holes defining site(s) with no DRAGEN record; $n_fill outside the" >&2
         echo "capture design and filled, $((n_holes - n_fill)) inside it and left for the QC to flag NOCOV" >&2
 
         # An empty -T file is a hard error in bcftools ("Failed to read the targets"), so the
         # no-holes case has to branch rather than fall through the same pipeline.
         if [ -s uncovered.bed ]; then
+            # The defining sites DRAGEN did cover: every site, less the holes. That is what a
+            # post-hoc record may not reach, and it is deliberately narrower than covered.bed.
+            # Marking against the DRAGEN records' whole spans would also drop a post-hoc
+            # variant that merely overlaps the tail of a long reference block, reaching no
+            # defining site DRAGEN called and so contradicting nothing rbceq2 reads.
+            sort {sites_bed} > sites.sorted.bed
+            sort holes.bed > holes.sorted.bed
+            comm -23 sites.sorted.bed holes.sorted.bed \
+                | sort -k1,1 -k2,2n | bgzip -c --threads {cpu} > called_sites.bed.gz
+            tabix -p bed called_sites.bed.gz
+            echo '{_COVERED_HEADER_LINE}' > covered_hdr.txt
+
             # rbceq2 and the extract read GT, DP, GQ, MIN_DP and END; every other tag the
             # post-hoc caller emits is dropped here. That keeps the supplement to the fields
             # the pipeline actually reads, and keeps bcftools concat from having to reconcile
@@ -196,12 +241,41 @@ def _merge_posthoc_commands(
             # for exomes entirely: a site with no reads would read LOWQ(DP=0), which says
             # "poor data" where the truth is "no data". A record carrying no DP field at all
             # is kept, since absence of the field is not proof of absence of reads.
+            #
+            # `-T uncovered.bed --targets-overlap 2` selects a record whose span reaches a
+            # hole, and selects it whole. Mode 2 asks whether the *variant* overlaps, but a
+            # gVCF record is still multiallelic here — the real ALT plus <NON_REF> — and the
+            # symbolic allele makes bcftools match on the whole record span, so a deletion
+            # anchored on the hole is selected too. That is wanted; what it drags in is
+            # handled by the COVERED mark below, not by the selection mode.
+            #
+            # INFO/COVERED marks every selected record whose span also reaches a defining
+            # site DRAGEN called. `annotate -m` matches on the record's span, not on POS, so
+            # a deletion anchored on a hole and reaching a called site one base away is
+            # marked, which is the case this whole check exists for.
             bcftools view -T uncovered.bed --targets-overlap 2 -e 'FORMAT/DP=0' -Ou {posthoc_gvcf} \\
                 | bcftools annotate -x '^INFO/END,^FORMAT/GT,FORMAT/DP,FORMAT/GQ,FORMAT/MIN_DP' -Ou - \\
                 | bcftools norm -m -any --threads {cpu} -Ou - \\
-                | bcftools annotate -h posthoc_hdr.txt -Ov - \\
+                | bcftools annotate -a called_sites.bed.gz -h covered_hdr.txt -c CHROM,FROM,TO -m COVERED \\
+                    -Ob -o posthoc_marked.bcf -
+
+            # A marked record with no INFO/END is dropped: it is a variant, or the <NON_REF>
+            # twin `norm` split off one, and either way it asserts something about a defining
+            # site DRAGEN already called, in the file rbceq2 reads. INFO/END is what tells a
+            # real reference block from that twin, and a block is kept — see the docstring.
+            n_trespass=$(bcftools view -H -i 'INFO/COVERED=1 && INFO/END="."' posthoc_marked.bcf | wc -l | tr -d ' ')
+            bcftools view -e 'INFO/COVERED=1 && INFO/END="."' -Ou posthoc_marked.bcf \\
+                | bcftools annotate -x INFO/COVERED -h posthoc_hdr.txt -Ov - \\
                 | awk -v OFS='\\t' -v tag='POSTHOC={constants.POSTHOC_CALLER}' '{_TAG_POSTHOC_AWK}' \\
                 | bgzip -c --threads {cpu} > posthoc_tagged.vcf.gz
+
+            # What was actually merged, which is not the hole count reported above: most holes
+            # yield no record at all (DP=0), and a kept variant contributes two records here,
+            # itself and its <NON_REF> twin. Reporting only the holes hid the all-zero-depth
+            # case entirely — a header-only supplement that `concat` merges silently.
+            n_kept=$(bcftools view -H posthoc_tagged.vcf.gz | wc -l | tr -d ' ')
+            echo "post-hoc: $n_kept record(s) kept over $n_fill hole(s); $n_trespass dropped for" >&2
+            echo "reaching a defining site DRAGEN called, the rest had no reads there (DP=0)" >&2
 
             # The two callers must agree on whose sample this is, and disagreeing is fatal.
             #
@@ -268,8 +342,13 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
     PosthocGenotypeOffTargetSites, which fill the defining sites the capture-target BED
     stopped DRAGEN emitting at. The design BED is named by `exome_design_bed` in this stage's
     config section and only sites outside it are filled; see `_merge_posthoc_commands` for
-    the fill rule. A genome sequencing group has no post-hoc input, never reads the key, and
-    its command is unchanged by that stage existing.
+    the fill rule. A genome sequencing group has no post-hoc input and never reads the key, so
+    nothing is merged for it and the merge is a plain rename.
+
+    Its command is not otherwise unchanged, though. Every run, genome included, now declares
+    INFO/POSTHOC on the intermediate and extracts a trailing POSTHOC column, because
+    `bcftools query` aborts on a tag the header does not declare rather than rendering `.`.
+    That is what the release version bump records.
 
     The `norm -m -any` split must stay ahead of the <NON_REF> exclusion. In a gVCF a
     variant record carries <NON_REF> as a trailing ALT (A -> G,<NON_REF>) and
@@ -339,13 +418,16 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
         # cpg_flow for an input that stage produced nothing for.
         merge_posthoc = ''
         if posthoc_genotype.applies_to(sequencing_group):
-            posthoc_path = inputs.as_path(
-                sequencing_group,
-                posthoc_genotype.PosthocGenotypeOffTargetSites,
-                key='gvcf',
-            )
+            # Both keys come from the producer, rather than the index being spelled here as
+            # the gVCF path plus '.tbi'. The merge reads the index, for the -T targeted read,
+            # so a producer that renamed it would fail inside a running job on a missing file.
+            # Reading the key it declared makes that a graph-build error instead.
+            posthoc_paths = inputs.as_dict(sequencing_group, posthoc_genotype.PosthocGenotypeOffTargetSites)
             posthoc_gvcf = b.read_input_group(
-                **{'g.vcf.gz': str(posthoc_path), 'g.vcf.gz.tbi': f'{posthoc_path}.tbi'},
+                **{
+                    'g.vcf.gz': str(posthoc_paths['gvcf']),
+                    'g.vcf.gz.tbi': str(posthoc_paths['index']),
+                },
             )['g.vcf.gz']
             design_key, design_path = exome_design_bed(self)
             design_bed = b.read_input(design_path)

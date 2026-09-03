@@ -54,7 +54,10 @@ def _queue(mocker, sequencing_group) -> MagicMock:
     batch = MagicMock()
     mocker.patch('cpg_utils.hail_batch.get_batch', return_value=batch)
     inputs = MagicMock()
-    inputs.as_path.return_value = 'gs://bucket/SG000001.posthoc.g.vcf.gz'
+    inputs.as_dict.return_value = {
+        'gvcf': 'gs://bucket/SG000001.posthoc.g.vcf.gz',
+        'index': 'gs://bucket/SG000001.posthoc.g.vcf.gz.tbi',
+    }
     pipeline.FilterAndConvertGvcfsForRbceq2().queue_jobs(sequencing_group, inputs)
     return batch
 

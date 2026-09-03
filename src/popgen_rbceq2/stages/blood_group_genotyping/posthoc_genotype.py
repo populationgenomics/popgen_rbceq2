@@ -15,6 +15,57 @@ from popgen_rbceq2 import constants, stage_support
 # edge, so recalling from its CRAM would re-derive calls DRAGEN already made.
 EXOME = 'exome'
 
+# The memory tier this stage asks for when its config section does not set one.
+MEMORY_TIER = 'standard'
+
+# Container memory per cpu, in GB, for each Hail Batch memory tier, rounded down from what the
+# tier really grants (standard is 3.75, highmem 6.5).
+#
+# The JVM heap is derived from this and not from `cpu` alone. `configure_job` takes the tier
+# from this stage's own config section, so tuning memory there without also raising cpu would
+# leave -Xmx asking for more than the container has. The job is then killed for exceeding its
+# limit, with nothing in the log naming the heap as the cause.
+_GB_PER_CPU = {'lowmem': 1, 'standard': 3, 'highmem': 6}
+
+# Held back from the heap for the rest of the JVM: thread stacks, metaspace, GC structures and
+# the direct buffers htsjdk uses for BGZF.
+_JVM_OVERHEAD_GB = 1
+
+# Below this the heap is not worth starting HaplotypeCaller on, so a cpu and memory pairing
+# that cannot reach it fails at graph-build time rather than being killed mid-run.
+_MIN_HEAP_GB = 2
+
+
+def _heap_gb(cpu: int, memory: str, section: str) -> int:
+    """The JVM heap, in GB, that fits the container this stage's cpu and memory tier give it.
+
+    Args:
+        cpu: Cores the job requests.
+        memory: Hail Batch memory tier the job requests.
+        section: This stage's config section, for the error messages.
+
+    Returns:
+        The heap size to pass as -Xmx.
+
+    Raises:
+        cpg_utils.config.ConfigError: `memory` is not one of the three tiers, or the pairing
+            leaves too little room for a usable heap.
+    """
+    if memory not in _GB_PER_CPU:
+        raise cpg_utils.config.ConfigError(
+            f'workflow.{section}.memory is {memory!r}; this stage sizes its JVM heap from the '
+            f'tier it was given, so it needs one of {sorted(_GB_PER_CPU)}. An explicit size is '
+            'not supported here, because nothing would then keep the heap inside it.'
+        )
+    heap = cpu * _GB_PER_CPU[memory] - _JVM_OVERHEAD_GB
+    if heap < _MIN_HEAP_GB:
+        raise cpg_utils.config.ConfigError(
+            f'workflow.{section} asks for cpu={cpu} with memory={memory!r}, which leaves '
+            f'{heap}GB for the JVM heap once {_JVM_OVERHEAD_GB}GB is held back for the rest of '
+            f'the JVM. HaplotypeCaller needs at least {_MIN_HEAP_GB}GB. Raise cpu, or the tier.'
+        )
+    return heap
+
 
 def applies_to(sequencing_group: cpg_flow.targets.SequencingGroup) -> bool:
     """Whether post-hoc calling runs for this sequencing group.
@@ -105,6 +156,9 @@ class PosthocGenotypeOffTargetSites(cpg_flow.stage.SequencingGroupStage):
             return None
         cfg = stage_support.config_section(self)
         cpu = cpg_utils.config.config_retrieve(['workflow', cfg, 'cpu'], 2)
+        # Read here rather than left to configure_job's own fallback, so the heap below and the
+        # container are sized from one value.
+        memory = cpg_utils.config.config_retrieve(['workflow', cfg, 'memory'], MEMORY_TIER)
         genome = cpg_utils.config.genome_build()
 
         b = cpg_utils.hail_batch.get_batch()
@@ -116,7 +170,7 @@ class PosthocGenotypeOffTargetSites(cpg_flow.stage.SequencingGroupStage):
             j,
             self,
             cpu=cpu,
-            memory='standard',
+            memory=memory,
             storage='20Gi',
             image=cpg_utils.config.image_path('gatk', constants.GATK_IMAGE_TAG),
         )
@@ -143,7 +197,7 @@ class PosthocGenotypeOffTargetSites(cpg_flow.stage.SequencingGroupStage):
         j.command(
             f"""
             set -euxo pipefail
-            gatk --java-options "-Xms{max(1, cpu - 1)}g -Xmx{max(2, cpu * 2 - 1)}g" HaplotypeCaller \\
+            gatk --java-options "-Xms1g -Xmx{_heap_gb(cpu, memory, cfg)}g" HaplotypeCaller \\
                 -R {reference.base} \\
                 -I {sequencing_group.cram!s} \\
                 -L {padded_bed} \\

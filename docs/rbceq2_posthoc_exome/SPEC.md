@@ -140,28 +140,58 @@ Mechanically, as implemented:
    fails the job, since it means the configured design is not the gVCF's.
 4. Subset the post-hoc gVCF to records reaching a hole
    (`bcftools view -T <uncovered.bed> --targets-overlap 2 -e 'FORMAT/DP=0'`), strip it to
-   the fields the pipeline reads, split multiallelics, and tag every kept record
-   `INFO/POSTHOC=gatk-hc-<version>`.
-5. Require the supplement and the primary gVCF to name the same sample, failing if they do
+   the fields the pipeline reads, and split multiallelics.
+5. Drop the post-hoc *variants* that reach a base DRAGEN called (see **Boundary overlap**
+   below), then tag every surviving record `INFO/POSTHOC=gatk-hc-<version>`.
+6. Require the supplement and the primary gVCF to name the same sample, failing if they do
    not (see §10), then `bcftools concat -a`, which merges the two indexed files in
    coordinate order.
-6. Run the existing extract and conversion over `merged.vcf.gz`.
+7. Run the existing extract and conversion over `merged.vcf.gz`.
 
 Step 4's strip (`bcftools annotate -x`, keeping only END/GT/DP/GQ/MIN_DP) is what stops
 `concat` having to reconcile two callers' definitions of tags nothing downstream reads.
 Its `-e 'FORMAT/DP=0'` is what preserves `NOCOV` — see §10.
 
-Step 5's check is what lets `concat` run at all, since it requires identical sample sets.
+Step 6's check is what lets `concat` run at all, since it requires identical sample sets.
 Relabelling the supplement would satisfy that too, and is exactly what must not happen: it
 would turn a CRAM registered against the wrong sequencing group into a silent merge of
 another individual's genotypes. A mismatch is fatal — see §10.
 
-**Boundary overlap.** A post-hoc reference block can straddle a capture edge, covering
-one uncovered defining site and also one DRAGEN covers. Step 3 keeps the whole record, so
-the merged stream can carry overlapping records at a covered site. That is harmless for
-rbceq2 (the DRAGEN record still carries the variant it read) but the QC's
-`resolve_coverage` must prefer the DRAGEN record where both cover a site — see §5. The
-implementation should not try to split blocks.
+**Boundary overlap.** A record is selected for reaching a hole and is selected whole, so one
+anchored in a hole can extend over a neighbouring defining site DRAGEN did call. Defining
+sites are dense — most have another within 20bp — so near a capture edge this is the
+ordinary case, and the two record types need opposite treatment.
+
+A post-hoc **reference block** that straddles the edge is kept whole. It asserts nothing
+rbceq2 sees, since the conversion drops every `<NON_REF>`-only record first, and dropping it
+would throw away the hole it was kept for. The merged stream then carries two records at the
+covered site, which is why `resolve_coverage` must prefer the DRAGEN one — see §5. Splitting
+blocks on the boundary is the alternative and is not worth it.
+
+A post-hoc **variant** that reaches a called base is dropped, and this was missed until
+review. Kept, it puts two callers' alleles on one base in the file rbceq2 reads: a DRAGEN SNP
+at a site, and a post-hoc deletion whose REF swallows it. The QC cannot report the conflict
+either, because `resolve_coverage` prefers the primary record and so reads the base as an
+ordinary `PASS`. The hole the dropped record would have filled returns to `NOCOV`, which is
+the honest answer — DRAGEN wins wherever both speak, and here both spoke.
+
+Two bcftools details make the drop work, and both were confirmed against the pinned 1.24
+rather than reasoned about:
+
+- `annotate -a <called_sites.bed.gz> -m COVERED` marks on a record's whole span, not its POS,
+  so a deletion anchored on a hole and reaching a called site one base away is marked. The
+  annotation source is the defining sites DRAGEN covered (every site, less the holes), not the
+  DRAGEN records' spans: marking on spans would also drop a post-hoc variant that merely clips
+  the tail of a long reference block, reaching no called defining site and contradicting
+  nothing rbceq2 reads.
+- `INFO/END` separates a real reference block from the `<NON_REF>` twin `norm -m -any` splits
+  off a variant. Filtering on `ALT="<NON_REF>"` would keep that twin, which carries the
+  deletion's own REF span and would fill the hole with an apparent hom-ref call.
+
+Note also that `--targets-overlap 2` in step 4 does *not* drop a deletion anchored on the
+hole, the way it does in the extract. The record is still multiallelic there, and the
+`<NON_REF>` allele makes bcftools match on the whole record span. That is why the drop is
+needed rather than falling out of the selection mode.
 
 ### The extract gains a `posthoc` column
 
@@ -231,9 +261,12 @@ graph, like the converted VCF (same reasoning as the debug-log decision). Proven
 reaches Metamist through the QC Analysis meta instead (§5, and record the caller version
 in the QC stage's meta alongside the thresholds).
 
-The conversion stage requests the post-hoc input only for exome sequencing groups; for a
-genome run the new stage produces nothing and the conversion job is byte-identical to
-today's.
+The conversion stage requests the post-hoc input only for exome sequencing groups, and for a
+genome run the new stage produces nothing, so nothing is merged and the merge is a plain
+rename. The genome conversion job is *not* byte-identical to today's, though: every run gains
+the `INFO/POSTHOC` header line on the intermediate and a trailing `POSTHOC` column in the
+extract, because `bcftools query` aborts on a tag the header does not declare. That is what
+the release version bump records.
 
 New config section, following the class-name convention:
 
@@ -252,10 +285,11 @@ new outputs land in a fresh `rbceq2_<tool>_<release>` tree where no old extract 
 new parser.
 
 `v2` covered the extract's INFO/POSTHOC column and the first QC flag vocabulary. `v3` covers
-two later exome-only output changes: the capture-design gate on which holes may be filled
-(§4), and the composition of provenance into a site's flag name (§6). Neither moves an output
-path, so without the bump an exome re-run would reuse its v2 files and neither would take
-effect. The two validation runs in RESULTS.md predate `v3` and wrote to the v2 tree.
+three later exome-only output changes: the capture-design gate on which holes may be filled
+(§4), dropping post-hoc variants that reach a base DRAGEN called (§4, **Boundary overlap**),
+and the composition of provenance into a site's flag name (§6). None moves an output path, so
+without the bump an exome re-run would reuse its v2 files and none would take effect. The two
+validation runs in RESULTS.md predate `v3` and wrote to the v2 tree.
 
 ## 8. Change table
 
@@ -273,6 +307,8 @@ effect. The two validation runs in RESULTS.md predate `v3` and wrote to the v2 t
 | README / PRODUCT.md / GLOSSARY.md | document `POSTHOC`, the stage, and the fill rule |
 | `tests/test_posthoc_merge.py` | new: runs the real awk against `GvcfRecord.covers` |
 | `tests/test_exome_design_gate.py` | new: the design key is required, resolved and enforced |
+| `tests/test_posthoc_trespass.py` | new: runs the real merge shell under real bcftools |
+| `tests/test_posthoc_heap.py` | new: the JVM heap tracks the configured memory tier |
 | tests | QC flag logic, severity, extract parsing, exome gating, resource generation |
 
 The reference *fasta* needed no new key — see §9.1. The capture design does: an exome run
@@ -351,8 +387,9 @@ The hole-finding rule is expressed twice — in awk in the merge, and as
 `GvcfRecord.covers` in the QC job — because the merge runs in the bcftools image, which
 has no Python package of ours. `tests/test_posthoc_merge.py` runs the real awk and asserts
 it marks exactly the sites `covers` calls uncovered, which is the only thing tying the two
-together. If bedtools turns out to be in that image, `bedtools intersect -v` replaces the
-awk and removes the duplication.
+together. bedtools is not in that image, as the environment facts above record, so the awk
+stays; `bedtools intersect -v` would replace it and remove the duplication only if a future
+image carried both, and pinning one tag to two tools has its own cost.
 
 One awk program serves both subtractions. Containment in a set of `[start, end)` spans is
 the same test whether the spans come from `%POS0\t%END` on DRAGEN records or from a vendor

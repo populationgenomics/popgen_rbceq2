@@ -76,7 +76,7 @@ def _run_uncovered(tmp_path, records: list[GvcfRecord], sites: list[tuple[str, i
     site_file = tmp_path / 'sites.bed'
     site_file.write_text(_sites_bed(sites))
     out = subprocess.run(  # noqa: S603
-        ['awk', _SITES_OUTSIDE_SPANS_AWK, str(covered), str(site_file)],  # noqa: S607
+        ['awk', '-v', f'spans={covered}', _SITES_OUTSIDE_SPANS_AWK, str(covered), str(site_file)],  # noqa: S607
         capture_output=True,
         text=True,
         check=True,
@@ -99,6 +99,16 @@ def test_a_site_on_another_contig_is_a_hole(tmp_path):
     # through to "print", not raise or silently count as covered.
     records = [_record('chr1', 900, ref='T', alt='<NON_REF>', end=1100)]
     assert _run_uncovered(tmp_path, records, [('chr2', 1000)]) == [('chr2', 1000)]
+
+
+def test_every_site_is_a_hole_when_there_are_no_covered_spans_at_all(tmp_path):
+    # The case `NR == FNR` got wrong. That idiom reads "still in the first file" only while
+    # the first file has produced records, so an empty covered.bed made awk take the sites
+    # file for the span list and print nothing: no hole filled, and the run failing later at
+    # the "no record overlaps any site" guard, blaming contig naming. An empty covered.bed is
+    # what a gVCF with no record at any defining site really produces.
+    sites = [('chr1', 1000), ('chr1', 2000), ('chr2', 300)]
+    assert _run_uncovered(tmp_path, [], sites) == sites
 
 
 @pytest.mark.parametrize('pos', [900, 1100])
@@ -154,7 +164,7 @@ def _run_outside(tmp_path, spans_bed: str, sites: list[tuple[str, int]]) -> list
     site_file = tmp_path / 'sites.bed'
     site_file.write_text(_sites_bed(sites))
     out = subprocess.run(  # noqa: S603
-        ['awk', _SITES_OUTSIDE_SPANS_AWK, str(spans), str(site_file)],  # noqa: S607
+        ['awk', '-v', f'spans={spans}', _SITES_OUTSIDE_SPANS_AWK, str(spans), str(site_file)],  # noqa: S607
         capture_output=True,
         text=True,
         check=True,
@@ -170,6 +180,13 @@ def test_a_design_interval_is_half_open(tmp_path):
     assert _run_outside(tmp_path, design, [('chr1', 1000)]) == []
     assert _run_outside(tmp_path, design, [('chr1', 1100)]) == []
     assert _run_outside(tmp_path, design, [('chr1', 1101)]) == [('chr1', 1101)]
+
+
+def test_every_site_is_off_design_when_the_design_bed_is_empty(tmp_path):
+    # Same failure through the other caller. An empty design would then look like a design
+    # that targets everything, so nothing would be eligible to fill and the run would look
+    # fine. Reported as off-design instead, the DRAGEN-called check downstream fails the job.
+    assert _run_outside(tmp_path, '', [('chr1', 1000)]) == [('chr1', 1000)]
 
 
 def test_a_design_bed_with_extra_columns_and_a_track_line_is_read_as_intervals(tmp_path):

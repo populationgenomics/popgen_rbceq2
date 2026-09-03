@@ -60,6 +60,13 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
   site", which the recall exists to fix, and "the capture targeted it and DRAGEN still said
   nothing", which is a fact about that DRAGEN run and stays `NOCOV`. The design is configured
   per run, not defaulted, and the job fails if DRAGEN has records outside it.
+- **The primary caller wins wherever both speak, including at bases a post-hoc record only
+  reaches.** A record kept for covering a hole is kept whole, so one anchored in a hole can
+  extend over a neighbouring defining site DRAGEN did call. Where that record is a variant it is
+  dropped, because keeping it would put two callers' alleles on one base in rbceq2's input with
+  nothing to choose between them, and the QC would read that base as an ordinary `PASS`. The
+  hole returns to `NOCOV`. A reference block is kept, since it asserts nothing rbceq2 sees and
+  dropping it would lose the hole it was kept for.
 - **A call resting on a recovered site is always annotated as such.** The site's QC flag name
   carries `POSTHOC`, because the antigen then rests on a different caller, without the sample's
   DRAGstr model, over reads the capture design did not target. That is a fact a

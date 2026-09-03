@@ -135,6 +135,11 @@ Only the caller stopped early, so this stage runs GATK HaplotypeCaller in GVCF m
 padded defining-site intervals. Sites more than ~250bp off both capture designs sit at ~0x and
 are not recoverable at any padding. Re-running DRAGEN across a cohort is not affordable.
 
+The GATK pin lives in [`constants.py`](src/popgen_rbceq2/constants.py), in two constants that
+have to move together: `GATK_IMAGE_TAG` selects the image, and `GATK_VERSION` is what reaches
+the QC flags as `src=gatk-hc-<version>`. The image tag carries a CPG build suffix, so it is not
+simply the version string.
+
 Measured on 20 exomes, 10 Twist VCGS and 10 Agilent CREv2: the recall lifts defining
 coordinates that have a covering record from 89.7% to 97.4% (Twist) and 89.8% to 97.2%
 (CREv2), for ~130s and $0.004 per sample. A recovered site that passes is indistinguishable
@@ -218,20 +223,42 @@ first subtraction keeps and the second drops are the off-design sites DRAGEN *di
 must be empty; a non-empty set fails the job, because it means the named design is not the one
 the gVCF was called against.
 
-A genome sequencing group has no post-hoc input, never reads the key, and its command is
-unchanged.
+A record is selected for reaching a hole and is selected *whole*, so one anchored in a hole can
+extend over a neighbouring defining site DRAGEN did call. Defining sites are dense enough that
+this is the ordinary case near a capture edge, and what happens next depends on the record:
 
-Four details that are easy to get wrong:
+- **A post-hoc variant reaching a called base is dropped.** Kept, it would put two callers'
+  alleles on one base in the file rbceq2 reads, with nothing to choose between them, and the QC
+  would still report that base as `PASS` because `resolve_coverage` prefers the primary record.
+  The hole the dropped record would have filled goes back to `NOCOV`. DRAGEN wins wherever both
+  speak, and here both spoke.
+- **A post-hoc reference block reaching a called base is kept whole.** It asserts nothing rbceq2
+  sees, since the conversion drops every `<NON_REF>`-only record first, and dropping the block
+  instead would throw away the hole it was kept for. Two records then cover the called site in
+  the extract, which is why `resolve_coverage` prefers the one with no `INFO/POSTHOC`.
+
+Mechanically the drop is an `INFO/COVERED` mark from `bcftools annotate -m`, which matches on a
+record's whole span rather than its POS, followed by removing every marked record that carries
+no `INFO/END`. Two details carry the weight. The mark's source is the defining sites DRAGEN
+covered, every site less the holes, not the DRAGEN records' spans, so a variant that merely
+clips the tail of a long reference block is left alone. And `INFO/END` is what separates a real
+reference block from the `<NON_REF>` twin `norm -m -any` splits off a variant, which carries
+the variant's own REF span and would otherwise fill the hole with an apparent hom-ref call.
+
+A genome sequencing group has no post-hoc input and never reads the design key, so nothing is
+merged for it and the merge is a plain rename. Its command is not otherwise unchanged, though:
+every run now gains the `INFO/POSTHOC` header line on the intermediate and a trailing `POSTHOC`
+column in the extract, which is why the release version bumped.
+
+Three more details that are easy to get wrong:
 
 - Hole-finding reads covered spans with `--targets-overlap 1`, not the `2` the extract uses.
   Mode 1 asks whether the **record** overlaps, which is what `%END` reports and what the QC
   counts as covering; mode 2 asks whether the **variant** does, and drops a deletion anchored on
   the site itself. Using mode 2 would make a covered site look like a hole and let a post-hoc
-  record displace a DRAGEN call.
-- A kept post-hoc reference block is kept whole, so one straddling a capture edge can also
-  reach a defining site DRAGEN called. Two records then cover that site, which is why
-  `resolve_coverage` prefers the one with no `INFO/POSTHOC`. Splitting blocks on the boundary
-  is the alternative and is not worth it.
+  record displace a DRAGEN call. Note that mode 2 does *not* have that property on an unsplit
+  gVCF record: `<NON_REF>` makes bcftools match the whole span there, which is why selecting the
+  supplement with mode 2 needs the trespass drop above.
 - **Zero-depth post-hoc records are dropped.** Given `-L`, HaplotypeCaller emits a reference
   block across the whole interval, including stretches with no reads, as `DP=0,GQ=0`. Keeping
   those would put a record over every hole and retire `NOCOV` for exomes entirely: a site with

@@ -16,12 +16,13 @@ name = 'popgen_rbceq2'
 # the POSTHOC prefix and the src= metric. Both change every run, exome or genome, and an
 # extract written by v1 does not parse under v2 — a fresh tree is what keeps the two apart.
 #
-# v3: two exome-only output changes. The merge now fills only defining sites outside the
-# cohort's capture design, so a hole inside it stays NOCOV; and a site's QC flag name carries
-# its provenance joined to its severity, so a sub-threshold recovered site reads LOWQ+POSTHOC
-# rather than LOWQ. Neither change moves an output path, so without a fresh tree an exome re-run
-# would reuse its v2 files and neither would take effect. Genome outputs are byte-identical to
-# v2; they move tree only because the release version is workflow-wide.
+# v3: three exome-only output changes. The merge now fills only defining sites outside the
+# cohort's capture design, so a hole inside it stays NOCOV; it drops a post-hoc variant whose
+# span reaches a base DRAGEN called, so that hole stays NOCOV too; and a site's QC flag name
+# carries its provenance joined to its severity, so a sub-threshold recovered site reads
+# LOWQ+POSTHOC rather than LOWQ. None moves an output path, so without a fresh tree an exome
+# re-run would reuse its v2 files and none would take effect. Genome outputs are byte-identical
+# to v2; they move tree only because the release version is workflow-wide.
 version = 'v3'
 status_reporter = 'metamist'
 # driver_image =
