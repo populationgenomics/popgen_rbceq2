@@ -53,10 +53,11 @@ class PosthocGenotypeOffTargetSites(cpg_flow.stage.SequencingGroupStage):
     because which sites are off-target is a property of the sample's capture kit and this
     stage has no reason to know it. Nothing is gained by knowing: the whole padded interval
     list is 199 regions over 136kb, so calling all of it costs the same as calling part.
-    Deciding what to *keep* is `FilterAndConvertGvcfsForRbceq2`'s job, and it decides
-    empirically per sample — a post-hoc record survives only where the DRAGEN gVCF is silent.
-    That way a capture BED that misdescribes the real footprint cannot cause a DRAGEN call to
-    be overwritten, and no capture BED is consulted anywhere.
+    Deciding what to *keep* is `FilterAndConvertGvcfsForRbceq2`'s job. It keeps a post-hoc
+    record only where the DRAGEN gVCF is silent *and* the site lies outside the cohort's
+    capture design, which that stage reads from config. Silence is judged per sample from the
+    gVCF itself, so a design BED that misdescribes the real footprint still cannot cause a
+    DRAGEN call to be overwritten; the design only ever narrows what may be filled.
 
     Three things to preserve when changing this stage:
 

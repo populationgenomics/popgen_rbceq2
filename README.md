@@ -42,6 +42,52 @@ only_stages = ["FilterAndConvertGvcfsForRbceq2", "GenotypeBloodGroupsWithRbceq2"
 Sequencing groups without a gVCF are skipped, not failed. Exome sequencing groups get one
 extra stage, `PosthocGenotypeOffTargetSites`; genome runs are unaffected by it.
 
+### An exome run must name its capture design
+
+Exome runs recover defining sites the capture never targeted, so they have to say which capture
+that was. Set `exome_design_bed` to the BED the cohort's gVCFs were called against:
+
+```toml
+[workflow]
+input_cohorts = ['COH123']
+sequencing_type = 'exome'
+
+[workflow.filter_and_convert_gvcfs_for_rbceq2]
+exome_design_bed = 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'
+```
+
+The value is a key into the `[references]` config section, the same mechanism the pipeline uses
+for the reference fasta. It is deliberately not defaulted: every default is the wrong design for
+some cohort, and a wrong design does not fail, it just recovers the wrong set of sites. An exome
+run that omits the key fails while the stage graph is built, before any job starts. Genome runs
+never read it.
+
+The keys for the designs seen so far, so you do not have to open the
+[references](https://github.com/populationgenomics/references) repo:
+
+| capture design | `exome_design_bed` value (prefix every one with `exome_probesets_hg38/`) | file |
+|---|---|---|
+| Twist Comprehensive Exome + VCGS custom content | `twist_vcgs_custom_exome_covered_targets_bed` | `Twist_VCGS_Exome_Covered_Targets_hg38.bed` |
+| Agilent SureSelect Clinical Research Exome v2 | `agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed` | `S30409818_Covered.bed` |
+
+These are the mackenzie designs, and the only two the recall has been run against end to end.
+Other vendor panels are in the same `exome_probesets_hg38` section of the references repo, under
+the same naming convention.
+
+**Where a vendor ships both, take `Covered`, not `Regions`.** They are different files: `Regions`
+is the intervals the design aims at, `Covered` is the footprint the probes actually reach, and
+DRAGEN emits over the latter. On the CREv2 validation cohort, naming `Regions` would have
+recovered 691 sites instead of 1,650. Some older designs were specified at exon resolution and
+ship a `Regions` entry only; there the choice does not arise.
+
+Naming the wrong file is caught rather than tolerated. DRAGEN emits records over exactly the
+design with no padding, so a DRAGEN record at a defining site *outside* the configured design
+means the named file is not the one the gVCF was called against, and the job fails saying so.
+That is what the `Regions`-for-`Covered` mistake trips over: 309 such sites on the CREv2 cohort.
+
+If you do not know a cohort's design, read `sequencing_library` from the sequencing-group meta
+in Metamist, and confirm the cohort is one design rather than a mix.
+
 ## How the code is laid out
 
 | path | what's in it |
@@ -151,14 +197,29 @@ to know how many columns to expect.
 #### Merging the post-hoc calls (exomes only)
 
 For an exome, this stage also merges in `PosthocGenotypeOffTargetSites`'s gVCF before the
-extract and the conversion run. The fill rule is **empirical and per sample**: a post-hoc record
-survives only at a defining site the DRAGEN gVCF has no record covering, so DRAGEN wins wherever
-both speak.
+extract and the conversion run. A post-hoc record survives at a defining site only if **both**
+tests pass:
 
-No capture BED is consulted, anywhere. The holes are found by asking the DRAGEN gVCF itself
-which defining sites it has no record spanning, so a capture BED that misdescribes the real
-footprint of a sample cannot overwrite a DRAGEN call or hide a hole. A genome sequencing group
-has no post-hoc input and its command is unchanged.
+1. **The DRAGEN gVCF has no record covering the site.** Judged per sample from the gVCF itself,
+   never from capture metadata, so a design BED that misdescribes a sample's real footprint
+   cannot overwrite a DRAGEN call or hide a hole. DRAGEN wins wherever both speak.
+2. **The site lies outside the cohort's capture design**, read from `exome_design_bed`. See
+   [naming the capture design](#an-exome-run-must-name-its-capture-design) for the key, the
+   values, and why a wrong one fails the job rather than quietly under-filling.
+
+A hole *inside* the design is left alone and reaches the QC as `NOCOV`. Recalling it would use
+a second caller to answer a question about that sample's DRAGEN run, which is a different
+question from the one this feature exists to answer. On the validation cohorts this is 4 of
+1,674 Twist recoveries and 7 of 1,657 CREv2 ones, in C4B, RHD, RHCE and A4GALT.
+
+Mechanically the two tests are one awk program run twice, subtracting the design's intervals
+from the defining sites and then the DRAGEN records' spans from what is left. The sites the
+first subtraction keeps and the second drops are the off-design sites DRAGEN *did* call, which
+must be empty; a non-empty set fails the job, because it means the named design is not the one
+the gVCF was called against.
+
+A genome sequencing group has no post-hoc input, never reads the key, and its command is
+unchanged.
 
 Four details that are easy to get wrong:
 
@@ -183,15 +244,19 @@ Four details that are easy to get wrong:
 The supplement is stripped to the fields the pipeline reads (GT, DP, GQ, MIN_DP, END), which
 keeps `concat` from having to reconcile two callers' definitions of tags nothing reads.
 
-The supplement is relabelled to the primary gVCF's sample name, which `concat` requires, and a
-disagreement is **warned about, not failed on**. Failing would be the tempting reading — a CRAM
-and gVCF from one DRAGEN run should name one individual — but the read group is not usable as
-an identity check here. Across the mackenzie DRAGEN 3.7.8 test exomes it is simply stale: an
-upstream test-set script reheadered some inputs and not others, so gVCFs carry the current
-sequencing-group ID while a fraction of CRAMs still carry a retired one for the same
-individual. Rejecting those loses good data, and since a genuinely swapped CRAM could equally
-carry a stale-but-matching name, it would buy no real assurance either. Sample identity is
-somalier's job. The mismatch is logged so it stays greppable rather than silent.
+**The job fails if the CRAM and the gVCF name different samples.** The post-hoc caller takes
+its sample name from the CRAM's read group and DRAGEN named the gVCF from the same run, so a
+mismatch means the two files this sequencing group resolves to do not describe one individual.
+Merging them would splice another person's genotypes into these calls at exactly the sites
+nothing else covers, and the result would look like an ordinary recovery.
+
+Relabelling the supplement to the gVCF's name would satisfy `concat`, which requires identical
+sample sets, and would bury that. Some mackenzie DRAGEN 3.7.8 test CRAMs do trip this benignly,
+carrying a retired sequencing-group ID for the same individual from an upstream test-set
+reheadering bug since fixed for newer additions. That is a reason to fix those inputs, not to
+weaken the check for every cohort: this is the only place the pipeline compares the two files
+it was handed, and from here a real swap and a stale header look the same. Confirm identity
+with somalier, then fix the input.
 
 Two things to preserve when changing this stage:
 
@@ -255,12 +320,43 @@ A system is `PASS`, or carries the semicolon-joined flags of its defining sites:
 | `NOCOV` | no record from either caller covers the site |
 | `DEL` | a deletion the sample carries removed the base the antigen is defined on |
 | `LOWQ` | DP or GQ below threshold, or missing |
-| `POSTHOC` | the site passes, but only the post-hoc caller reported it |
+| `POSTHOC` | the post-hoc caller supplied this site; joined to any severity with `+` |
 | `NA` | the system has no assessable defining site, so it was never checked |
 | `NOT_REPORTED` | cohort TSVs only: rbceq2 emitted no column for this system for this sample, so there was no cell to copy |
 
-Severity runs `NOCOV` > `DEL` > `LOWQ` > `POSTHOC` > `PASS`, and that is the order the checks
-are applied in. A recovered site that also fails a threshold reads as `LOWQ`, not `POSTHOC`.
+Severity runs `NOCOV` > `DEL` > `LOWQ`, and that is the order the checks are applied in. A site
+that clears both thresholds has no severity and is listed only if it was recovered.
+
+#### `POSTHOC`: the call rests on a recovered site
+
+A flag name states two independent findings about the site, joined by `+`:
+
+- **severity** — `NOCOV`, `DEL` or `LOWQ`, or absent when the site clears both thresholds;
+- **provenance** — `POSTHOC` when the post-hoc caller supplied the record, absent when the
+  primary caller did.
+
+```
+POSTHOC:1:159204893(T>C,src=gatk-hc-4.6.2.0,DP=42,GQ=99)
+LOWQ+POSTHOC:1:3774964(A>G,src=gatk-hc-4.6.2.0,block=91bp,DP=1,MIN_DP=1,GQ=3)
+```
+
+`POSTHOC` does double duty. It says the antigen rests on a different caller, without the
+sample's DRAGstr model, over reads the capture design did not target. It equally says the
+system **was not typable from the primary caller alone**: without the recall that site would
+have been `NOCOV`, so the call would not exist.
+
+The two halves are joined rather than ranked, because ranking makes one displace the other
+and a recovered site that is also poor has to report both. Ranking provenance below `LOWQ`
+would lose it wherever both apply, which on the validation cohorts is 234 of 681 reliant
+systems. Grepping `POSTHOC` finds all of them.
+
+A site that is neither poor nor recovered is not listed at all, which is what makes a bare
+`PASS` cell mean "nothing to report". `NOCOV` never carries `POSTHOC`: no record from either
+caller means there is no caller to name.
+
+A cell can therefore say both things at once. Only `POSTHOC` names is a clean recovery; a
+`LOWQ+POSTHOC` or a `POSTHOC` beside a `NOCOV` site is a recovery that is also compromised,
+and counts with the quality problems rather than the recoveries.
 
 Read a flag as two parts: the site the database defines, then what the caller reported there.
 The first field in the parentheses is always the database's allele; every later field is
@@ -286,10 +382,10 @@ POSTHOC:1:159204893(T>C,src=gatk-hc-4.6.2.0,DP=42,GQ=99)
   block may start on the site or reach it from an earlier position; either way the numbers
   describe the band, not the site, which is why `block=` is there.
 - The fifth clears both thresholds, but DRAGEN never reported this site: the exome capture
-  stopped short of it and `src=` names the caller that filled it. This is a provenance flag,
-  not a quality one, and it exists so a recovered site can never be mistaken for one the
-  primary caller supported. `src=` appears on any flag whose numbers came from the post-hoc
-  caller, so a failing recovered site reads `LOWQ:...(T>C,src=gatk-hc-4.6.2.0,DP=6,GQ=12)`.
+  stopped short of it and `src=` names the caller that filled it. It is listed despite passing
+  precisely because it was recovered. `src=` appears on any flag whose numbers came from the
+  post-hoc caller, so a failing recovered site reads
+  `LOWQ+POSTHOC:...(T>C,src=gatk-hc-4.6.2.0,DP=6,GQ=12)`.
 
 The job's log counts quality-flagged systems and post-hoc-only systems separately, so a
 successful exome run — where recovering sites is the point — does not read as a cohort that got

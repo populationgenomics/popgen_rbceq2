@@ -15,7 +15,14 @@ name = 'popgen_rbceq2'
 # v2: the defining-sites extract gained a trailing INFO/POSTHOC column and the QC flags gained
 # the POSTHOC prefix and the src= metric. Both change every run, exome or genome, and an
 # extract written by v1 does not parse under v2 — a fresh tree is what keeps the two apart.
-version = 'v2'
+#
+# v3: two exome-only output changes. The merge now fills only defining sites outside the
+# cohort's capture design, so a hole inside it stays NOCOV; and a site's QC flag name carries
+# its provenance joined to its severity, so a sub-threshold recovered site reads LOWQ+POSTHOC
+# rather than LOWQ. Neither change moves an output path, so without a fresh tree an exome re-run
+# would reuse its v2 files and neither would take effect. Genome outputs are byte-identical to
+# v2; they move tree only because the release version is workflow-wide.
+version = 'v3'
 status_reporter = 'metamist'
 # driver_image =
 # sequencing_type = 'genome'
@@ -37,6 +44,15 @@ memory = "standard"
 storage = "20Gi"
 
 [workflow.filter_and_convert_gvcfs_for_rbceq2]
+# An exome run must also set `exome_design_bed` here, in its own config: the [references] key
+# of the capture design BED its gVCFs were called against, e.g.
+# 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'. Post-hoc calls fill only
+# the defining sites that design never targeted; a hole inside it reaches the QC as NOCOV.
+#
+# Deliberately not defaulted. Every default is the wrong design for some cohort, and being
+# wrong here is silent: it does not fail, it just fills the wrong set of sites. A run that
+# does not name a design fails while the graph is built. Genome runs never read the key.
+#
 # Sized higher than the other stages: this is the only one that localises the raw gVCF
 # (12-15Gb), and it needs disk for that plus the filtered output.
 cpu = 4

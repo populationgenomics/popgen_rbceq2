@@ -11,6 +11,7 @@ import pytest
 
 from popgen_rbceq2.jobs.rbceq2_call_qc_job import (
     DELETED,
+    FLAG_JOIN,
     LOWQ,
     NOCOV,
     NOT_ASSESSED,
@@ -19,12 +20,14 @@ from popgen_rbceq2.jobs.rbceq2_call_qc_job import (
     Coverage,
     GvcfRecord,
     build_qc_tsv,
+    flag_severity,
     flag_site,
     flags_by_system,
     is_posthoc_only,
     load_site_systems,
     parse_extract,
     resolve_coverage,
+    rests_on_posthoc,
 )
 from popgen_rbceq2.scripts import bg_db
 from popgen_rbceq2.scripts.bg_db import DefiningSite
@@ -614,11 +617,11 @@ def test_a_long_deletion_in_a_del_flag_is_rendered_as_a_length():
 CALLER = 'gatk-hc-4.6.2.0'
 
 
-def test_a_passing_site_recovered_from_the_cram_is_flagged_posthoc_not_pass():
-    """A good-quality site the primary caller never reported is POSTHOC, never a silent PASS."""
-    # This is the whole point of the flag. The exome capture stopped DRAGEN emitting here, so
-    # the antigen rests on a re-call of untargeted reads by a different caller. Left as PASS it
-    # would be indistinguishable from a site DRAGEN called well.
+def test_a_passing_site_recovered_from_the_cram_is_flagged_posthoc_not_dropped():
+    """A good-quality recovered site is POSTHOC, never omitted like a clean primary one."""
+    # A primary site with nothing wrong yields no flag at all. A recovered one is listed even
+    # though it passes, because the antigen resting on a re-call of untargeted reads is itself
+    # the finding, and the reader needs the coordinate and the numbers behind it.
     records = [_record('chr1', 159204893, 'T', 'C', dp=42, gq=99, posthoc=CALLER)]
     site = _site(chrom='chr1', pos=159204893, ref='T', alt='C', system='FY')
     coverage = _resolved(records, 'chr1', 159204893)
@@ -626,15 +629,28 @@ def test_a_passing_site_recovered_from_the_cram_is_flagged_posthoc_not_pass():
     assert flag_site(site, coverage, MIN_DEPTH, MIN_GQ) == expected
 
 
-def test_a_recovered_site_that_fails_a_threshold_is_lowq_and_still_names_the_caller():
-    """LOWQ outranks POSTHOC, and src= still says whose numbers were judged."""
-    # The quality problem is the more important thing to report; the provenance is secondary
-    # and moves into the metrics rather than replacing the prefix.
+def test_a_recovered_site_below_threshold_reports_both_findings():
+    """The regression this design exists for: severity must not displace provenance."""
+    # Ranking the two would report only LOWQ here, and nothing would say the call rests on a
+    # recovery. On the validation cohorts that hid the reliance for 234 of 681 systems. Both
+    # are properties of this site, so both are in this site's flag name.
     records = [_record('chr1', 159204893, 'T', 'C', dp=6, gq=12, posthoc=CALLER)]
     site = _site(chrom='chr1', pos=159204893, ref='T', alt='C', system='FY')
     coverage = _resolved(records, 'chr1', 159204893)
-    expected = f'{LOWQ}:1:159204893(T>C,src={CALLER},DP=6,GQ=12)'
+    expected = f'{LOWQ}{FLAG_JOIN}{POSTHOC}:1:159204893(T>C,src={CALLER},DP=6,GQ=12)'
     assert flag_site(site, coverage, MIN_DEPTH, MIN_GQ) == expected
+    assert rests_on_posthoc(expected)
+    assert flag_severity(expected) == LOWQ
+
+
+def test_a_recovered_deletion_reports_both_findings_too():
+    """DEL composes with POSTHOC the same way LOWQ does."""
+    records = [_record('chr1', 3774961, 'CATGA', 'C', gt='0/1', dp=30, gq=50, posthoc=CALLER)]
+    coverage = _resolved(records, 'chr1', 3774964)
+    flag = flag_site(_site(), coverage, MIN_DEPTH, MIN_GQ)
+    assert flag is not None
+    assert flag.startswith(f'{DELETED}{FLAG_JOIN}{POSTHOC}:')
+    assert flag_severity(flag) == DELETED
 
 
 def test_a_recovered_reference_block_reports_its_span_and_its_caller():
@@ -644,6 +660,44 @@ def test_a_recovered_reference_block_reports_its_span_and_its_caller():
     coverage = _resolved(records, 'chr1', 159204893)
     expected = f'{POSTHOC}:1:159204893(T>C,src={CALLER},block=151bp,DP=42,MIN_DP=38,GQ=99)'
     assert flag_site(site, coverage, MIN_DEPTH, MIN_GQ) == expected
+
+
+def test_a_site_neither_caller_covered_carries_no_provenance():
+    """NOCOV never composes with POSTHOC: no record means no caller to name."""
+    flag = flag_site(_site(), None, MIN_DEPTH, MIN_GQ)
+    assert flag is not None
+    assert flag == f'{NOCOV}:1:3774964(A>G)'
+    assert not rests_on_posthoc(flag)
+
+
+def test_a_system_with_no_recovered_site_rests_on_nothing_recovered():
+    """Genome runs and fully-covered exome systems are untouched by the annotation."""
+    records = [_record('chr1', 3774964, 'A', 'G', dp=40, gq=99)]
+    flags, _ = flags_by_system([_site()], records, MIN_DEPTH, MIN_GQ)
+    assert flags['VEL'] == PASS
+    assert not rests_on_posthoc(flags['VEL'])
+
+
+@pytest.mark.parametrize(
+    ('cell', 'expected'),
+    [
+        (f'{POSTHOC}:1:159204893(T>C,src={CALLER},DP=42,GQ=99)', True),
+        (f'{LOWQ}{FLAG_JOIN}{POSTHOC}:1:159204893(T>C,src={CALLER},DP=1,GQ=3)', True),
+        (f'{DELETED}{FLAG_JOIN}{POSTHOC}:1:3774964(A>G,src={CALLER},DP=30,GQ=50)', True),
+        # A recovery anywhere in the cell counts, even beside a site neither caller covered.
+        (f'{NOCOV}:1:25272548(A>G);{POSTHOC}:1:25290763(C>T,src={CALLER},DP=55,GQ=99)', True),
+        (f'{LOWQ}:1:3774964(A>G,DP=8,GQ=45)', False),
+        (f'{NOCOV}:1:3774964(A>G)', False),
+        (PASS, False),
+        (NOT_ASSESSED, False),
+    ],
+)
+def test_rests_on_posthoc_finds_every_call_that_needed_the_recall(cell, expected):
+    """The annotation, read back off a cell: did this system need the post-hoc caller?"""
+    # Equivalently, was it typable from the primary caller alone. A quality flag on the
+    # recovered site must not hide the answer, which is the whole reason the two findings are
+    # joined in the flag name rather than ranked against each other.
+    assert rests_on_posthoc(cell) is expected
 
 
 def test_a_primary_record_is_preferred_over_a_posthoc_block_reaching_the_same_site():
@@ -687,8 +741,12 @@ def test_a_site_neither_caller_covers_is_still_nocov():
         (f'{POSTHOC}:1:159204893(T>C,src={CALLER},DP=42,GQ=99)', True),
         # Several recovered sites in one system is still a recovery, not a quality problem.
         (f'{POSTHOC}:1:159204893(T>C,DP=42,GQ=99);{POSTHOC}:1:159204900(G>A,DP=40,GQ=99)', True),
-        # One genuine quality problem anywhere in the cell makes the system quality-flagged.
+        # One genuine quality problem anywhere in the cell makes the system quality-flagged,
+        # even though its flags still say the call rests on recovered data.
         (f'{POSTHOC}:1:159204893(T>C,DP=42,GQ=99);{LOWQ}:1:159204900(G>A,DP=4,GQ=9)', False),
+        (f'{LOWQ}{FLAG_JOIN}{POSTHOC}:1:159204893(T>C,DP=1,GQ=3)', False),
+        (f'{NOCOV}:1:159204900(G>A);{POSTHOC}:1:159204893(T>C,DP=42,GQ=99)', False),
+        # A quality flag with no provenance is a primary-caller problem, not a recovery.
         (f'{LOWQ}:1:3774964(A>G,DP=8,GQ=45)', False),
         (f'{NOCOV}:1:3774964(A>G)', False),
         (PASS, False),

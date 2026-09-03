@@ -11,17 +11,23 @@ import hailtop.batch.resource
 from popgen_rbceq2 import constants, stage_support
 from popgen_rbceq2.stages.blood_group_genotyping import posthoc_genotype
 
-# Which allele-defining sites the primary gVCF says nothing about, as a BED.
+# Which sites of a BED fall inside no span of another BED, as a BED.
 #
-# Reads the covered spans of every record overlapping a defining site, then prints the sites
-# no span contains. A span is `[POS0, END)`: bcftools' %END is POS + rlen - 1, which is
-# INFO/END for a reference block and POS + len(REF) - 1 for a variant, so this containment
-# test is the same one `rbceq2_call_qc_job.GvcfRecord.covers` applies. The two have to agree —
-# a site this calls uncovered is a site the QC would flag NOCOV.
+# `awk -f <this> spans.bed sites.bed` prints the sites no span contains. A span is `[$2, $3)`,
+# 0-based half-open, so the program serves two inputs without change: the covered spans of
+# every DRAGEN record overlapping a defining site (bcftools' %END is POS + rlen - 1, which is
+# INFO/END for a reference block and POS + len(REF) - 1 for a variant, so `%POS0\t%END` is
+# that span and this containment test is the one `rbceq2_call_qc_job.GvcfRecord.covers`
+# applies), and the capture design's target intervals. The two definitions of "covered" have
+# to agree — a site this calls uncovered is a site the QC would flag NOCOV — and
+# tests/test_posthoc_merge.py holds them together.
+#
+# Extra BED columns and `track`/`browser` header lines are harmless: only $1-$3 are read, and a
+# header line becomes an empty span on a contig no site is on.
 #
 # Held as a plain string rather than inlined: the command below is an f-string, and every
 # brace in an awk program would have to be doubled.
-_UNCOVERED_SITES_AWK = """
+_SITES_OUTSIDE_SPANS_AWK = """
 NR == FNR { n = ++c[$1]; lo[$1, n] = $2 + 0; hi[$1, n] = $3 + 0; next }
 { for (i = 1; i <= c[$1]; i++) if (lo[$1, i] <= $2 + 0 && $2 + 0 < hi[$1, i]) next; print }
 """
@@ -54,9 +60,46 @@ _POSTHOC_HEADER_LINE = (
 _EXTRACT_FORMAT = r'%CHROM\t%POS\t%REF\t%ALT\t%INFO/END\t[%GT\t%DP\t%GQ\t%MIN_DP]\t%INFO/POSTHOC\n'
 
 
+# The stage config key naming the capture design an exome cohort was called against, as a key
+# into the `[references]` section, e.g.
+# `exome_probesets_hg38/agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed`.
+# Required for an exome run; a genome run never reads it.
+EXOME_DESIGN_KEY = 'exome_design_bed'
+
+
+def exome_design_bed(stage: cpg_flow.stage.Stage) -> tuple[str, str]:
+    """The reference key and path of the capture design BED an exome run fills holes outside of.
+
+    Read at graph-build time, so a run missing it fails before a job starts rather than on the
+    first exome sequencing group's merge.
+
+    Args:
+        stage: The conversion stage, whose config section holds the key.
+
+    Returns:
+        The `[references]` key as configured, and the path it resolves to.
+
+    Raises:
+        cpg_utils.config.ConfigError: The key is not set, or names no reference.
+    """
+    section = stage_support.config_section(stage)
+    try:
+        key = cpg_utils.config.config_retrieve(['workflow', section, EXOME_DESIGN_KEY])
+    except cpg_utils.config.ConfigError as e:
+        raise cpg_utils.config.ConfigError(
+            f'An exome run needs workflow.{section}.{EXOME_DESIGN_KEY}: the [references] key of the '
+            'capture design BED the gVCFs were called against, e.g. '
+            "'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'. Post-hoc calls fill "
+            'defining sites only outside that design.'
+        ) from e
+    return key, cpg_utils.config.reference_path(key)
+
+
 def _merge_posthoc_commands(
     posthoc_gvcf: str,
     sites_bed: str,
+    design_bed: str,
+    design_key: str,
     cpu: int,
 ) -> str:
     """Shell to fill the primary gVCF's blind spots from the post-hoc caller's gVCF.
@@ -64,23 +107,35 @@ def _merge_posthoc_commands(
     Reads `dragen.vcf.gz` and writes `merged.vcf.gz`, which is what the extract and the
     conversion then run over.
 
-    The fill is empirical and per sample: a post-hoc record survives only where the DRAGEN
-    gVCF has no record covering a defining site, so DRAGEN wins wherever both speak. No
-    capture BED is consulted anywhere, which is deliberate — a BED that misdescribes the real
-    footprint of a sample's capture could otherwise overwrite a DRAGEN call or miss a hole.
+    The fill is empirical and per sample, restricted to the capture design: a post-hoc record
+    survives only at a defining site that lies outside the design's intervals *and* that the
+    DRAGEN gVCF has no record covering. DRAGEN wins wherever both speak, and a hole inside the
+    design is left as it is, to reach the QC as NOCOV, because a site the design targeted and
+    DRAGEN still said nothing about is a question about that sample's DRAGEN run, not one a
+    second caller should answer.
+
+    The design BED has to be the one the gVCF was called against, and this is checked: DRAGEN
+    emits records over exactly the target BED (no padding), so a DRAGEN record at a defining
+    site outside the configured design means the wrong file is configured — on the validation
+    cohorts a target-regions file in place of the probe-footprint one leaves 309 defining sites
+    "outside" the design with DRAGEN records, and would have gated off three quarters of the
+    recoveries while the run looked fine. That case fails the job.
 
     A kept post-hoc reference block is kept whole, so one that straddles a capture edge can
     also cover a defining site DRAGEN called. That leaves two records covering that site in
     the merged file, which is why `resolve_coverage` prefers the record with no INFO/POSTHOC.
     Splitting blocks on the boundary would be the alternative and is not worth it.
 
-    The supplement is relabelled to the primary gVCF's sample name, which `concat` requires,
-    and a disagreement is warned about rather than failed on. See the comment on the check for
-    why the read-group name is not usable as an identity check here.
+    Fails rather than merging if the CRAM and the gVCF name different samples. They are two
+    outputs of one DRAGEN run, so a disagreement means this sequencing group's inputs do not
+    describe one individual, and merging would splice another person's genotypes into the
+    calls at exactly the sites nothing else covers.
 
     Args:
         posthoc_gvcf: Localised post-hoc gVCF from PosthocGenotypeOffTargetSites.
         sites_bed: The committed defining-sites BED.
+        design_bed: Localised capture design BED the gVCF was called against.
+        design_key: The `[references]` key `design_bed` came from, for the error message.
         cpu: Threads to give the BGZF steps.
 
     Returns:
@@ -95,12 +150,37 @@ def _merge_posthoc_commands(
         bcftools index -t --threads {cpu} dragen.vcf.gz
         bcftools query -T {sites_bed} --targets-overlap 1 \\
             -f '%CHROM\\t%POS0\\t%END\\n' dragen.vcf.gz > covered.bed
-        awk '{_UNCOVERED_SITES_AWK}' covered.bed {sites_bed} > uncovered.bed
+
+        # The defining sites the capture design did not target, then those of them the DRAGEN
+        # gVCF has no record at. Only that second set is filled.
+        awk '{_SITES_OUTSIDE_SPANS_AWK}' {design_bed} {sites_bed} > off_design_sites.bed
+        awk '{_SITES_OUTSIDE_SPANS_AWK}' covered.bed off_design_sites.bed > uncovered.bed
+
+        # A DRAGEN record at a site outside the design means the configured BED is not the one
+        # the gVCF was called against. The likely case is a target-regions file where the gVCF
+        # used the probe footprint, which would quietly gate off most of the recoveries.
+        sort off_design_sites.bed > off_design_sites.sorted.bed
+        sort uncovered.bed > uncovered.sorted.bed
+        comm -23 off_design_sites.sorted.bed uncovered.sorted.bed > off_design_called.bed
+        if [ -s off_design_called.bed ]; then
+            n_called=$(wc -l < off_design_called.bed)
+            echo "ERROR: DRAGEN has records at $n_called defining site(s) outside the capture design." >&2
+            echo "{EXOME_DESIGN_KEY} = {design_key} is not the BED this gVCF was called against." >&2
+            echo "For an Agilent design that usually means Regions configured where the gVCF" >&2
+            echo "used Covered. First sites:" >&2
+            head -n 10 off_design_called.bed >&2
+            exit 1
+        fi
+
+        awk '{_SITES_OUTSIDE_SPANS_AWK}' covered.bed {sites_bed} > holes.bed
+        n_holes=$(wc -l < holes.bed)
+        n_fill=$(wc -l < uncovered.bed)
+        echo "post-hoc: $n_holes defining site(s) with no DRAGEN record; $n_fill outside the" >&2
+        echo "capture design and filled, $((n_holes - n_fill)) inside it and left for the QC to flag NOCOV" >&2
 
         # An empty -T file is a hard error in bcftools ("Failed to read the targets"), so the
         # no-holes case has to branch rather than fall through the same pipeline.
         if [ -s uncovered.bed ]; then
-            echo "post-hoc: filling $(wc -l < uncovered.bed) defining site(s) with no DRAGEN record" >&2
             # rbceq2 and the extract read GT, DP, GQ, MIN_DP and END; every other tag the
             # post-hoc caller emits is dropped here. That keeps the supplement to the fields
             # the pipeline actually reads, and keeps bcftools concat from having to reconcile
@@ -123,37 +203,37 @@ def _merge_posthoc_commands(
                 | awk -v OFS='\\t' -v tag='POSTHOC={constants.POSTHOC_CALLER}' '{_TAG_POSTHOC_AWK}' \\
                 | bgzip -c --threads {cpu} > posthoc_tagged.vcf.gz
 
-            # The supplement is relabelled to the primary gVCF's sample, which concat requires,
-            # and a disagreement is reported rather than treated as fatal.
+            # The two callers must agree on whose sample this is, and disagreeing is fatal.
             #
-            # It would be tempting to fail here instead, on the reasoning that a CRAM and a
-            # gVCF from one DRAGEN run should name one individual and a mismatch means a CRAM
-            # registered against the wrong sequencing group. The data does not support using
-            # this signal that way. Across the mackenzie DRAGEN 3.7.8 test exomes the read
-            # group is simply stale: an upstream test-set script reheadered some inputs and
-            # not others, so gVCFs carry the current sequencing-group ID while a fraction of
-            # CRAMs still carry a retired one, for the same individual. Treating that as an
-            # identity check rejects good data and, because a swapped CRAM could equally carry
-            # a stale-but-matching name, buys no real assurance. Sample identity is somalier's
-            # job, and its output already sits beside these CRAMs.
+            # The post-hoc caller takes its sample name from the CRAM's read group and DRAGEN
+            # named the gVCF from the same run, so a mismatch means the CRAM and the gVCF this
+            # sequencing group resolves to do not describe one individual. Merging them would
+            # splice another person's genotypes into this one's calls at exactly the sites
+            # nothing else covers, and the result would look like an ordinary recovery.
             #
-            # The mismatch is still worth saying out loud, so it is greppable in the job log
-            # rather than silent.
+            # Relabelling the supplement instead would satisfy `concat`, which requires
+            # identical sample sets, and would bury that. Some mackenzie DRAGEN 3.7.8 test
+            # CRAMs do trip this benignly, carrying a retired sequencing-group ID for the same
+            # individual from an upstream test-set reheadering bug that is fixed for newer
+            # additions. That is a reason to fix those inputs, not to weaken the check for
+            # every cohort: this is the only place the pipeline compares the two files it was
+            # handed, and a real swap and a stale header are indistinguishable from here.
             posthoc_sample=$(bcftools query -l posthoc_tagged.vcf.gz)
             dragen_sample=$(bcftools query -l dragen.vcf.gz)
             if [ "$posthoc_sample" != "$dragen_sample" ]; then
-                echo "WARNING: post-hoc sample name mismatch, relabelling to the gVCF's." >&2
+                echo "ERROR: the post-hoc calls and the gVCF name different samples." >&2
                 echo "  CRAM/post-hoc: $posthoc_sample" >&2
-                echo "  primary gVCF:  $dragen_sample  <- used" >&2
-                echo "Expected when a CRAM's read group was never updated to the current" >&2
-                echo "sequencing-group ID. Confirm with somalier if identity is in doubt." >&2
+                echo "  primary gVCF:  $dragen_sample" >&2
+                echo "The CRAM and gVCF registered for this sequencing group are not from one" >&2
+                echo "DRAGEN run of one individual. Either the CRAM is registered against the" >&2
+                echo "wrong sequencing group, or its read group was never updated to the" >&2
+                echo "current ID. Check somalier, then fix the input; do not merge." >&2
+                exit 1
             fi
-            printf '%s\\n' "$dragen_sample" > sample.txt
-            bcftools reheader -s sample.txt -o posthoc_renamed.vcf.gz posthoc_tagged.vcf.gz
-            bcftools index -t --threads {cpu} posthoc_renamed.vcf.gz
-            bcftools concat -a --threads {cpu} -Oz -o merged.vcf.gz dragen.vcf.gz posthoc_renamed.vcf.gz
+            bcftools index -t --threads {cpu} posthoc_tagged.vcf.gz
+            bcftools concat -a --threads {cpu} -Oz -o merged.vcf.gz dragen.vcf.gz posthoc_tagged.vcf.gz
         else
-            echo "post-hoc: every defining site has a DRAGEN record; nothing to fill" >&2
+            echo "post-hoc: no defining site outside the capture design lacks a DRAGEN record; nothing to fill" >&2
             mv dragen.vcf.gz merged.vcf.gz
         fi
     """
@@ -186,9 +266,10 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
 
     For an exome sequencing group this stage also merges in the post-hoc calls from
     PosthocGenotypeOffTargetSites, which fill the defining sites the capture-target BED
-    stopped DRAGEN emitting at. See `_merge_posthoc_commands` for the fill rule. A genome
-    sequencing group has no post-hoc input and its command is unchanged by that stage
-    existing.
+    stopped DRAGEN emitting at. The design BED is named by `exome_design_bed` in this stage's
+    config section and only sites outside it are filled; see `_merge_posthoc_commands` for
+    the fill rule. A genome sequencing group has no post-hoc input, never reads the key, and
+    its command is unchanged by that stage existing.
 
     The `norm -m -any` split must stay ahead of the <NON_REF> exclusion. In a gVCF a
     variant record carries <NON_REF> as a trailing ALT (A -> G,<NON_REF>) and
@@ -266,7 +347,9 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
             posthoc_gvcf = b.read_input_group(
                 **{'g.vcf.gz': str(posthoc_path), 'g.vcf.gz.tbi': f'{posthoc_path}.tbi'},
             )['g.vcf.gz']
-            merge_posthoc = _merge_posthoc_commands(str(posthoc_gvcf), str(sites_bed), cpu)
+            design_key, design_path = exome_design_bed(self)
+            design_bed = b.read_input(design_path)
+            merge_posthoc = _merge_posthoc_commands(str(posthoc_gvcf), str(sites_bed), str(design_bed), design_key, cpu)
         else:
             merge_posthoc = '        mv dragen.vcf.gz merged.vcf.gz'
 

@@ -13,7 +13,20 @@ the semicolon-joined flags of the system's defining sites:
     LOWQ:1:3774964(A>G,DP=19,GQ=15)                        a call at the site itself
     DEL:1:3774964(A>G,del=CATGA>C,GT=0/1,DP=30,GQ=50)      a deletion removed the base
     LOWQ:1:3774964(A>G,block=101bp,DP=26,MIN_DP=19,GQ=15)  a reference block covers it
-    POSTHOC:1:159204893(T>C,src=gatk-hc-4.6.2.0,DP=42,GQ=99)  recovered from the CRAM
+
+A flag name states two independent findings about the site, joined by `+`: its **severity**
+(NOCOV, DEL or LOWQ, or absent when the site is fine) and its **provenance** (POSTHOC when
+the post-hoc caller supplied the record, absent when the primary one did).
+
+    POSTHOC:1:159204893(T>C,src=gatk-hc-4.6.2.0,DP=42,GQ=99)
+    LOWQ+POSTHOC:1:3774964(A>G,src=gatk-hc-4.6.2.0,block=91bp,DP=1,MIN_DP=1,GQ=3)
+
+The halves are joined rather than ranked, because ranking makes one displace the other and a
+recovered site that is also poor has to report both. So grepping `POSTHOC` finds every call
+that rests on recovered data, and equivalently every system that was not typable from the
+primary caller alone; `rests_on_posthoc` answers the same question on a whole cell. A site
+that is neither poor nor recovered is not listed at all, which is what makes a bare `PASS`
+cell mean "nothing to report".
 
 Within the parentheses the first field is always the allele the db defines the antigen on,
 and every later field is `key=value`. Which keys appear says what the numbers describe,
@@ -50,14 +63,26 @@ DELETED = 'DEL'
 # base of DP/GQ cannot speak to (ABCC1, ATP11C and CD99 at rbceq2 2.4.3). Never assessed,
 # so neither PASS nor LOWQ is honest.
 NOT_ASSESSED = 'NA'
-# The site has no record from the primary caller, and the value reported for it comes from the
-# post-hoc caller instead (see PosthocGenotypeOffTargetSites and the merge in
-# FilterAndConvertGvcfsForRbceq2). Its DP and GQ clear the thresholds, so this is not a
-# quality finding — it is a provenance one. It is a flag rather than a PASS because a
-# recovered site must never read as though the primary caller supported the antigen: the
-# supplement is a different caller, without the sample's DRAGstr model, on reads the capture
-# design did not target.
+# The primary caller had no record at this site and the value came from the post-hoc caller
+# instead (see PosthocGenotypeOffTargetSites and the merge in FilterAndConvertGvcfsForRbceq2).
+#
+# This is provenance, and like severity it is a property of the site, so it lives in the site's
+# own flag name. A recovered site must never read as though the primary caller supported the
+# antigen: the supplement is a different caller, without the sample's DRAGstr model, on reads
+# the capture design did not target. It says the same thing from the other side too — that the
+# system was not typable without the recall — which is worth reporting even where the recovered
+# site is perfectly good.
+#
+# Provenance is joined to severity rather than ranked against it. The two are independent
+# findings, and ranking them makes one displace the other: a recovered site that is also
+# sub-threshold would report only LOWQ, which on the validation cohorts hid the recovery for
+# 234 of 681 reliant systems.
 POSTHOC = 'POSTHOC'
+
+# Joins the severity and provenance halves of a flag name, as in `LOWQ+POSTHOC`. Neither `:`
+# nor `;` nor `,` can serve: those already separate the name from the coordinate, one site
+# flag from the next, and one metric from the next.
+FLAG_JOIN = '+'
 
 # Alleles longer than this are rendered as a length in the flag; the FY and XK large
 # indels carry ~200-base REFs that would otherwise dominate the cell.
@@ -404,10 +429,9 @@ def _render_metrics(coverage: Coverage) -> str:
         `key=value`, so which keys appear says what the numbers describe. A missing metric
         renders as `.`, to distinguish it from a reported zero.
 
-        A record from the post-hoc caller leads with `src=<caller>-<version>`, whatever the
-        flag's prefix. The prefix carries the severity and `src=` the provenance, so a
-        recovered site that also fails a threshold reads as the failure it is (`LOWQ`) while
-        still naming the caller whose numbers were judged.
+        A record from the post-hoc caller leads with `src=<caller>-<version>`. The flag name
+        says *that* the site was recovered; `src=` says by which caller and version, so a
+        version bump is visible in the output rather than only in the code.
     """
     record = coverage.record
     depth = f'DP={_render_int(coverage.dp)}'
@@ -423,8 +447,55 @@ def _render_metrics(coverage: Coverage) -> str:
     return f'{source}{observed}{depth},GQ={_render_int(coverage.gq)}'
 
 
+def flag_name(severity: str | None, *, recovered: bool) -> str | None:
+    """Join a site's severity and provenance into one flag name.
+
+    Args:
+        severity: NOCOV, DEL or LOWQ, or None when the site clears both thresholds.
+        recovered: Whether the post-hoc caller supplied the record.
+
+    Returns:
+        The two joined by `+` when both apply, whichever applies alone, or None when neither
+        does — a primary site at adequate quality, which is not listed in the cell.
+    """
+    parts = [part for part in (severity, POSTHOC if recovered else None) if part is not None]
+    return FLAG_JOIN.join(parts) if parts else None
+
+
+def flag_severity(flag: str) -> str | None:
+    """The severity half of one site flag, or None if the site only carries provenance.
+
+    Args:
+        flag: One site flag from a QC cell, e.g. `LOWQ+POSTHOC:1:3774964(...)`.
+
+    Returns:
+        NOCOV, DEL or LOWQ, or None for a bare POSTHOC flag.
+    """
+    names = [name for name in flag.split(':', 1)[0].split(FLAG_JOIN) if name != POSTHOC]
+    return names[0] if names else None
+
+
+def rests_on_posthoc(cell: str) -> bool:
+    """Whether a system's call rests on a site the post-hoc caller supplied.
+
+    True is the annotation this pipeline exists to make visible: the antigen rests on a
+    different caller, without the sample's DRAGstr model, over reads the capture design did
+    not target. It says the same thing from the other side — that the system was not typable
+    from the primary caller alone, because without the recall that site would have been NOCOV.
+
+    Args:
+        cell: One cell of the QC TSV.
+
+    Returns:
+        True if any of the system's site flags carries POSTHOC.
+    """
+    if cell in (PASS, NOT_ASSESSED):
+        return False
+    return any(POSTHOC in flag.split(':', 1)[0].split(FLAG_JOIN) for flag in cell.split(';'))
+
+
 def flag_site(site: DefiningSite, coverage: Coverage | None, min_depth: int, min_gq: int) -> str | None:
-    """Flag one defining site on its coverage.
+    """Flag one defining site on its coverage and on which caller supplied it.
 
     Args:
         site: The defining site.
@@ -433,15 +504,24 @@ def flag_site(site: DefiningSite, coverage: Coverage | None, min_depth: int, min
         min_gq: GQ below which a site is flagged.
 
     Returns:
-        A NOCOV flag when `coverage` is None, a DEL flag when a deletion removed the base
-        the allele is defined on, a LOWQ flag when DP or GQ is below threshold or missing,
-        a POSTHOC flag when a passing site's only record came from the post-hoc caller,
-        otherwise None.
+        `<name>:<coordinate>(<allele>,<metrics>)`, or None for a site with nothing to report,
+        meaning one the primary caller covered at adequate quality.
 
-        Severity runs NOCOV > DEL > LOWQ > POSTHOC > PASS, which is the order these are
-        tested in. A recovered site that also fails a threshold is LOWQ, not POSTHOC: the
-        quality problem is the more important thing to say, and `src=` in the metrics still
-        names where the numbers came from.
+        The name joins two independent findings about the site with `+`:
+
+        - **severity** — NOCOV, DEL or LOWQ, in that order of precedence, or absent when the
+          site clears both thresholds;
+        - **provenance** — POSTHOC when the record came from the post-hoc caller, absent when
+          it came from the primary one.
+
+        So `LOWQ` is a primary site below threshold, `POSTHOC` a recovered site that passes,
+        and `LOWQ+POSTHOC` a recovered site that is also below threshold. NOCOV never carries
+        POSTHOC: there is no record from either caller, so there is no provenance to report.
+
+        Both findings are properties of the site, so both belong in the site's own flag. They
+        are joined rather than ranked because ranking makes one displace the other, and a
+        recovered site that is also poor has to report both — grepping POSTHOC would otherwise
+        miss it, which on the validation cohorts was 234 of 681 reliant systems.
     """
     coordinate, allele = describe_site(site)
     if coverage is None:
@@ -449,18 +529,17 @@ def flag_site(site: DefiningSite, coverage: Coverage | None, min_depth: int, min
     # DEL outranks LOWQ, and is reported however good the deletion's own DP and GQ are: a
     # confidently-called deletion of the defining base is the finding, not a quality one.
     if coverage.source == 'deletion':
-        return f'{DELETED}:{coordinate}({allele},{_render_metrics(coverage)})'
-    dp, gq = coverage.dp, coverage.gq
-    if dp is None or gq is None or dp < min_depth or gq < min_gq:
+        severity = DELETED
+    elif (dp := coverage.dp) is None or (gq := coverage.gq) is None or dp < min_depth or gq < min_gq:
         # A missing DP or GQ flags like a low one: the caller reported no quality for a site
         # that defines a blood-group antigen, which is not evidence of a good call.
-        return f'{LOWQ}:{coordinate}({allele},{_render_metrics(coverage)})'
-    if not coverage.record.is_primary:
-        # Clears both thresholds, but the primary caller never reported this site: without a
-        # flag it would be indistinguishable from a site DRAGEN called well, and the reader
-        # could not tell that the antigen rests on a re-call of untargeted reads.
-        return f'{POSTHOC}:{coordinate}({allele},{_render_metrics(coverage)})'
-    return None
+        severity = LOWQ
+    else:
+        severity = None
+    name = flag_name(severity, recovered=not coverage.record.is_primary)
+    if name is None:
+        return None
+    return f'{name}:{coordinate}({allele},{_render_metrics(coverage)})'
 
 
 def flags_by_system(
@@ -478,9 +557,12 @@ def flags_by_system(
         min_gq: GQ below which a site is flagged.
 
     Returns:
-        A `{system: flag}` map covering every system in `sites`, where a system with no
+        A `{system: cell}` map covering every system in `sites`, where a system with no
         flagged site is PASS and several flagged sites are semicolon-joined in coordinate
         order; and the sites with no covering record, for the caller to log.
+
+        Every finding is carried by the site flags themselves, so this only groups and orders
+        them. `rests_on_posthoc` answers whether a cell's system needed the recall.
     """
     by_chrom: dict[str, list[GvcfRecord]] = defaultdict(list)
     for record in records:
@@ -505,23 +587,26 @@ def flags_by_system(
     )
 
 
-def is_posthoc_only(flag: str) -> bool:
-    """Whether a system's cell is made up of POSTHOC flags and nothing worse.
+def is_posthoc_only(cell: str) -> bool:
+    """Whether a system's cell reports a recovery and no quality problem.
 
-    Such a system was recovered rather than found wanting: every site it was flagged on
-    cleared the thresholds and was simply reported by the post-hoc caller instead of the
-    primary one. Counted apart from the quality flags so a run summary does not read as
-    though recovering sites had made the cohort worse.
+    Such a system was recovered rather than found wanting: every site it lists was supplied by
+    the post-hoc caller at adequate quality. Counted apart from the quality flags so a run
+    summary does not read as though recovering sites had made the cohort worse.
+
+    A cell carrying both a recovery and a LOWQ, DEL or NOCOV site is False here. It still
+    `rests_on_posthoc`, and its flags still say so; it is simply not a clean recovery, so it
+    belongs in the quality count.
 
     Args:
-        flag: One cell of the QC TSV.
+        cell: One cell of the QC TSV.
 
     Returns:
-        True if the cell holds at least one flag and every one of them is a POSTHOC flag.
+        True if the cell lists at least one site and every one of them is a bare POSTHOC flag.
     """
-    if flag in (PASS, NOT_ASSESSED):
+    if cell in (PASS, NOT_ASSESSED):
         return False
-    return all(part.startswith(f'{POSTHOC}:') for part in flag.split(';'))
+    return all(flag_severity(flag) is None for flag in cell.split(';'))
 
 
 def build_qc_tsv(geno_tsv: str, system_flags: dict[str, str]) -> str:
@@ -613,6 +698,15 @@ def main(
         logger.info(
             f'{len(recovered)} further system(s) rest on a site recovered by the post-hoc caller and '
             f'are flagged {POSTHOC} rather than {PASS}: {", ".join(recovered)}'
+        )
+    # Counted over every system, not just the cleanly-recovered ones: a system whose recovered
+    # site is also sub-threshold appears in the quality count above, and this is the only line
+    # that says the recall is what let it be typed at all.
+    reliant = sorted(system for system, cell in system_flags.items() if rests_on_posthoc(cell))
+    if reliant:
+        logger.info(
+            f'{len(reliant)}/{len(system_flags)} site-map system(s) rest on a site the post-hoc caller '
+            f'supplied, and were not typable from the primary caller alone: {", ".join(reliant)}'
         )
     logger.info(
         f'{len(emitted_flagged)}/{len(emitted)} QC TSV systems carry a flag; '

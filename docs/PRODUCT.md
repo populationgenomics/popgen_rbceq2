@@ -51,17 +51,27 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
   `--dragen-mode`, streaming ~136kb of padded intervals rather than localising the CRAM. This
   takes assessable non-HPA coordinates from 91.7% to ~98% per design. Re-running DRAGEN over a
   cohort is not affordable, and sites >250bp off both designs are at ~0x and unrecoverable.
-- **The fill is empirical, never from capture metadata.** A post-hoc record is kept only where
-  the DRAGEN gVCF has no record covering a defining site; DRAGEN wins wherever both speak. No
-  capture BED is read anywhere in the pipeline, so a BED that misdescribes a sample's real
-  footprint cannot overwrite a primary call or hide a hole. This also means the same code is
-  correct for a capture kit we have never seen.
-- **A recovered site is never a silent `PASS`.** It carries a `POSTHOC` flag naming the caller,
-  because the antigen then rests on a different caller, without the sample's DRAGstr model, over
-  reads the capture design did not target. That is a fact a reviewer has to be able to see. The
-  severity order is `NOCOV` > `DEL` > `LOWQ` > `POSTHOC` > `PASS`, so a recovered site that also
-  fails a threshold still reports the quality problem first, and `NOCOV` keeps one meaning: no
-  record from either caller.
+- **Silence is judged empirically; the fill is bounded by the capture design.** A post-hoc
+  record is kept only where the DRAGEN gVCF has no record covering a defining site *and* that
+  site lies outside the cohort's capture design. Silence is read per sample from the gVCF, never
+  from metadata, so a design BED that misdescribes a sample's real footprint cannot overwrite a
+  primary call or hide a hole — the design only narrows what may be filled. Bounding by the
+  design keeps two findings apart that were being conflated: "the capture never targeted this
+  site", which the recall exists to fix, and "the capture targeted it and DRAGEN still said
+  nothing", which is a fact about that DRAGEN run and stays `NOCOV`. The design is configured
+  per run, not defaulted, and the job fails if DRAGEN has records outside it.
+- **A call resting on a recovered site is always annotated as such.** The site's QC flag name
+  carries `POSTHOC`, because the antigen then rests on a different caller, without the sample's
+  DRAGstr model, over reads the capture design did not target. That is a fact a
+  reviewer has to be able to see. The token does double duty: it equally says the system was
+  **not typable from the primary caller alone**, since without the recall that site would have
+  been `NOCOV` and there would be no call to report.
+- **Provenance is not a severity level, and is not ranked against one.** Both are properties of
+  the site, so a flag name carries both, joined with `+`: severity runs `NOCOV` > `DEL` > `LOWQ`
+  and `POSTHOC` is appended to whichever applies, or stands alone when the recovered site is
+  fine. Ranking them would let severity displace provenance, which on the validation cohorts
+  would hide the recall's contribution to 234 of 681 reliant systems. `NOCOV` keeps one meaning:
+  no record from either caller, and so no caller to name.
 
 **Regions BED generation from RBCeq2's own `db.tsv`**
 - RBCeq2 internally restricts the VCFs it handles to regions appearing in its `db.tsv` database, via a `build_intervals()` function. The biggest time-sink is the filter-and-convert step, because `bcftools` otherwise parses the entire genome.
@@ -110,17 +120,20 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
   than merely uncalled, which we have not tested.
 - Post-hoc recall is validated on Twist VCGS and Agilent CREv2, 10 exomes each, and gains the
   same ~7.5 percentage points on both. It is untested on the other CREv2 variants in mackenzie
-  (`SSXTLICREV2`, `SSQXTCREV2`, `SSQXTCRE`), though the mechanism reads no capture BED anywhere
-  and the two designs measured behave alike, so the expectation is that it generalises.
+  (`SSXTLICREV2`, `SSQXTCREV2`, `SSQXTCRE`). The two designs measured behave alike and silence
+  is still judged from the gVCF, so the expectation is that it generalises — but each new design
+  now has to be named in config, and the run fails rather than guesses if the wrong one is.
 - Post-hoc recall assumes the CRAM and the gVCF for a sequencing group are two outputs of the
-  same DRAGEN run, and **nothing in the pipeline enforces that**. The obvious enforcement,
-  requiring their sample names to match, was tried and rejected: in the mackenzie test exomes
-  a fraction of CRAM read groups carry a retired sequencing-group ID for the same individual,
-  because an upstream test-set script reheadered some inputs and not others. Failing on that
-  loses good data, and a genuinely swapped CRAM could carry a stale-but-matching name anyway,
-  so the check would give false confidence. The mismatch is logged. Real identity checking
-  belongs to somalier, whose output already sits beside these CRAMs, and wiring it in is the
-  obvious next step if this ever runs on data we trust less.
+  same DRAGEN run, and **the merge fails if their sample names disagree**. Merging mismatched
+  inputs would splice another individual's genotypes into these calls at exactly the sites
+  nothing else covers, where nothing downstream could catch it. An older block of mackenzie
+  test CRAMs trips this benignly, carrying a retired sequencing-group ID for the same
+  individual from an upstream reheadering bug; newer additions are clean. Those inputs are what
+  should be fixed. Downgrading the check to a relabel-and-warn was tried for one commit and
+  reverted, because from inside the job a real swap and a stale header are indistinguishable,
+  and accommodating a test-bucket artefact in shipped behaviour weakens every cohort. Positive
+  identity confirmation still belongs to somalier, whose output already sits beside these
+  CRAMs.
 - Which CRAM and gVCF `sequencing_group.cram`/`.gvcf` resolve to is Metamist's call, and this
   dataset registers several of each per sequencing group. cpg-flow keeps whichever the API
   returns last, with no ordering, so the pairing is not pinned by anything we control. It

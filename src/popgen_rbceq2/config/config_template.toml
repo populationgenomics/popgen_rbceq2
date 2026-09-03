@@ -22,6 +22,25 @@ sequencing_type = 'genome'
 # Uncomment to rebuild a stage whose outputs already exist.
 # force_stages = ['FlagBloodGroupCallQc']
 
+# Required for an exome run, ignored for a genome one. The [references] key of the capture
+# design BED the gVCFs were called against. Post-hoc calls fill only the defining sites that
+# design never targeted, so this has to be the design DRAGEN used, not merely a design the
+# samples resemble: the job fails if DRAGEN has records at sites outside it.
+#
+# Where a vendor ships both, take the *Covered* (probe footprint) entry, not Regions. The two
+# differ, and on the validation cohorts Regions would have recovered 691 sites instead of 1,650.
+#
+# The README section "An exome run must name its capture design" lists the values for the
+# designs seen so far, so you should not need the references repo. The two used to date:
+#
+#   Twist Comprehensive Exome + VCGS custom content
+#     'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'
+#   Agilent SureSelect Clinical Research Exome v2
+#     'exome_probesets_hg38/agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed'
+#
+# [workflow.filter_and_convert_gvcfs_for_rbceq2]
+# exome_design_bed = 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'
+
 [references]
 # Only set this if the gVCFs were called against something other than the default GRCh38, and
 # resources/bg_*.<build>.* have been generated for it.

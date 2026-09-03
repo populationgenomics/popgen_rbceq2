@@ -93,11 +93,36 @@ the same rule as every other resource.
 For exome sequencing groups the conversion job gains a merge step ahead of the existing
 extract-and-convert. Genome runs are untouched.
 
-**Fill empirically, not by capture metadata.** No capture BED is consulted. The rule is:
-a post-hoc record is kept only at coordinates the DRAGEN gVCF has no record covering
-(reference blocks count as covering); DRAGEN wins wherever both speak. This makes the
-merge self-calibrating per sample — a capture BED that lies about the real footprint
-cannot cause a DRAGEN call to be overwritten or a hole to be missed.
+**Judge silence empirically; bound the fill by the capture design.** A post-hoc record is
+kept only at a coordinate that satisfies both tests: the DRAGEN gVCF has no record covering
+it (reference blocks count as covering), *and* it lies outside the cohort's capture design.
+
+The first test is per sample and reads no metadata, which is what makes the merge
+self-calibrating: a design BED that lies about the real footprint still cannot cause a
+DRAGEN call to be overwritten or a hole to be invented. DRAGEN wins wherever both speak.
+
+The second test was added after the validation runs, at the author's direction, and only
+ever *narrows* what the first test offers. Its argument is that "DRAGEN was silent" and
+"the capture never targeted this site" are different findings that were being conflated.
+A site the design did target and DRAGEN still said nothing about is a fact about that
+sample's DRAGEN run; answering it with a second caller hides it. Such a site is now left
+as `NOCOV`. Measured on the validation cohorts this is 4 of 1,674 Twist recoveries and 7 of
+1,657 CREv2 ones, in C4B, RHD, RHCE and A4GALT — a small set, and the point is which
+question each flag answers rather than the count.
+
+The design is named by `exome_design_bed` in the stage's config section, as a
+`[references]` key resolved through `reference_path`. It is deliberately not defaulted:
+every default is the wrong design for some cohort, and being wrong is silent rather than
+fatal, so an exome run that does not name one fails while the graph is built.
+
+**The configured design is checked against the gVCF.** DRAGEN emits records over exactly
+the target BED with no padding, so a DRAGEN record at a defining site outside the
+configured design means the file is not the one the gVCF was called against, and the job
+fails naming the key. This is not hypothetical: Agilent ships both `Regions` and `Covered`
+for CREv2 and they differ. Across the two validation cohorts, DRAGEN's records fall inside
+Twist covered-targets and CREv2 `Covered` with **zero** off-design records in 32,500
+site-resolutions, while CREv2 `Regions` leaves 309 off-design records and would gate off
+907 of 1,207 recoveries — without failing, and without looking wrong in any log.
 
 Mechanically, as implemented:
 
@@ -108,22 +133,28 @@ Mechanically, as implemented:
    which is what `%END` reports and what `GvcfRecord.covers` counts as covering. Mode 2
    asks whether the *variant* overlaps and drops a deletion anchored on the site itself,
    which would make a covered site look like a hole.
-3. Subtract those spans from the defining-sites BED to get the holes (awk; see §10).
+3. Subtract the capture design's intervals from the defining-sites BED to get the
+   off-design sites, then subtract the covered spans from those to get what may be filled
+   (one awk program, run twice; see §10). The difference between the two subtractions is
+   the off-design sites DRAGEN *did* call, which must be empty — a non-empty difference
+   fails the job, since it means the configured design is not the gVCF's.
 4. Subset the post-hoc gVCF to records reaching a hole
    (`bcftools view -T <uncovered.bed> --targets-overlap 2 -e 'FORMAT/DP=0'`), strip it to
    the fields the pipeline reads, split multiallelics, and tag every kept record
    `INFO/POSTHOC=gatk-hc-<version>`.
-5. Relabel the supplement to the primary gVCF's sample name (warning on a mismatch, see
-   §10), then `bcftools concat -a`, which merges the two indexed files in coordinate order.
+5. Require the supplement and the primary gVCF to name the same sample, failing if they do
+   not (see §10), then `bcftools concat -a`, which merges the two indexed files in
+   coordinate order.
 6. Run the existing extract and conversion over `merged.vcf.gz`.
 
 Step 4's strip (`bcftools annotate -x`, keeping only END/GT/DP/GQ/MIN_DP) is what stops
 `concat` having to reconcile two callers' definitions of tags nothing downstream reads.
 Its `-e 'FORMAT/DP=0'` is what preserves `NOCOV` — see §10.
 
-Step 5's relabel is what `concat` needs, since it requires identical sample sets. A
-mismatch is logged rather than fatal — see §10 for why the read-group name cannot serve as
-an identity check on this data.
+Step 5's check is what lets `concat` run at all, since it requires identical sample sets.
+Relabelling the supplement would satisfy that too, and is exactly what must not happen: it
+would turn a CRAM registered against the wrong sequencing group into a silent merge of
+another individual's genotypes. A mismatch is fatal — see §10.
 
 **Boundary overlap.** A post-hoc reference block can straddle a capture edge, covering
 one uncovered defining site and also one DRAGEN covers. Step 3 keeps the whole record, so
@@ -150,13 +181,32 @@ moot — new tree, no stale files).
   primary caller.
 - **Failing post-hoc sites keep their existing prefix** (`LOWQ`/`DEL`), with the same
   `src=` key in the metrics, e.g. `LOWQ:...(T>C,src=gatk-hc-4.6.2.0,DP=6,GQ=12)`. The
-  failure mode stays primary in the flag; the provenance is secondary. `src=` names the
-  caller and version rather than a bare `posthoc`, so a QC TSV says *which* caller stood in
-  and a version bump is visible in the output rather than only in the code.
-- **Severity order:** `NOCOV > DEL > LOWQ > POSTHOC > PASS`. `POSTHOC` counts as flagged
-  (the per-system cell is not `PASS`), but logs count quality-flagged systems and
-  post-hoc-only systems separately, so a run summary distinguishes "problems" from
-  "recovered".
+  failure mode stays primary in the *site* flag; provenance is said once per system. `src=`
+  names the caller and version rather than a bare `posthoc`, so a QC TSV says *which* caller
+  stood in and a version bump is visible in the output rather than only in the code.
+- **Severity order:** `NOCOV > DEL > LOWQ > PASS`, applied per site.
+- **`POSTHOC` is joined to the severity, not ranked against it.** A flag name states two
+  independent findings about the site: its severity (`NOCOV`, `DEL` or `LOWQ`, or absent when
+  it clears both thresholds) and its provenance (`POSTHOC` when the post-hoc caller supplied
+  the record). The two are joined with `+`, so a recovered site that passes is `POSTHOC` and
+  one that is also sub-threshold is `LOWQ+POSTHOC`.
+
+  Both are properties of the site, so both belong in the site's own flag. Ranking them makes
+  one displace the other, and severity would win: a recovered site that was also sub-threshold
+  would report only `LOWQ`, and nothing would say the call rested on a recovery. On the
+  validation cohorts that would hide **234 of 681 reliant systems** — a third of the calls
+  that exist only because of the recall. `rests_on_posthoc` reads the answer off a whole cell.
+
+  A recovered site is listed even when it passes, because the antigen resting on a re-call of
+  untargeted reads is itself the finding. A site that is neither poor nor recovered has no
+  flag name at all and is not listed, which is what keeps a bare `PASS` cell meaning "nothing
+  to report". `NOCOV` never carries `POSTHOC`: no record from either caller means no caller
+  to name.
+
+  A `POSTHOC` site counts as flagged (the cell is not `PASS`), but logs count quality-flagged
+  systems, clean recoveries and reliant systems separately, so a run summary distinguishes
+  "problems" from "recovered" and still says how many calls needed the recall.
+
 - **`NOCOV` keeps its one meaning:** no record from *either* caller covers the site.
 - **`resolve_coverage` prefers primary records.** Where both a DRAGEN record and a
   post-hoc record cover a site (the §4 boundary case), the DRAGEN one is chosen —
@@ -197,9 +247,15 @@ storage = "20Gi"   # streams the CRAM; disk is for the ~3Gb reference and a tiny
 ## 7. Versioning
 
 The extract format and the QC flag vocabulary change for **every** run, and exome geno
-TSVs change where holes get filled. Bump `workflow.version` to `v2` in the same PR, so
-the new outputs land in a fresh `rbceq2_<tool>_v2` tree and no old extract can meet the
+TSVs change where holes get filled, so `workflow.version` is bumped in the same PR and the
+new outputs land in a fresh `rbceq2_<tool>_<release>` tree where no old extract can meet the
 new parser.
+
+`v2` covered the extract's INFO/POSTHOC column and the first QC flag vocabulary. `v3` covers
+two later exome-only output changes: the capture-design gate on which holes may be filled
+(§4), and the composition of provenance into a site's flag name (§6). Neither moves an output
+path, so without the bump an exome re-run would reuse its v2 files and neither would take
+effect. The two validation runs in RESULTS.md predate `v3` and wrote to the v2 tree.
 
 ## 8. Change table
 
@@ -211,13 +267,17 @@ new parser.
 | `stages/pipeline.py` | wire the new stage; add to conversion's `requires` |
 | `scripts/gen_bg_resources.py` + `scripts/bg_db.py` | write `bg_defining_sites_padded.<genome>.bed` |
 | `resources/` | the new committed BED: 199 intervals, 135,579 bases |
-| `config/popgen_rbceq2_default_config.toml` | new stage section; `version = 'v2'` |
+| `config/popgen_rbceq2_default_config.toml` | new stage section; `version = 'v3'` |
+| `config/config_template.toml` | the required `exome_design_bed` key, with how to pick it |
 | `constants.py` | `GATK_VERSION`, `GATK_IMAGE_TAG`, `POSTHOC_CALLER` |
 | README / PRODUCT.md / GLOSSARY.md | document `POSTHOC`, the stage, and the fill rule |
 | `tests/test_posthoc_merge.py` | new: runs the real awk against `GvcfRecord.covers` |
+| `tests/test_exome_design_gate.py` | new: the design key is required, resolved and enforced |
 | tests | QC flag logic, severity, extract parsing, exome gating, resource generation |
 
-No new `references.*` key was needed — see §9.1.
+The reference *fasta* needed no new key — see §9.1. The capture design does: an exome run
+sets `workflow.filter_and_convert_gvcfs_for_rbceq2.exome_design_bed` to a `[references]`
+key, which is resolved with `reference_path` like every other reference.
 
 ## 9. Resolved questions
 
@@ -254,15 +314,20 @@ would have reached production:
   supplement record while keeping a tag nothing reads. Two carets is the correct form.
 - **An empty `-T` targets file is a hard error**, not an empty result
   (`Failed to read the targets`). The no-holes branch is required, not an optimisation.
-- **A sample-name assertion was tried and rejected on the evidence.** The intent was to catch
-  a CRAM registered against the wrong sequencing group. Checking the mackenzie DRAGEN 3.7.8
-  test exomes showed the signal is not usable: every recal gVCF carries the current
-  sequencing-group ID, but 4 of 10 CRAMs in the target cohort still carry a retired one for
-  the same individual, because an upstream test-set script reheadered some inputs and not
-  others. Asserting would have failed 40% of a known-good cohort, and a genuinely swapped
-  CRAM could carry a stale-but-matching name anyway. The supplement is relabelled to the
-  gVCF's name and the mismatch is logged. Identity belongs to somalier, whose output sits
-  beside these CRAMs; wiring it in is the follow-up if this runs on less trusted data.
+- **The sample-name assertion is fatal, and some test inputs trip it.** It catches a CRAM
+  registered against the wrong sequencing group, which would otherwise splice another
+  individual's genotypes into these calls at exactly the sites nothing else covers. Every
+  mackenzie recal gVCF carries the current sequencing-group ID, but an older block of test
+  CRAMs still carries a retired one for the same individual, because an upstream test-set
+  script reheadered some inputs and not others; newer additions are consistent. Sampling the
+  test bucket, 5 of the first 12 CRAMs disagree with their gVCF, all in that older block.
+
+  Relabelling the supplement would satisfy `concat` and hide this, and was the design for one
+  commit. It was reverted: from inside the job a real swap and a stale header are
+  indistinguishable, so downgrading the check to keep an old test cohort green weakens every
+  cohort. The affected inputs are the thing to fix. Identity confirmation belongs to somalier,
+  whose output sits beside these CRAMs; wiring it in is the follow-up if this ever needs to
+  distinguish the two cases automatically.
 - **Metamist registers several CRAMs and gVCFs per sequencing group here**, and
   `cpg_flow.metamist.get_analyses_by_sgid` keeps whichever the API returns last, unordered.
   It currently selects the DRAGEN 3.7.8 CRAM and the matching recal gVCF — the pair we want —
@@ -286,11 +351,12 @@ The hole-finding rule is expressed twice — in awk in the merge, and as
 `GvcfRecord.covers` in the QC job — because the merge runs in the bcftools image, which
 has no Python package of ours. `tests/test_posthoc_merge.py` runs the real awk and asserts
 it marks exactly the sites `covers` calls uncovered, which is the only thing tying the two
-together.
-
-The hole-finding rule is expressed twice — in awk in the merge, and as
-`GvcfRecord.covers` in the QC job — because the merge runs in the bcftools image, which
-has no Python package of ours. `tests/test_posthoc_merge.py` runs the real awk and asserts
-it marks exactly the sites `covers` calls uncovered, which is the only thing tying the two
 together. If bedtools turns out to be in that image, `bedtools intersect -v` replaces the
 awk and removes the duplication.
+
+One awk program serves both subtractions. Containment in a set of `[start, end)` spans is
+the same test whether the spans come from `%POS0\t%END` on DRAGEN records or from a vendor
+capture BED, so `_SITES_OUTSIDE_SPANS_AWK` is run twice rather than written twice. The
+design BED brings two things the covered-spans BED does not — extra columns and a `track`
+header line — and both are harmless, since only `$1`-`$3` are read and a header becomes an
+empty span on a contig no site is on. Tested with a BED shaped that way.
