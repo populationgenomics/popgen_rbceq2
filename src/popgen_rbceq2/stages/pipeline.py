@@ -37,8 +37,9 @@ from popgen_rbceq2.stages.blood_group_qc import call_qc
 # Exome only, and reads sequencing_group.cram directly, so it has no `requires` either. It
 # registers no Analysis: its gVCF is an intermediate the conversion stage consumes through the
 # graph, and the provenance a reader needs reaches Metamist as a POSTHOC flag on the QC TSV.
-# A genome sequencing group produces nothing here and the conversion stage below is unchanged
-# for it. See posthoc_genotype.applies_to for the gate both stages share.
+# A genome sequencing group produces nothing here, so the conversion stage below merges nothing
+# for it; its command still gains the INFO/POSTHOC header line and extract column every run
+# gains. See posthoc_genotype.applies_to for the gate both stages share.
 PosthocGenotypeOffTargetSites: cpg_flow.stage.StageDecorator = stage_support.wire(
     posthoc_genotype.PosthocGenotypeOffTargetSites,
 )
