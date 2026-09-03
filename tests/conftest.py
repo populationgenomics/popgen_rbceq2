@@ -93,6 +93,21 @@ def mock_cohort(mocker, shm_tmp_path: Path):
 
 
 @pytest.fixture
+def mock_multicohort(mock_cohort):
+    """A multicohort with the same bucket prefixes, for MultiCohortStage outputs.
+
+    Its sequencing groups are left for the test to set: the stages that run at this level gate
+    on what the run contains, so which sequencing groups are in it is the thing under test.
+    """
+    multicohort = MagicMock()
+    multicohort.analysis_dataset = mock_cohort.dataset
+    multicohort.name = 'test-multicohort'
+    multicohort.target_id = 'test-multicohort'
+    multicohort.get_sequencing_groups.return_value = []
+    return multicohort
+
+
+@pytest.fixture
 def mock_sequencing_group(mock_cohort):
     """A genome sequencing group with a gVCF and a CRAM, for the SequencingGroupStage outputs."""
     sg = MagicMock()

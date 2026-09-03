@@ -52,7 +52,7 @@ that was. Set `exome_design_bed` to the BED the cohort's gVCFs were called again
 input_cohorts = ['COH123']
 sequencing_type = 'exome'
 
-[workflow.filter_and_convert_gvcfs_for_rbceq2]
+[workflow.select_off_design_defining_sites]
 exome_design_bed = 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'
 ```
 
@@ -208,7 +208,8 @@ tests pass:
 1. **The DRAGEN gVCF has no record covering the site.** Judged per sample from the gVCF itself,
    never from capture metadata, so a design BED that misdescribes a sample's real footprint
    cannot overwrite a DRAGEN call or hide a hole. DRAGEN wins wherever both speak.
-2. **The site lies outside the cohort's capture design**, read from `exome_design_bed`. See
+2. **The site lies outside the cohort's capture design**, subtracted once per run by
+   `SelectOffDesignDefiningSites` from the design named by `exome_design_bed`. See
    [naming the capture design](#an-exome-run-must-name-its-capture-design) for the key, the
    values, and why a wrong one fails the job rather than quietly under-filling.
 
@@ -217,11 +218,17 @@ a second caller to answer a question about that sample's DRAGEN run, which is a 
 question from the one this feature exists to answer. On the validation cohorts this is 4 of
 1,674 Twist recoveries and 7 of 1,657 CREv2 ones, in C4B, RHD, RHCE and A4GALT.
 
-Mechanically the two tests are one awk program run twice, subtracting the design's intervals
-from the defining sites and then the DRAGEN records' spans from what is left. The sites the
-first subtraction keeps and the second drops are the off-design sites DRAGEN *did* call, which
-must be empty; a non-empty set fails the job, because it means the named design is not the one
-the gVCF was called against.
+The two tests are two subtractions, and they run in different places for a reason. Taking the
+design's intervals out of the defining sites depends on nothing about any sample, so
+`SelectOffDesignDefiningSites` does it **once per run**, in `bedtools intersect -v`: a standard
+tool built for exactly this operation, which is easier to read and maintain than the
+hand-written awk containment loop it replaced. Taking the DRAGEN records' spans out of what is
+left is per sample by nature, so it stays in awk inside the conversion job, whose image has
+no bedtools.
+
+The sites the first subtraction keeps and the second drops are the off-design sites DRAGEN
+*did* call, which must be empty; a non-empty set fails the job, because it means the named
+design is not the one the gVCF was called against.
 
 A record is selected for reaching a hole and is selected *whole*, so one anchored in a hole can
 extend over a neighbouring defining site DRAGEN did call. Defining sites are dense enough that

@@ -16,7 +16,13 @@ framework's value with a stale hand-typed name.
 import cpg_flow.stage
 
 from popgen_rbceq2 import analysis_meta, stage_support
-from popgen_rbceq2.stages.blood_group_genotyping import combine, filter_and_convert, genotype, posthoc_genotype
+from popgen_rbceq2.stages.blood_group_genotyping import (
+    combine,
+    filter_and_convert,
+    genotype,
+    off_design_sites,
+    posthoc_genotype,
+)
 from popgen_rbceq2.stages.blood_group_qc import call_qc
 
 # --- Blood-group genotyping ----------------------------------------------------------
@@ -36,11 +42,18 @@ from popgen_rbceq2.stages.blood_group_qc import call_qc
 PosthocGenotypeOffTargetSites: cpg_flow.stage.StageDecorator = stage_support.wire(
     posthoc_genotype.PosthocGenotypeOffTargetSites,
 )
+# Exome only, and runs once for the whole workflow run rather than per sequencing group: the
+# defining sites outside the capture design depend only on the configured design and the
+# committed sites, so every sequencing group's conversion reads the one BED this writes.
+SelectOffDesignDefiningSites: cpg_flow.stage.StageDecorator = stage_support.wire(
+    off_design_sites.SelectOffDesignDefiningSites,
+)
 # Requires the post-hoc stage so an exome's conversion can merge its calls in where the DRAGEN
-# gVCF is silent at a defining site. cpg_flow runs the two in order per sequencing group.
+# gVCF is silent at a defining site, and the design subtraction that says which sites it may
+# fill. cpg_flow runs the run-level stage before any sequencing group's conversion.
 FilterAndConvertGvcfsForRbceq2: cpg_flow.stage.StageDecorator = stage_support.wire(
     filter_and_convert.FilterAndConvertGvcfsForRbceq2,
-    requires=[PosthocGenotypeOffTargetSites],
+    requires=[PosthocGenotypeOffTargetSites, SelectOffDesignDefiningSites],
 )
 # Per-SG calls Analysis, output = the geno TSV.
 GenotypeBloodGroupsWithRbceq2: cpg_flow.stage.StageDecorator = stage_support.wire(

@@ -38,7 +38,7 @@ sequencing_type = 'genome'
 #   Agilent SureSelect Clinical Research Exome v2
 #     'exome_probesets_hg38/agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed'
 #
-# [workflow.filter_and_convert_gvcfs_for_rbceq2]
+# [workflow.select_off_design_defining_sites]
 # exome_design_bed = 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'
 
 [references]

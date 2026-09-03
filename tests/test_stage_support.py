@@ -329,6 +329,7 @@ def test_the_entry_point_runs_exactly_the_requested_stages(mocker):
 # section stranded.
 _EXPECTED = {
     pipeline.PosthocGenotypeOffTargetSites: 'posthoc_genotype_off_target_sites',
+    pipeline.SelectOffDesignDefiningSites: 'select_off_design_defining_sites',
     pipeline.FilterAndConvertGvcfsForRbceq2: 'filter_and_convert_gvcfs_for_rbceq2',
     pipeline.GenotypeBloodGroupsWithRbceq2: 'genotype_blood_groups_with_rbceq2',
     pipeline.FlagBloodGroupCallQc: 'flag_blood_group_call_qc',

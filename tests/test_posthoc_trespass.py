@@ -49,8 +49,11 @@ pytestmark = [
 # the boundary between them, which is what makes the second a hole and the first not.
 IN_DESIGN = 2005
 OFF_DESIGN = 2000
-DESIGN_BED = f'chr1\t{IN_DESIGN - 2}\t{IN_DESIGN + 5}\n'
 SITES_BED = f'chr1\t{OFF_DESIGN - 1}\t{OFF_DESIGN}\nchr1\t{IN_DESIGN - 1}\t{IN_DESIGN}\n'
+# What SelectOffDesignDefiningSites hands this job: the defining sites the design never
+# targeted, which here is the second one and not the first. The subtraction itself is tested in
+# test_exome_design_gate; this file starts from its result.
+OFF_DESIGN_BED = f'chr1\t{OFF_DESIGN - 1}\t{OFF_DESIGN}\n'
 
 # DRAGEN calls the in-design site and has no record at all at the off-design one, which is the
 # capture edge this feature exists for.
@@ -91,13 +94,14 @@ def _merge(
     *,
     dragen_records: str = DRAGEN_RECORDS,
     sites_bed: str = SITES_BED,
+    off_design_bed: str = OFF_DESIGN_BED,
 ) -> subprocess.CompletedProcess[str]:
     """Run the real merge shell over one post-hoc record set, in tmp_path."""
     posthoc = _bgzip(tmp_path, 'posthoc.g.vcf', posthoc_records, index=True)
     sites = tmp_path / 'sites.bed'
     sites.write_text(sites_bed)
-    design = tmp_path / 'design.bed'
-    design.write_text(DESIGN_BED)
+    off_design = tmp_path / 'off_design_defining_sites.bed'
+    off_design.write_text(off_design_bed)
     # What the caller leaves behind for the fragment: the POSTHOC declaration both sides of
     # the concat have to carry, and the bg-regions intermediate. Not indexed, because the
     # fragment's own first line indexes it.
@@ -107,7 +111,7 @@ def _merge(
     script = 'set -euo pipefail\n' + _merge_posthoc_commands(
         str(posthoc),
         str(sites),
-        str(design),
+        str(off_design),
         'exome_probesets_hg38/test_design_bed',
         cpu=1,
     )
@@ -214,9 +218,10 @@ def test_a_posthoc_variant_overlapping_a_dragen_block_but_no_called_site_is_kept
     # A hole beyond that block, and a deletion anchored in it whose REF clips the block's tail.
     far_site = OFF_DESIGN + 902
     sites = SITES_BED + f'chr1\t{far_site - 1}\t{far_site}\n'
+    off_design = OFF_DESIGN_BED + f'chr1\t{far_site - 1}\t{far_site}\n'
     deletion = f'chr1\t{far_site - 3}\t.\tCATGA\tC,<NON_REF>\t60\t.\tSPARE=1\tGT:DP:GQ\t0/1:44:80\n'
 
-    _merge(tmp_path, deletion, dragen_records=dragen, sites_bed=sites)
+    _merge(tmp_path, deletion, dragen_records=dragen, sites_bed=sites, off_design_bed=off_design)
 
     # Kept, so the site is no longer a hole. It reads DEL+POSTHOC rather than plain POSTHOC
     # because the hole sits inside the deletion rather than on its anchor, which it must: the

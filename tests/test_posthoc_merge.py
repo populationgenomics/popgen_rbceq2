@@ -6,9 +6,11 @@ matters is that `awk` itself, given what `bcftools query` really emits, decides 
 way the QC job's `GvcfRecord.covers` does. The two disagreeing is the failure that would put a
 post-hoc record over a site DRAGEN had called, or leave a real hole unfilled.
 
-The same containment program is run a second time against the capture design BED, so it is
-also tested with what a vendor BED really looks like: half-open intervals, extra columns and a
-`track` header line.
+The program is run twice per sample, over the same covered-spans BED both times: once against
+the off-design defining sites, to find which of them may be filled, and once against every
+defining site, to count the holes. It no longer sees a vendor capture BED — subtracting the
+capture design is `SelectOffDesignDefiningSites`' job, once per run, in bedtools; see
+test_off_design_subtraction.
 
 No bcftools here, so nothing in this file needs an image or a cloud: the covered-spans BED is
 rendered from `GvcfRecord`s using the same `%CHROM/%POS0/%END` fields bcftools would write.
@@ -155,45 +157,6 @@ def test_the_awk_agrees_with_the_qc_jobs_coverage_rule(tmp_path):
     assert _run_uncovered(tmp_path, records, sites) == expected
     # The set is a real mix, not accidentally all-covered or all-uncovered.
     assert 0 < len(expected) < len(sites)
-
-
-def _run_outside(tmp_path, spans_bed: str, sites: list[tuple[str, int]]) -> list[tuple[str, int]]:
-    """Run the containment awk over a literal spans BED and return the sites outside every span."""
-    spans = tmp_path / 'design.bed'
-    spans.write_text(spans_bed)
-    site_file = tmp_path / 'sites.bed'
-    site_file.write_text(_sites_bed(sites))
-    out = subprocess.run(  # noqa: S603
-        ['awk', '-v', f'spans={spans}', _SITES_OUTSIDE_SPANS_AWK, str(spans), str(site_file)],  # noqa: S607
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [(line.split('\t')[0], int(line.split('\t')[2])) for line in out.stdout.splitlines()]
-
-
-def test_a_design_interval_is_half_open(tmp_path):
-    # BED `chr1 999 1100` targets 1-based bases 1000..1100. The base before and the base
-    # after are off-design and so eligible to be filled; the two ends are not.
-    design = 'chr1\t999\t1100\n'
-    assert _run_outside(tmp_path, design, [('chr1', 999)]) == [('chr1', 999)]
-    assert _run_outside(tmp_path, design, [('chr1', 1000)]) == []
-    assert _run_outside(tmp_path, design, [('chr1', 1100)]) == []
-    assert _run_outside(tmp_path, design, [('chr1', 1101)]) == [('chr1', 1101)]
-
-
-def test_every_site_is_off_design_when_the_design_bed_is_empty(tmp_path):
-    # Same failure through the other caller. An empty design would then look like a design
-    # that targets everything, so nothing would be eligible to fill and the run would look
-    # fine. Reported as off-design instead, the DRAGEN-called check downstream fails the job.
-    assert _run_outside(tmp_path, '', [('chr1', 1000)]) == [('chr1', 1000)]
-
-
-def test_a_design_bed_with_extra_columns_and_a_track_line_is_read_as_intervals(tmp_path):
-    # Vendor BEDs carry a name column and sometimes a browser header. Only the first three
-    # columns are intervals; the header must not make a site look targeted or crash the run.
-    design = 'track name="Covered" description="probe footprint"\nchr1\t999\t1100\tTARGET_1\t0\t+\n'
-    assert _run_outside(tmp_path, design, [('chr1', 1050), ('chr1', 2000)]) == [('chr1', 2000)]
 
 
 def _run_tag(tmp_path, vcf_body: str, tag: str = 'POSTHOC=gatk-hc-4.6.2.0') -> list[str]:

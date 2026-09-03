@@ -9,18 +9,22 @@ import cpg_utils.hail_batch
 import hailtop.batch.resource
 
 from popgen_rbceq2 import constants, stage_support
-from popgen_rbceq2.stages.blood_group_genotyping import posthoc_genotype
+from popgen_rbceq2.stages.blood_group_genotyping import off_design_sites, posthoc_genotype
 
 # Which sites of a BED fall inside no span of another BED, as a BED.
 #
 # `awk -v spans=spans.bed <this> spans.bed sites.bed` prints the sites no span contains. A span
-# is `[$2, $3)`, 0-based half-open, so the program serves two inputs without change: the covered
-# spans of every DRAGEN record overlapping a defining site (bcftools' %END is POS + rlen - 1,
-# which is INFO/END for a reference block and POS + len(REF) - 1 for a variant, so `%POS0\t%END`
-# is that span and this containment test is the one `rbceq2_call_qc_job.GvcfRecord.covers`
-# applies), and the capture design's target intervals. The two definitions of "covered" have
-# to agree — a site this calls uncovered is a site the QC would flag NOCOV — and
-# tests/test_posthoc_merge.py holds them together.
+# is `[$2, $3)`, 0-based half-open. The spans are always the covered spans of the DRAGEN records
+# overlapping a defining site: bcftools' %END is POS + rlen - 1, which is INFO/END for a
+# reference block and POS + len(REF) - 1 for a variant, so `%POS0\t%END` is that span, and this
+# containment test is the one `rbceq2_call_qc_job.GvcfRecord.covers` applies. The two
+# definitions of "covered" have to agree — a site this calls uncovered is a site the QC would
+# flag NOCOV — and tests/test_posthoc_merge.py holds them together.
+#
+# It also served the capture-design subtraction once, over the same containment test. That half
+# is now `bedtools intersect -v` in SelectOffDesignDefiningSites, run once for the whole run
+# rather than per sequencing group, so the vendor BED's extra columns and `track` lines are no
+# longer this program's problem. What is left here reads only bcftools output, three columns.
 #
 # The spans file is named by `-v spans=`, and must be, rather than being detected with the
 # usual `NR == FNR`. That idiom reads "still in the first file" only while the first file has
@@ -29,9 +33,6 @@ from popgen_rbceq2.stages.blood_group_genotyping import posthoc_genotype
 # an empty covered.bed, which is what a gVCF with no record at any defining site produces,
 # would fill no holes and fail later blaming contig naming. `ARGIND` would say the same thing
 # more directly but is a gawk extension, and this runs under mawk.
-#
-# Extra BED columns and `track`/`browser` header lines are harmless: only $1-$3 are read, and a
-# header line becomes an empty span on a contig no site is on.
 #
 # Held as a plain string rather than inlined: the command below is an f-string, and every
 # brace in an awk program would have to be doubled.
@@ -77,45 +78,10 @@ _COVERED_HEADER_LINE = (
 _EXTRACT_FORMAT = r'%CHROM\t%POS\t%REF\t%ALT\t%INFO/END\t[%GT\t%DP\t%GQ\t%MIN_DP]\t%INFO/POSTHOC\n'
 
 
-# The stage config key naming the capture design an exome cohort was called against, as a key
-# into the `[references]` section, e.g.
-# `exome_probesets_hg38/agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed`.
-# Required for an exome run; a genome run never reads it.
-EXOME_DESIGN_KEY = 'exome_design_bed'
-
-
-def exome_design_bed(stage: cpg_flow.stage.Stage) -> tuple[str, str]:
-    """The reference key and path of the capture design BED an exome run fills holes outside of.
-
-    Read at graph-build time, so a run missing it fails before a job starts rather than on the
-    first exome sequencing group's merge.
-
-    Args:
-        stage: The conversion stage, whose config section holds the key.
-
-    Returns:
-        The `[references]` key as configured, and the path it resolves to.
-
-    Raises:
-        cpg_utils.config.ConfigError: The key is not set, or names no reference.
-    """
-    section = stage_support.config_section(stage)
-    try:
-        key = cpg_utils.config.config_retrieve(['workflow', section, EXOME_DESIGN_KEY])
-    except cpg_utils.config.ConfigError as e:
-        raise cpg_utils.config.ConfigError(
-            f'An exome run needs workflow.{section}.{EXOME_DESIGN_KEY}: the [references] key of the '
-            'capture design BED the gVCFs were called against, e.g. '
-            "'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'. Post-hoc calls fill "
-            'defining sites only outside that design.'
-        ) from e
-    return key, cpg_utils.config.reference_path(key)
-
-
 def _merge_posthoc_commands(
     posthoc_gvcf: str,
     sites_bed: str,
-    design_bed: str,
+    off_design_bed: str,
     design_key: str,
     cpu: int,
 ) -> str:
@@ -165,8 +131,9 @@ def _merge_posthoc_commands(
     Args:
         posthoc_gvcf: Localised post-hoc gVCF from PosthocGenotypeOffTargetSites.
         sites_bed: The committed defining-sites BED.
-        design_bed: Localised capture design BED the gVCF was called against.
-        design_key: The `[references]` key `design_bed` came from, for the error message.
+        off_design_bed: Localised off-design defining sites from SelectOffDesignDefiningSites,
+            the only sites a post-hoc record may fill.
+        design_key: The `[references]` key the design came from, for the error message.
         cpu: Threads to give the BGZF steps.
 
     Returns:
@@ -182,23 +149,24 @@ def _merge_posthoc_commands(
         bcftools query -T {sites_bed} --targets-overlap 1 \\
             -f '%CHROM\\t%POS0\\t%END\\n' dragen.vcf.gz > covered.bed
 
-        # The defining sites the capture design did not target, then those of them the DRAGEN
-        # gVCF has no record at. Only that second set is filled.
-        awk -v spans={design_bed} '{_SITES_OUTSIDE_SPANS_AWK}' \\
-            {design_bed} {sites_bed} > off_design_sites.bed
+        # Which of the off-design sites the DRAGEN gVCF has no record at. Only those are
+        # filled. The off-design set itself is not computed here: it depends on the configured
+        # design and the committed sites and on nothing about this sample, so
+        # SelectOffDesignDefiningSites subtracts it once for the whole run.
         awk -v spans=covered.bed '{_SITES_OUTSIDE_SPANS_AWK}' \\
-            covered.bed off_design_sites.bed > uncovered.bed
+            covered.bed {off_design_bed} > uncovered.bed
 
         # A DRAGEN record at a site outside the design means the configured BED is not the one
         # the gVCF was called against. The likely case is a target-regions file where the gVCF
         # used the probe footprint, which would quietly gate off most of the recoveries.
-        sort off_design_sites.bed > off_design_sites.sorted.bed
+        sort {off_design_bed} > off_design_sites.sorted.bed
         sort uncovered.bed > uncovered.sorted.bed
         comm -23 off_design_sites.sorted.bed uncovered.sorted.bed > off_design_called.bed
         if [ -s off_design_called.bed ]; then
             n_called=$(wc -l < off_design_called.bed | tr -d ' ')
             echo "ERROR: DRAGEN has records at $n_called defining site(s) outside the capture design." >&2
-            echo "{EXOME_DESIGN_KEY} = {design_key} is not the BED this gVCF was called against." >&2
+            echo "{off_design_sites.DESIGN_CONFIG_PATH} = {design_key} is not the BED this gVCF" >&2
+            echo "was called against." >&2
             echo "For an Agilent design that usually means Regions configured where the gVCF" >&2
             echo "used Covered. First sites:" >&2
             head -n 10 off_design_called.bed >&2
@@ -340,10 +308,11 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
 
     For an exome sequencing group this stage also merges in the post-hoc calls from
     PosthocGenotypeOffTargetSites, which fill the defining sites the capture-target BED
-    stopped DRAGEN emitting at. The design BED is named by `exome_design_bed` in this stage's
-    config section and only sites outside it are filled; see `_merge_posthoc_commands` for
-    the fill rule. A genome sequencing group has no post-hoc input and never reads the key, so
-    nothing is merged for it and the merge is a plain rename.
+    stopped DRAGEN emitting at. Only sites outside the capture design are filled, and which
+    sites those are comes from SelectOffDesignDefiningSites, computed once for the run; see
+    `_merge_posthoc_commands` for the rest of the fill rule. A genome sequencing group has no
+    post-hoc input and never reads the design key, so nothing is merged for it and the merge is
+    a plain rename.
 
     Its command is not otherwise unchanged, though. Every run, genome included, now declares
     INFO/POSTHOC on the intermediate and extracts a trailing POSTHOC column, because
@@ -429,9 +398,18 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
                     'g.vcf.gz.tbi': str(posthoc_paths['index']),
                 },
             )['g.vcf.gz']
-            design_key, design_path = exome_design_bed(self)
-            design_bed = b.read_input(design_path)
-            merge_posthoc = _merge_posthoc_commands(str(posthoc_gvcf), str(sites_bed), str(design_bed), design_key, cpu)
+            # The design BED itself is not localised here. Only the 167-line subtraction of it
+            # is, from SelectOffDesignDefiningSites, which saves moving 5.5Mb of vendor
+            # intervals to every sequencing group to re-derive one cohort-constant answer.
+            design_key, _ = off_design_sites.exome_design_bed()
+            off_design = off_design_sites.off_design_bed(inputs)
+            merge_posthoc = _merge_posthoc_commands(
+                str(posthoc_gvcf),
+                str(sites_bed),
+                str(off_design),
+                design_key,
+                cpu,
+            )
         else:
             merge_posthoc = '        mv dragen.vcf.gz merged.vcf.gz'
 

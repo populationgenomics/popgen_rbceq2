@@ -59,7 +59,10 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
   design keeps two findings apart that were being conflated: "the capture never targeted this
   site", which the recall exists to fix, and "the capture targeted it and DRAGEN still said
   nothing", which is a fact about that DRAGEN run and stays `NOCOV`. The design is configured
-  per run, not defaulted, and the job fails if DRAGEN has records outside it.
+  per run, not defaulted, and the job fails if DRAGEN has records outside it. Which sites the
+  design missed is subtracted once for the whole run, in bedtools, because that answer depends
+  on no individual sample; judging each sample's silence stays per sample, in the conversion
+  job, because it cannot be anything else.
 - **The primary caller wins wherever both speak, including at bases a post-hoc record only
   reaches.** A record kept for covering a hole is kept whole, so one anchored in a hole can
   extend over a neighbouring defining site DRAGEN did call. Where that record is a variant it is

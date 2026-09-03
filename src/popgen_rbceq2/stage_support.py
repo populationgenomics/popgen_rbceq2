@@ -245,6 +245,32 @@ def get_output_prefix(cohort: cpg_flow.targets.Cohort, stage_name: str, category
     )
 
 
+def get_multicohort_output_prefix(
+    multicohort: cpg_flow.targets.MultiCohort,
+    stage_name: str,
+    category: str | None = None,
+) -> cpg_utils.Path:
+    """Standardised output prefix for MultiCohortStage outputs.
+
+    Format: multicohort.analysis_dataset.prefix() / workflow.name / rbceq2_<tool version>_<release>
+    / stage_name
+
+    No target segment, unlike the cohort and sequencing-group prefixes. A MultiCohortStage runs
+    once for the whole workflow run, and its target's name is either the analysis dataset or a
+    hash of the input cohorts — neither of which describes what the output depends on. A stage
+    whose output varies with something other than the release must put that in its own filename;
+    see SelectOffDesignDefiningSites, which keys on the capture design it subtracted.
+
+    See get_output_prefix and _output_version for what the version segment means.
+    """
+    return (
+        multicohort.analysis_dataset.prefix(category=category)
+        / cpg_flow.workflow.get_workflow().name
+        / _output_version(stage_name)
+        / stage_name
+    )
+
+
 def get_sg_output_prefix(
     sequencing_group: cpg_flow.targets.SequencingGroup,
     stage_name: str,
@@ -265,7 +291,7 @@ def get_sg_output_prefix(
     )
 
 
-def _camel_to_snake(name: str) -> str:
+def camel_to_snake(name: str) -> str:
     s = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', name)
     s = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s)
     return s.lower()
@@ -273,7 +299,7 @@ def _camel_to_snake(name: str) -> str:
 
 def config_section(stage: cpg_flow.stage.Stage) -> str:
     """The [workflow.<section>] this stage reads, derived from its class name."""
-    return _camel_to_snake(stage.name)
+    return camel_to_snake(stage.name)
 
 
 def _resolved(stage: cpg_flow.stage.Stage, key: str, default: Any) -> Any:

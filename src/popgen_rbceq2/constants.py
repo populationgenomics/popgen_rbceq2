@@ -17,6 +17,12 @@ RBCEQ2_IMAGE_TAG = '2.4.3-1'
 GATK_VERSION = '4.6.2.0'
 GATK_IMAGE_TAG = '4.6.2.0-2'
 
+# bedtools, for the once-per-run capture-design subtraction (SelectOffDesignDefiningSites).
+# Only `intersect -v` is used, so the 2022 build is fine and nothing here needs a newer one.
+# Same suffix caveat as the tags above. No matching version constant: unlike the post-hoc
+# caller, this tool's version does not reach any output, only the set of sites it selects.
+BEDTOOLS_IMAGE_TAG = '2.30.0-1'
+
 # The value of INFO/POSTHOC on a record the post-hoc caller supplied, written by the merge in
 # FilterAndConvertGvcfsForRbceq2 and surfaced by the QC flag. It names the caller and version
 # rather than being a bare flag, so a QC TSV says which caller stood in for DRAGEN, and a

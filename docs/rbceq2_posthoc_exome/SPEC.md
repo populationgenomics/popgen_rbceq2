@@ -110,10 +110,16 @@ as `NOCOV`. Measured on the validation cohorts this is 4 of 1,674 Twist recoveri
 1,657 CREv2 ones, in C4B, RHD, RHCE and A4GALT — a small set, and the point is which
 question each flag answers rather than the count.
 
-The design is named by `exome_design_bed` in the stage's config section, as a
-`[references]` key resolved through `reference_path`. It is deliberately not defaulted:
-every default is the wrong design for some cohort, and being wrong is silent rather than
-fatal, so an exome run that does not name one fails while the graph is built.
+The design is named by `exome_design_bed` in `SelectOffDesignDefiningSites`' config
+section, as a `[references]` key resolved through `reference_path`. It is deliberately not
+defaulted: every default is the wrong design for some cohort, and being wrong is silent
+rather than fatal, so an exome run that does not name one fails while the graph is built.
+
+That subtraction is its own **run-level** stage, not a step in the conversion job, because
+its answer depends only on the configured design and the committed sites. It is done in
+`bedtools intersect -v`, a standard tool for exactly this operation, rather than the
+hand-written awk containment loop it replaced (§10). Its output path carries the design key as a segment, because the release segment
+above it cannot see a config change and a repointed key must not reuse the old BED.
 
 **The configured design is checked against the gVCF.** DRAGEN emits records over exactly
 the target BED with no padding, so a DRAGEN record at a defining site outside the
@@ -133,11 +139,12 @@ Mechanically, as implemented:
    which is what `%END` reports and what `GvcfRecord.covers` counts as covering. Mode 2
    asks whether the *variant* overlaps and drops a deletion anchored on the site itself,
    which would make a covered site look like a hole.
-3. Subtract the capture design's intervals from the defining-sites BED to get the
-   off-design sites, then subtract the covered spans from those to get what may be filled
-   (one awk program, run twice; see §10). The difference between the two subtractions is
-   the off-design sites DRAGEN *did* call, which must be empty — a non-empty difference
-   fails the job, since it means the configured design is not the gVCF's.
+3. Subtract the covered spans from the run's off-design sites to get what may be filled.
+   The off-design set arrives from `SelectOffDesignDefiningSites` and is not recomputed
+   here; this subtraction is the awk one, over a few hundred spans (see §10). The
+   difference between the two subtractions is the off-design sites DRAGEN *did* call, which
+   must be empty — a non-empty difference fails the job, since it means the configured
+   design is not the gVCF's.
 4. Subset the post-hoc gVCF to records reaching a hole
    (`bcftools view -T <uncovered.bed> --targets-overlap 2 -e 'FORMAT/DP=0'`), strip it to
    the fields the pipeline reads, and split multiallelics.
@@ -302,6 +309,7 @@ validation runs in RESULTS.md predate `v3` and wrote to the v2 tree.
 | `scripts/gen_bg_resources.py` + `scripts/bg_db.py` | write `bg_defining_sites_padded.<genome>.bed` |
 | `resources/` | the new committed BED: 199 intervals, 135,579 bases |
 | `config/popgen_rbceq2_default_config.toml` | new stage section; `version = 'v3'` |
+| `stages/blood_group_genotyping/off_design_sites.py` | new stage: the run-level design subtraction, and the design key it reads |
 | `config/config_template.toml` | the required `exome_design_bed` key, with how to pick it |
 | `constants.py` | `GATK_VERSION`, `GATK_IMAGE_TAG`, `POSTHOC_CALLER` |
 | README / PRODUCT.md / GLOSSARY.md | document `POSTHOC`, the stage, and the fill rule |
@@ -312,7 +320,7 @@ validation runs in RESULTS.md predate `v3` and wrote to the v2 tree.
 | tests | QC flag logic, severity, extract parsing, exome gating, resource generation |
 
 The reference *fasta* needed no new key — see §9.1. The capture design does: an exome run
-sets `workflow.filter_and_convert_gvcfs_for_rbceq2.exome_design_bed` to a `[references]`
+sets `workflow.select_off_design_defining_sites.exome_design_bed` to a `[references]`
 key, which is resolved with `reference_path` like every other reference.
 
 ## 9. Resolved questions
@@ -329,6 +337,26 @@ key, which is resolved with `reference_path` like every other reference.
 4. **Genome CRAM recall** — deliberately not done. A genome gVCF has no capture edge to
    stop at. Noted in PRODUCT.md as resting on an untested assumption: that a genome
    `NOCOV` site is unmappable rather than merely uncalled.
+
+5. **`SelectOffDesignDefiningSites` is a MultiCohortStage, not a CohortStage.** cpg_flow
+   builds one `MultiCohort` object on every run from the `input_cohorts` list in config and
+   drives every stage from it: a CohortStage runs once per cohort inside it, a
+   SequencingGroupStage once per sequencing group inside it, and a MultiCohortStage once for
+   the object itself. With one cohort listed, all three run once. The difference is how the
+   consumer reads the result back. A stage's output is filed under the id of the target it
+   ran for, and a consumer has to name that target to read it. The consumer here,
+   `FilterAndConvertGvcfsForRbceq2`, runs for one sequencing group at a time. To read a
+   MultiCohortStage's output it calls `cpg_flow.inputs.get_multicohort()`, which always
+   returns the run's one `MultiCohort`. To read a CohortStage's output it would need the
+   cohort's id, and a `SequencingGroup` has no link to its cohort (cpg_flow leaves that out
+   because one sequencing group can be in several cohorts). The only route is to fetch the
+   `MultiCohort` anyway, list its cohorts, and pick one, which is correct only if the run has
+   exactly one cohort. Enforcing that would work, but it adds a restriction and an extra
+   lookup to reach the same one file per run that a MultiCohortStage gives for free. One
+   file per run also matches the config: `exome_design_bed` is one value for the whole run.
+   If designs ever need to differ within a run, the config key has to become per-cohort or
+   per-sequencing-group first, and the consumer would then need a way to find its cohort
+   that it does not have today.
 
 ## 10. What testing changed about the design
 
@@ -371,9 +399,19 @@ would have reached production:
 
 Environment facts worth keeping:
 
+- **The design subtraction moved from a hand-written awk loop to bedtools.** It first ran
+  inside every conversion job as an awk containment loop over the vendor BED. `bedtools
+  intersect -v` is the standard tool for exactly that operation, so it is easier to read and
+  maintain, and the answer is the same for every sample, so it now runs once per run in its
+  own stage (§4). Three behaviours had to match the awk for the swap to be safe, and all
+  three were checked against the pinned image on both vendor designs in use: half-open
+  interval semantics, skipping `track`/`browser` lines, and ignoring columns past the third.
+  Its output diffed identical to the awk's.
 - **bedtools is not in the bcftools image** (`debian:bookworm-slim` plus bcftools binaries
-  only), which settles the awk question in §4/§10 — awk stays. Its awk is **mawk**, not
-  gawk; both programs were re-run under mawk in that exact image.
+  only), and its awk is **mawk**, not gawk; the remaining awk program was re-run under mawk in
+  that exact image. There *is* a `cpg-common/images/bedtools` at `2.30.0-1`, which is what the
+  run-level stage uses. The per-sample hole-finding stays in awk inside the conversion job
+  (§4) because it is derived from that job's gVCF and the image has no bedtools.
 - **GATK 4.6.2.0 rejects CRAM 3.1** (`CRAM version 3.1 is not supported`). CPG CRAMs are
   3.0, so this is a future trap, not a current one.
 - **The masked reference is safe for these CRAMs.** They were aligned to unmasked hg38;
@@ -387,13 +425,18 @@ The hole-finding rule is expressed twice — in awk in the merge, and as
 `GvcfRecord.covers` in the QC job — because the merge runs in the bcftools image, which
 has no Python package of ours. `tests/test_posthoc_merge.py` runs the real awk and asserts
 it marks exactly the sites `covers` calls uncovered, which is the only thing tying the two
-together. bedtools is not in that image, as the environment facts above record, so the awk
-stays; `bedtools intersect -v` would replace it and remove the duplication only if a future
-image carried both, and pinning one tag to two tools has its own cost.
+together. Moving that half to bedtools would not remove the duplication, only relocate it:
+bedtools is a third implementation of containment whose semantics still have to be pinned
+against `covers` by a test, and the covered spans are derived from the gVCF inside a job
+whose image has no bedtools. So the awk stays for hole-finding, and the one subtraction that
+is sample-independent is bedtools' in its own stage (§4).
 
-One awk program serves both subtractions. Containment in a set of `[start, end)` spans is
-the same test whether the spans come from `%POS0\t%END` on DRAGEN records or from a vendor
-capture BED, so `_SITES_OUTSIDE_SPANS_AWK` is run twice rather than written twice. The
-design BED brings two things the covered-spans BED does not — extra columns and a `track`
-header line — and both are harmless, since only `$1`-`$3` are read and a header becomes an
-empty span on a contig no site is on. Tested with a BED shaped that way.
+One awk program served both subtractions at first. Containment in a set of `[start, end)`
+spans is the same test whether the spans come from `%POS0\t%END` on DRAGEN records or from a
+vendor capture BED, so `_SITES_OUTSIDE_SPANS_AWK` was run twice rather than written twice.
+That is no longer true of the design half: it is `bedtools intersect -v` in its own
+run-level stage, and the vendor BED's extra columns and `track` header line are bedtools'
+problem now. Both were re-checked against the pinned `bedtools:2.30.0-1` rather than assumed
+to carry over, and its subtraction of the real Twist design diffed identical to the awk's
+over all 1,625 committed sites. The awk keeps the per-sample half, where its spans always
+come from `bcftools query` and so are three plain columns.
