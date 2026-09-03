@@ -23,7 +23,13 @@ name = 'popgen_rbceq2'
 # LOWQ+POSTHOC rather than LOWQ. None moves an output path, so without a fresh tree an exome
 # re-run would reuse its v2 files and none would take effect. Genome outputs are byte-identical
 # to v2; they move tree only because the release version is workflow-wide.
-version = 'v3'
+#
+# v4: two exome-only output changes from review. Post-hoc records now carry FILTER PASS, or
+# LowDepth at DP<=1 as DRAGEN marks it, where HaplotypeCaller left `.`; rbceq2 excludes an
+# allele whose defining variant is not PASS, so under v3 no recovered alternate allele ever
+# reached a genotype. And the QC disregards a post-hoc reference block at a hole inside the
+# design, so such a hole reads NOCOV rather than POSTHOC. Genome outputs are again unchanged.
+version = 'v4'
 status_reporter = 'metamist'
 # driver_image =
 # sequencing_type = 'genome'

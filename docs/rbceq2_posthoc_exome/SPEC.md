@@ -335,6 +335,12 @@ and the composition of provenance into a site's flag name (§5). None moves an o
 without the bump an exome re-run would reuse its v2 files and none would take effect. The two
 validation runs in RESULTS.md predate `v3` and wrote to the v2 tree.
 
+`v4` covers two exome-only changes from the review of 2026-09-03: post-hoc records carry a
+FILTER rbceq2 accepts (`PASS`, or `LowDepth` at DP<=1), where HaplotypeCaller left `.` and
+rbceq2 therefore excluded every recovered alternate allele; and the QC disregards a post-hoc
+reference block at an in-design hole (§5). The v3 re-run in RESULTS.md predates both, so its
+genotype tables used no recovered allele.
+
 ## 8. Change table
 
 | file | change |
@@ -345,7 +351,7 @@ validation runs in RESULTS.md predate `v3` and wrote to the v2 tree.
 | `stages/pipeline.py` | wire the new stage; add to conversion's `requires` |
 | `scripts/gen_bg_resources.py` + `scripts/bg_db.py` | write `bg_defining_sites_padded.<genome>.bed` |
 | `resources/` | the new committed BED: 199 intervals, 135,579 bases |
-| `config/popgen_rbceq2_default_config.toml` | new stage section; `version = 'v3'` |
+| `config/popgen_rbceq2_default_config.toml` | new stage section; `version = 'v4'` |
 | `stages/blood_group_genotyping/off_design_sites.py` | new stage: the run-level design subtraction, and the design key it reads |
 | `config/config_template.toml` | the required `exome_design_bed` key, with how to pick it |
 | `constants.py` | `GATK_VERSION`, `GATK_IMAGE_TAG`, `POSTHOC_CALLER` |
