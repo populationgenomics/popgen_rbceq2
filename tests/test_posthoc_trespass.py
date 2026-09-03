@@ -83,13 +83,17 @@ HEADER = """##fileformat=VCFv4.2
 """
 
 
-def _bgzip(tmp_path: Path, name: str, body: str, *, index: bool, extra_header: str = '') -> Path:
+def _bgzip(
+    tmp_path: Path, name: str, body: str, *, index: bool, extra_header: str = '', sample: str = 'SAMPLE1'
+) -> Path:
     """Write a VCF body under HEADER and bgzip it, indexing only when asked.
 
-    `extra_header` is one more `##` line, placed before the column header.
+    `extra_header` is one more `##` line, placed before the column header. `sample` renames
+    the one sample column.
     """
     plain = tmp_path / name
     header = HEADER if not extra_header else HEADER.replace('#CHROM', f'{extra_header}\n#CHROM')
+    header = header.replace('\tSAMPLE1\n', f'\t{sample}\n')
     plain.write_text(header + body)
     packed = tmp_path / f'{name}.gz'
     with packed.open('wb') as out:
@@ -106,13 +110,15 @@ def _merge(
     dragen_records: str = DRAGEN_RECORDS,
     sites_bed: str = SITES_BED,
     off_design_bed: str = OFF_DESIGN_BED,
+    posthoc_sample: str = 'SAMPLE1',
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Run the real merge shell over one post-hoc record set, in tmp_path.
 
+    `posthoc_sample` names the post-hoc file's sample; the DRAGEN file is always SAMPLE1.
     `check=False` for a merge expected to fail, so the test can read the exit code and stderr.
     """
-    posthoc = _bgzip(tmp_path, 'posthoc.g.vcf', posthoc_records, index=True)
+    posthoc = _bgzip(tmp_path, 'posthoc.g.vcf', posthoc_records, index=True, sample=posthoc_sample)
     sites = tmp_path / 'sites.bed'
     sites.write_text(sites_bed)
     off_design = tmp_path / 'off_design_defining_sites.bed'
@@ -223,7 +229,7 @@ def test_the_merge_reports_what_it_kept_and_what_it_dropped(tmp_path):
     stderr = _merge(tmp_path, deletion).stderr
 
     assert '0 record(s) kept over 1 hole(s)' in stderr
-    assert '2 dropped for' in stderr
+    assert '1 variant(s) dropped for' in stderr
 
 
 def test_a_posthoc_variant_overlapping_a_dragen_block_but_no_called_site_is_kept(tmp_path):
@@ -283,7 +289,7 @@ def test_a_posthoc_deletion_reaching_an_in_design_hole_is_dropped(tmp_path):
 
     stderr = _merge(tmp_path, deletion, dragen_records=dragen, sites_bed=sites).stderr
 
-    assert '2 dropped for' in stderr
+    assert '1 variant(s) dropped for' in stderr
     assert _flags(tmp_path, sites_bed=sites) == {
         OFF_DESIGN: 'NOCOV:1:2000(C>T)',
         2500: 'PASS',
@@ -369,4 +375,21 @@ def test_a_dragen_reference_block_over_an_off_design_site_fails_the_job_naming_t
     assert 'DRAGEN reference blocks cover 1 defining site(s) outside the capture design' in result.stderr
     assert 'exome_design_bed = exome_probesets_hg38/test_design_bed is not the BED' in result.stderr
     assert f'chr1\t{OFF_DESIGN - 1}\t{OFF_DESIGN}' in result.stderr
+    assert not (tmp_path / 'merged.vcf.gz').exists()
+
+
+def test_a_posthoc_file_naming_another_sample_fails_the_job_rather_than_relabelling(tmp_path):
+    # The CRAM's read group names the post-hoc sample and DRAGEN named the gVCF from the same
+    # run, so a disagreement means the two inputs do not describe one individual. Relabelling
+    # would satisfy `concat` and splice another person's genotypes in at exactly the sites
+    # nothing else covers, looking like an ordinary recovery. The check runs after the supplement
+    # is built, so a mismatch has to fail even when there is something to merge.
+    snp = f'chr1\t{OFF_DESIGN}\t.\tC\tT,<NON_REF>\t60\t.\tSPARE=1\tGT:DP:GQ\t0/1:44:80\n'
+
+    result = _merge(tmp_path, snp, posthoc_sample='SAMPLE2', check=False)
+
+    assert result.returncode == 1
+    assert 'the post-hoc calls and the gVCF name different samples' in result.stderr
+    assert 'CRAM/post-hoc: SAMPLE2' in result.stderr
+    assert 'primary gVCF:  SAMPLE1' in result.stderr
     assert not (tmp_path / 'merged.vcf.gz').exists()

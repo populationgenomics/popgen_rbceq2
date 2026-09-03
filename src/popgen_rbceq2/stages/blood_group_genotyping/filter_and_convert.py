@@ -264,8 +264,10 @@ def _merge_posthoc_commands(
             # A marked record with no INFO/END is dropped: it is a variant, or the <NON_REF>
             # twin `norm` split off one, and either way it asserts something about a defining
             # site it may not fill, in the file rbceq2 reads. INFO/END is what tells a real
-            # reference block from that twin, and a block is kept — see the docstring.
-            n_trespass=$(bcftools view -H -i 'INFO/COVERED=1 && INFO/END="."' posthoc_marked.bcf | wc -l | tr -d ' ')
+            # reference block from that twin, and a block is kept — see the docstring. The
+            # count excludes the twin so it says how many variants went, not how many records.
+            n_trespass=$(bcftools view -H -i 'INFO/COVERED=1 && INFO/END="." && ALT!="<NON_REF>"' posthoc_marked.bcf \\
+                | wc -l | tr -d ' ')
             bcftools view -e 'INFO/COVERED=1 && INFO/END="."' -Ou posthoc_marked.bcf \\
                 | bcftools annotate -x INFO/COVERED -h posthoc_hdr.txt -Ov - \\
                 | awk -v OFS='\\t' -v tag='POSTHOC={constants.POSTHOC_CALLER}' '{_TAG_POSTHOC_AWK}' \\
@@ -276,7 +278,7 @@ def _merge_posthoc_commands(
             # itself and its <NON_REF> twin. Reporting only the holes hid the all-zero-depth
             # case entirely — a header-only supplement that `concat` merges silently.
             n_kept=$(bcftools view -H posthoc_tagged.vcf.gz | wc -l | tr -d ' ')
-            echo "post-hoc: $n_kept record(s) kept over $n_fill hole(s); $n_trespass dropped for" >&2
+            echo "post-hoc: $n_kept record(s) kept over $n_fill hole(s); $n_trespass variant(s) dropped for" >&2
             echo "reaching a defining site they may not fill, the rest had no reads there (DP=0)" >&2
 
             # The two callers must agree on whose sample this is, and disagreeing is fatal.
