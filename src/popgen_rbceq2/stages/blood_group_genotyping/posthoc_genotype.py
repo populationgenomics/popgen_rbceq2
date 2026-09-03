@@ -18,22 +18,23 @@ EXOME = 'exome'
 # The memory tier this stage asks for when its config section does not set one.
 MEMORY_TIER = 'standard'
 
-# Container memory per cpu, in GB, for each Hail Batch memory tier, rounded down from what the
-# tier really grants (standard is 3.75, highmem 6.5).
+# Container memory per cpu, in GB, for each Hail Batch memory tier this stage accepts, rounded
+# down from what the tier really grants (standard is 3.75, highmem 6.5).
 #
 # The JVM heap is derived from this and not from `cpu` alone. `configure_job` takes the tier
 # from this stage's own config section, so tuning memory there without also raising cpu would
 # leave -Xmx asking for more than the container has. The job is then killed for exceeding its
 # limit, with nothing in the log naming the heap as the cause.
-_GB_PER_CPU = {'lowmem': 1, 'standard': 3, 'highmem': 6}
+#
+# `lowmem` is not accepted. Hail grants it about 0.9 GiB per core, which rounds down to nothing
+# a JVM can be sized from, and HaplotypeCaller is not a lowmem workload; a request for it fails
+# at graph-build time with the message below rather than being killed mid-run.
+_GB_PER_CPU = {'standard': 3, 'highmem': 6}
 
 # Held back from the heap for the rest of the JVM: thread stacks, metaspace, GC structures and
-# the direct buffers htsjdk uses for BGZF.
+# the direct buffers htsjdk uses for BGZF. One core on `standard` leaves 2GB after this, the
+# smallest heap any accepted pairing can produce, and enough to start HaplotypeCaller on.
 _JVM_OVERHEAD_GB = 1
-
-# Below this the heap is not worth starting HaplotypeCaller on, so a cpu and memory pairing
-# that cannot reach it fails at graph-build time rather than being killed mid-run.
-_MIN_HEAP_GB = 2
 
 
 def _heap_gb(cpu: int, memory: str, section: str) -> int:
@@ -48,23 +49,16 @@ def _heap_gb(cpu: int, memory: str, section: str) -> int:
         The heap size to pass as -Xmx.
 
     Raises:
-        cpg_utils.config.ConfigError: `memory` is not one of the three tiers, or the pairing
-            leaves too little room for a usable heap.
+        cpg_utils.config.ConfigError: `memory` is not an accepted tier.
     """
     if memory not in _GB_PER_CPU:
         raise cpg_utils.config.ConfigError(
             f'workflow.{section}.memory is {memory!r}; this stage sizes its JVM heap from the '
             f'tier it was given, so it needs one of {sorted(_GB_PER_CPU)}. An explicit size is '
-            'not supported here, because nothing would then keep the heap inside it.'
+            'not supported here, because nothing would then keep the heap inside it, and lowmem '
+            'is not, because its ~0.9 GiB per core leaves no heap worth starting HaplotypeCaller on.'
         )
-    heap = cpu * _GB_PER_CPU[memory] - _JVM_OVERHEAD_GB
-    if heap < _MIN_HEAP_GB:
-        raise cpg_utils.config.ConfigError(
-            f'workflow.{section} asks for cpu={cpu} with memory={memory!r}, which leaves '
-            f'{heap}GB for the JVM heap once {_JVM_OVERHEAD_GB}GB is held back for the rest of '
-            f'the JVM. HaplotypeCaller needs at least {_MIN_HEAP_GB}GB. Raise cpu, or the tier.'
-        )
-    return heap
+    return cpu * _GB_PER_CPU[memory] - _JVM_OVERHEAD_GB
 
 
 def applies_to(sequencing_group: cpg_flow.targets.SequencingGroup) -> bool:

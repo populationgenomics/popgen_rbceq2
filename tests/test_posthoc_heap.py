@@ -48,7 +48,7 @@ def _posthoc_command(mocker, sequencing_group) -> str:
 
 @pytest.mark.parametrize(
     ('memory', 'cpu', 'expected_heap'),
-    [('standard', 2, 5), ('lowmem', 4, 3), ('highmem', 2, 11)],
+    [('standard', 1, 2), ('standard', 2, 5), ('highmem', 2, 11)],
 )
 def test_the_jvm_heap_is_sized_from_the_memory_tier_the_job_was_given(
     mocker,
@@ -66,19 +66,21 @@ def test_the_jvm_heap_is_sized_from_the_memory_tier_the_job_was_given(
     assert f'-Xmx{expected_heap}g' in _posthoc_command(mocker, exome_sequencing_group)
 
 
-def test_a_memory_tier_too_small_for_its_cpu_count_fails_before_the_job_runs(
+def test_lowmem_is_refused_before_the_job_runs(
     mocker,
     exome_sequencing_group,
     shm_tmp_path: Path,
 ):
-    # Failing here beats being killed mid-run: an OOM kill on a JVM says only that the
-    # container was exceeded, and this is the pairing that causes it.
-    _posthoc_config(shm_tmp_path, {'memory': 'lowmem', 'cpu': 2})
+    # Hail grants lowmem about 0.9 GiB per core, not the 1 an earlier table credited it with,
+    # so the heap that table sized overran the container by the JVM's own overhead. Failing
+    # here beats being killed mid-run: an OOM kill on a JVM says only that the container was
+    # exceeded.
+    _posthoc_config(shm_tmp_path, {'memory': 'lowmem', 'cpu': 4})
 
     with pytest.raises(cpg_utils.config.ConfigError) as raised:
         _posthoc_command(mocker, exome_sequencing_group)
 
-    assert 'heap' in str(raised.value)
+    assert 'lowmem' in str(raised.value)
 
 
 def test_a_memory_value_that_is_not_a_tier_fails_rather_than_guessing_a_heap(
