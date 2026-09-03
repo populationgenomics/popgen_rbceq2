@@ -39,8 +39,10 @@ To run part of the branch only, restrict the graph:
 only_stages = ["FilterAndConvertGvcfsForRbceq2", "GenotypeBloodGroupsWithRbceq2"]
 ```
 
-Sequencing groups without a gVCF are skipped, not failed. Exome sequencing groups get one
-extra stage, `PosthocGenotypeOffTargetSites`; genome runs are unaffected by it.
+Sequencing groups without a gVCF are skipped, not failed. Exome runs get two extra stages,
+`PosthocGenotypeOffTargetSites` per sequencing group and `SelectOffDesignDefiningSites` once per
+run, and an exome `only_stages` list has to name both alongside the conversion stage; genome
+runs are unaffected by either.
 
 ### An exome run must name its capture design
 
@@ -182,6 +184,14 @@ stage's job.
 The output gVCF goes to tmp and registers no Metamist Analysis. It is an intermediate the
 conversion stage consumes through the cpg-flow graph, and what a reader needs — that a call
 rests on a recovered site — reaches Metamist as a `POSTHOC` flag on the QC TSV instead.
+
+### `SelectOffDesignDefiningSites` (once per run, exomes only)
+
+Subtract the configured capture design's intervals from the committed defining sites with
+`bedtools intersect -v`, giving the sites the post-hoc calls may fill. The output path carries
+the design key, so repointing `exome_design_bed` cannot reuse another design's answer. Both the
+merge in the conversion stage and the QC read this one BED; the section on merging below says
+why the subtraction lives here and not in the per-sample job.
 
 ### `FilterAndConvertGvcfsForRbceq2` (per sequencing group)
 
@@ -576,8 +586,10 @@ uv run pyright
 pre-commit install
 ```
 
-CI runs those on every pull request, then builds the driver image and runs the suite again
-inside it.
+The tests that run the real merge shell and the real design subtraction need `bcftools`,
+`bgzip`, `tabix` and `bedtools` on PATH and skip otherwise; `uv run pytest -rs` lists any skip.
+CI installs them and runs those checks on every pull request, then builds the driver image and
+runs the suite again inside it.
 
 ## Related
 
