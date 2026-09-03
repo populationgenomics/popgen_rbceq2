@@ -187,6 +187,43 @@ one of their defining alleles is a structural variant, which one base of depth a
 assess. The recall cannot help: the problem is not missing reads, it is that a single-base
 measurement is the wrong instrument. See [`../rbceq2_cnv_sv/SPEC.md`](../rbceq2_cnv_sv/SPEC.md).
 
+## The v3 re-run of CREv2
+
+Batch [1136696](https://batch.hail.populationgenomics.org.au/batches/1136696), COH13446 again on
+`workflow.version = 'v3'`, after the capture-design gate, the flag-name composition, the
+trespass drop and the run-level `SelectOffDesignDefiningSites` stage landed. 63/63 jobs
+succeeded (one more than v2: the new stage), 7.5 min, $0.10. Same image tag, same inputs.
+
+It is the end-to-end confirmation the two runs above could not give, since both predate v3.
+Every difference from the v2 CREv2 outputs is one of the intended changes:
+
+| | v2 | v3 |
+|---|---|---|
+| geno cells identical | | 510/510 |
+| QC cells changed | | 54/510 |
+| `LOWQ` site flags | 341 | 267 |
+| `LOWQ+POSTHOC` site flags | 0 | 70 |
+| `NOCOV` site flags | 118 | 122 |
+| `PASS` / `POSTHOC` site flags | 201 / 732 | 201 / 732 |
+| cohort QC cells resting on a recovery | 210 | 234 |
+| records dropped for reaching a DRAGEN-called site | | 0 in every sample |
+
+- **The run-level stage agrees with the offline count**: 165 of 1,625 defining sites outside
+  CREv2 `Covered`.
+- **The flag composition** turns 70 sub-threshold recoveries from `LOWQ` into `LOWQ+POSTHOC`,
+  which is what lifts the reliant-cell count from 210 to 234 — the figure the design section
+  above predicted.
+- **The design gate** leaves 7 in-design holes as `NOCOV` that v2 had filled: 1 to 3 per sample
+  in four samples, one C4B site in three of them and one A4GALT site in the fourth. That is
+  exactly the 7 CREv2 site-resolutions the gate section above said it would cost. The other six
+  samples have no in-design hole, 165 holes each.
+- **The trespass drop did not fire**: no post-hoc variant reached a DRAGEN-called site in this
+  cohort. It is exercised by `tests/test_posthoc_trespass.py`, not by this run.
+- **Kept records per sample** ran 55 to 73 over 165 fillable holes, the rest zero-depth, in line
+  with v2.
+
+The Twist cohort is not re-run, for the sample-name reason above.
+
 ## Observations worth following up
 
 **Zero-depth *primary* records cannot be recovered.** Both callers were asked the same
