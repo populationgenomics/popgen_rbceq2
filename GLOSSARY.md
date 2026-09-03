@@ -29,9 +29,11 @@ Lane's paper); RBCeq2 adds the reference allele to complete the genotype.
   "Post-hoc" because it supplements calls already made rather than replacing the primary caller.
 - `POSTHOC`: two related things. As an `INFO` field on a merged VCF record it names the caller
   that supplied that record where the primary gVCF was silent (`POSTHOC=gatk-hc-4.6.2.0`). As a
-  QC flag prefix it marks a system whose defining site passed the thresholds but was reported
-  only by that caller. It is a provenance flag, not a quality one, and it ranks below `LOWQ` and
-  above `PASS`. The same caller string appears inside any other flag's metrics as `src=`.
+  QC flag name it marks a site the post-hoc caller supplied the record for. It is a provenance
+  flag, not a quality one, and it is joined to the site's severity with `+` rather than ranked
+  against it: a recovered site that passes the thresholds is `POSTHOC`, one that is also
+  sub-threshold is `LOWQ+POSTHOC`. The same caller string appears inside the flag's metrics as
+  `src=`.
 - DRAGEN masked reference: `Homo_sapiens_assembly38_masked.fasta`, the assembly our CRAMs were
   aligned against (`references.broad.ref_fasta`). Required to decode a CRAM correctly — a
   different assembly yields wrong bases rather than an error.

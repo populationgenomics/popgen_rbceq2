@@ -49,13 +49,16 @@ VCF, and the QC flags any call resting on a post-hoc record so it can never pass
 ```
 sequencing_group.cram ──> PosthocGenotypeOffTargetSites ──> <sg>.posthoc.g.vcf.gz
                                                                   │
+exome_design_bed ──> SelectOffDesignDefiningSites ──> off-design defining sites (once per run)
+                                                                  │
 sequencing_group.gvcf ──> FilterAndConvertGvcfsForRbceq2 <────────┘
-                             (merge: DRAGEN wins; supplement tagged INFO/POSTHOC)
+                             (merge: DRAGEN wins; only off-design holes are filled;
+                              supplement tagged INFO/POSTHOC)
                                     │                    │
                                 converted VCF        DP/GQ extract (+ posthoc column)
                                     │                    │
-                          GenotypeBloodGroupsWithRbceq2  FlagBloodGroupCallQc
-                                                         (POSTHOC flag / src=posthoc)
+                          GenotypeBloodGroupsWithRbceq2  FlagBloodGroupCallQc <── off-design sites
+                                                         (POSTHOC flag / src=gatk-hc-4.6.2.0)
 ```
 
 ## 3. The new stage: `PosthocGenotypeOffTargetSites`
@@ -73,11 +76,11 @@ or no gVCF (no primary calls means nothing to supplement).
   the job reads megabytes of CRAM rather than localising 15–20 GB.
 - **Reference:** the exact reference the CRAMs were aligned to — the DRAGEN masked
   assembly38 in the references bucket. CRAM decoding requires the aligner's reference;
-  Broad's standard fasta is not it. Path comes from a `references.*` config key
-  (exact key: open question 1).
+  Broad's standard fasta is not it. Path comes from `references.broad.ref_fasta`, which
+  already names that assembly (§9, question 1).
 - **Image:** `image_path('gatk', ...)` — 4.6.2.0-2 is current in cpg-common.
 - **Output:** `<sg>.posthoc.g.vcf.gz` + `.tbi`, under the tmp category like the
-  conversion stage's intermediates (open question 3 argues for keeping it).
+  conversion stage's intermediates (§9, question 3: nothing downstream reads it).
 
 ### New committed resource
 
@@ -236,11 +239,9 @@ moot — new tree, no stale files).
   `POSTHOC:1:159204893(T>C,src=gatk-hc-4.6.2.0,DP=42,GQ=99)`. A post-hoc site is never a
   silent `PASS` — a reviewer must be able to see the call rests on a re-call, not on the
   primary caller.
-- **Failing post-hoc sites keep their existing prefix** (`LOWQ`/`DEL`), with the same
-  `src=` key in the metrics, e.g. `LOWQ:...(T>C,src=gatk-hc-4.6.2.0,DP=6,GQ=12)`. The
-  failure mode stays primary in the *site* flag; provenance is said once per system. `src=`
-  names the caller and version rather than a bare `posthoc`, so a QC TSV says *which* caller
-  stood in and a version bump is visible in the output rather than only in the code.
+- **`src=` names the caller and version** rather than a bare `posthoc`, so a QC TSV says
+  *which* caller stood in and a version bump is visible in the output rather than only in the
+  code.
 - **Severity order:** `NOCOV > DEL > LOWQ > PASS`, applied per site.
 - **`POSTHOC` is joined to the severity, not ranked against it.** A flag name states two
   independent findings about the site: its severity (`NOCOV`, `DEL` or `LOWQ`, or absent when
@@ -308,13 +309,16 @@ the `INFO/POSTHOC` header line on the intermediate and a trailing `POSTHOC` colu
 extract, because `bcftools query` aborts on a tag the header does not declare. That is what
 the release version bump records.
 
-New config section, following the class-name convention:
+New config sections, following the class-name convention:
 
 ```toml
 [workflow.posthoc_genotype_off_target_sites]
 cpu = 2
-memory = "standard"
-storage = "20Gi"   # streams the CRAM; disk is for the ~3Gb reference and a tiny gVCF
+memory = "standard"   # or "highmem"; lowmem is refused, the JVM heap is sized from the tier
+storage = "20Gi"      # streams the CRAM; disk is for the ~3Gb reference and a tiny gVCF
+
+[workflow.select_off_design_defining_sites]
+exome_design_bed = 'exome_probesets_hg38/<design>'   # [references] key; required for an exome, no default
 ```
 
 ## 7. Versioning
@@ -327,7 +331,7 @@ new parser.
 `v2` covered the extract's INFO/POSTHOC column and the first QC flag vocabulary. `v3` covers
 three later exome-only output changes: the capture-design gate on which holes may be filled
 (§4), dropping post-hoc variants that reach a base DRAGEN called (§4, **Boundary overlap**),
-and the composition of provenance into a site's flag name (§6). None moves an output path, so
+and the composition of provenance into a site's flag name (§5). None moves an output path, so
 without the bump an exome re-run would reuse its v2 files and none would take effect. The two
 validation runs in RESULTS.md predate `v3` and wrote to the v2 tree.
 
