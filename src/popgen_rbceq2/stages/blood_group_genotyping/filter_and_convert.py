@@ -62,12 +62,12 @@ _POSTHOC_HEADER_LINE = (
 )
 
 
-# The INFO flag marking a post-hoc record whose span reaches a defining site the primary caller
-# already has a record for. Set from covered.bed inside the merge and stripped again before the
-# supplement is concatenated, so it reaches neither the merged file nor the extract.
+# The INFO flag marking a post-hoc record whose span reaches a defining site it may not fill:
+# one the primary caller already has a record for, or a hole inside the capture design. Set
+# inside the merge and stripped again before the supplement is concatenated, so it reaches
+# neither the merged file nor the extract.
 _COVERED_HEADER_LINE = (
-    '##INFO=<ID=COVERED,Number=0,Type=Flag,Description='
-    '"Overlaps a defining site the primary caller already has a record for">'
+    '##INFO=<ID=COVERED,Number=0,Type=Flag,Description="Overlaps a defining site the post-hoc caller may not fill">'
 )
 
 
@@ -98,30 +98,39 @@ def _merge_posthoc_commands(
     second caller should answer.
 
     The design BED has to be the one the gVCF was called against, and this is checked: DRAGEN
-    emits records over exactly the target BED (no padding), so a DRAGEN record at a defining
-    site outside the configured design means the wrong file is configured — on the validation
-    cohorts a target-regions file in place of the probe-footprint one leaves 309 defining sites
-    "outside" the design with DRAGEN records, and would have gated off three quarters of the
-    recoveries while the run looked fine. That case fails the job.
+    emits reference blocks over exactly the target BED (no padding), so a DRAGEN reference
+    block reaching a defining site outside the configured design means the wrong file is
+    configured — on the validation cohorts a target-regions file in place of the probe-footprint
+    one leaves 309 defining sites "outside" the design with DRAGEN records, and would have gated
+    off three quarters of the recoveries while the run looked fine. That case fails the job. A
+    DRAGEN *variant* is not proof of anything: it is anchored inside the target, but its REF can
+    run past the edge, so a deletion at a capture edge can legitimately cover an off-design
+    site. Such a site is covered and so not filled, and the QC reports DEL from DRAGEN's record.
 
-    A record is selected for reaching a hole and is selected whole, so one anchored in a hole
-    can extend over a neighbouring defining site DRAGEN did call. Blood-group defining sites
-    are dense — most have another within 20bp — so this is the ordinary case near a capture
-    edge, not a corner one, and what happens next depends on what the record is.
+    A record is selected for reaching a fillable hole and is selected whole, so one anchored in
+    a hole can extend over a neighbouring defining site it may not fill: one DRAGEN did call,
+    or a hole inside the design. Blood-group defining sites are dense — most have another
+    within 20bp — so this is the ordinary case near a capture edge, not a corner one, and what
+    happens next depends on what the record is.
 
-    A post-hoc **variant** that reaches a called base is dropped. Keeping it would hand rbceq2
-    two callers' alleles at one base with nothing to choose between them: a DRAGEN SNP at a
-    site, and a post-hoc deletion removing it. The QC could not report the conflict either,
-    because `resolve_coverage` prefers the primary record and so reads the site as an ordinary
-    PASS. The hole the dropped record would have filled goes back to reaching the QC as NOCOV,
-    which is the honest answer — DRAGEN wins wherever both speak, and here both spoke.
+    A post-hoc **variant** that reaches a site it may not fill is dropped. At a called base,
+    keeping it would hand rbceq2 two callers' alleles at one base with nothing to choose
+    between them: a DRAGEN SNP at a site, and a post-hoc deletion removing it. The QC could not
+    report the conflict either, because `resolve_coverage` prefers the primary record and so
+    reads the site as an ordinary PASS. At an in-design hole, keeping it would let the second
+    caller decide the genotype at a site the design targeted, which is exactly what the design
+    bound exists to prevent. Either way the hole the dropped record would have filled goes back
+    to reaching the QC as NOCOV, which is the honest answer.
 
-    A post-hoc **reference block** that reaches a called base is kept whole. It asserts nothing
-    rbceq2 ever sees, since the conversion drops every <NON_REF>-only record before rbceq2
-    reads the file, and dropping the block instead would throw away the hole it was kept for.
-    That does leave two records covering the called site in the extract, which is why
-    `resolve_coverage` prefers the record with no INFO/POSTHOC. Splitting blocks on the
-    boundary would be the alternative and is not worth it.
+    A post-hoc **reference block** that reaches a site it may not fill is kept whole. It
+    asserts nothing rbceq2 ever sees, since the conversion drops every <NON_REF>-only record
+    before rbceq2 reads the file, and dropping the block instead would throw away the hole it
+    was kept for. That does leave the block covering the site in the extract. At a called base
+    two records cover it and `resolve_coverage` prefers the one with no INFO/POSTHOC; at an
+    in-design hole the block is the only record there, so the QC is handed the fillable sites
+    (`FlagBloodGroupCallQc` reads the same off-design BED) and disregards a post-hoc record at
+    any other site, which is what keeps such a hole NOCOV. Splitting blocks on the boundary
+    would be the alternative and is not worth it.
 
     Fails rather than merging if the CRAM and the gVCF name different samples. They are two
     outputs of one DRAGEN run, so a disagreement means this sequencing group's inputs do not
@@ -156,22 +165,33 @@ def _merge_posthoc_commands(
         awk -v spans=covered.bed '{_SITES_OUTSIDE_SPANS_AWK}' \\
             covered.bed {off_design_bed} > uncovered.bed
 
-        # A DRAGEN record at a site outside the design means the configured BED is not the one
-        # the gVCF was called against. The likely case is a target-regions file where the gVCF
-        # used the probe footprint, which would quietly gate off most of the recoveries.
+        # A DRAGEN reference block reaching a site outside the design means the configured BED
+        # is not the one the gVCF was called against. The likely case is a target-regions file
+        # where the gVCF used the probe footprint, which would quietly gate off most of the
+        # recoveries. Blocks, not every record: a block asserts hom-ref over bases DRAGEN
+        # evaluated, and those stop at the target edge, whereas a variant is anchored inside
+        # the target and its REF can run past the edge. A deletion at a capture edge covering
+        # an off-design site is a carrier, not a wrong file; it is covered above, so not
+        # filled, and reaches the QC as DEL from the DRAGEN record. Nearly every site is
+        # hom-ref, so a wrong design still trips this on almost all of its sites.
+        bcftools query -T {off_design_bed} --targets-overlap 1 -i 'INFO/END!="."' \\
+            -f '%CHROM\\t%POS0\\t%END\\n' dragen.vcf.gz > off_design_blocks.bed
+        awk -v spans=off_design_blocks.bed '{_SITES_OUTSIDE_SPANS_AWK}' \\
+            off_design_blocks.bed {off_design_bed} > off_design_outside_blocks.bed
         sort {off_design_bed} > off_design_sites.sorted.bed
-        sort uncovered.bed > uncovered.sorted.bed
-        comm -23 off_design_sites.sorted.bed uncovered.sorted.bed > off_design_called.bed
-        if [ -s off_design_called.bed ]; then
-            n_called=$(wc -l < off_design_called.bed | tr -d ' ')
-            echo "ERROR: DRAGEN has records at $n_called defining site(s) outside the capture design." >&2
+        sort off_design_outside_blocks.bed > off_design_outside_blocks.sorted.bed
+        comm -23 off_design_sites.sorted.bed off_design_outside_blocks.sorted.bed > off_design_in_blocks.bed
+        if [ -s off_design_in_blocks.bed ]; then
+            n_in_blocks=$(wc -l < off_design_in_blocks.bed | tr -d ' ')
+            echo "ERROR: DRAGEN reference blocks cover $n_in_blocks defining site(s) outside the capture design." >&2
             echo "{off_design_sites.DESIGN_CONFIG_PATH} = {design_key} is not the BED this gVCF" >&2
             echo "was called against." >&2
             echo "For an Agilent design that usually means Regions configured where the gVCF" >&2
             echo "used Covered. First sites:" >&2
-            head -n 10 off_design_called.bed >&2
+            head -n 10 off_design_in_blocks.bed >&2
             exit 1
         fi
+        sort uncovered.bed > uncovered.sorted.bed
 
         awk -v spans=covered.bed '{_SITES_OUTSIDE_SPANS_AWK}' covered.bed {sites_bed} > holes.bed
         n_holes=$(wc -l < holes.bed | tr -d ' ')
@@ -182,16 +202,18 @@ def _merge_posthoc_commands(
         # An empty -T file is a hard error in bcftools ("Failed to read the targets"), so the
         # no-holes case has to branch rather than fall through the same pipeline.
         if [ -s uncovered.bed ]; then
-            # The defining sites DRAGEN did cover: every site, less the holes. That is what a
-            # post-hoc record may not reach, and it is deliberately narrower than covered.bed.
-            # Marking against the DRAGEN records' whole spans would also drop a post-hoc
-            # variant that merely overlaps the tail of a long reference block, reaching no
-            # defining site DRAGEN called and so contradicting nothing rbceq2 reads.
+            # The defining sites a post-hoc record may not fill: every site, less the fillable
+            # holes. That is every site DRAGEN did cover, plus every hole inside the design.
+            # Subtracting holes.bed instead would leave an in-design hole out of the mark, and
+            # a record kept for the off-design hole beside it would fill both. The set is
+            # deliberately narrower than covered.bed: marking against the DRAGEN records' whole
+            # spans would also drop a post-hoc variant that merely overlaps the tail of a long
+            # reference block, reaching no defining site and so contradicting nothing rbceq2
+            # reads.
             sort {sites_bed} > sites.sorted.bed
-            sort holes.bed > holes.sorted.bed
-            comm -23 sites.sorted.bed holes.sorted.bed \
-                | sort -k1,1 -k2,2n | bgzip -c --threads {cpu} > called_sites.bed.gz
-            tabix -p bed called_sites.bed.gz
+            comm -23 sites.sorted.bed uncovered.sorted.bed \\
+                | sort -k1,1 -k2,2n | bgzip -c --threads {cpu} > unfillable_sites.bed.gz
+            tabix -p bed unfillable_sites.bed.gz
             echo '{_COVERED_HEADER_LINE}' > covered_hdr.txt
 
             # rbceq2 and the extract read GT, DP, GQ, MIN_DP and END; every other tag the
@@ -218,19 +240,31 @@ def _merge_posthoc_commands(
             # handled by the COVERED mark below, not by the selection mode.
             #
             # INFO/COVERED marks every selected record whose span also reaches a defining
-            # site DRAGEN called. `annotate -m` matches on the record's span, not on POS, so
-            # a deletion anchored on a hole and reaching a called site one base away is
-            # marked, which is the case this whole check exists for.
+            # site it may not fill. `annotate -m` matches on the record's span, not on POS, so
+            # a deletion anchored on a hole and reaching such a site one base away is marked,
+            # which is the case this whole check exists for.
+            #
+            # FILTER is set here because HaplotypeCaller leaves it `.` on every record and
+            # rbceq2 discards an allele whose defining variant is not literally PASS. Left as
+            # `.`, every post-hoc alternate allele would be thrown away before genotyping and
+            # each recovered site would be typed as reference by absence, while its QC flag
+            # said the call rested on the recall. `filter -s` writes PASS on every record the
+            # expression does not match, and the one filter DRAGEN applies to these cohorts
+            # that means the same thing on both callers is its depth rule, LowDepth at DP<=1.
+            # Its QUAL rule is not copied: DRAGEN's QUAL is ML-recalibrated and the two
+            # callers' scales are not comparable, so a post-hoc variant is used at any QUAL
+            # and its DP and GQ reach the QC flags, as a PASS DRAGEN variant's already do.
             bcftools view -T uncovered.bed --targets-overlap 2 -e 'FORMAT/DP=0' -Ou {posthoc_gvcf} \\
+                | bcftools filter -s LowDepth -e 'FORMAT/DP<=1' -Ou - \\
                 | bcftools annotate -x '^INFO/END,^FORMAT/GT,FORMAT/DP,FORMAT/GQ,FORMAT/MIN_DP' -Ou - \\
                 | bcftools norm -m -any --threads {cpu} -Ou - \\
-                | bcftools annotate -a called_sites.bed.gz -h covered_hdr.txt -c CHROM,FROM,TO -m COVERED \\
+                | bcftools annotate -a unfillable_sites.bed.gz -h covered_hdr.txt -c CHROM,FROM,TO -m COVERED \\
                     -Ob -o posthoc_marked.bcf -
 
             # A marked record with no INFO/END is dropped: it is a variant, or the <NON_REF>
             # twin `norm` split off one, and either way it asserts something about a defining
-            # site DRAGEN already called, in the file rbceq2 reads. INFO/END is what tells a
-            # real reference block from that twin, and a block is kept — see the docstring.
+            # site it may not fill, in the file rbceq2 reads. INFO/END is what tells a real
+            # reference block from that twin, and a block is kept — see the docstring.
             n_trespass=$(bcftools view -H -i 'INFO/COVERED=1 && INFO/END="."' posthoc_marked.bcf | wc -l | tr -d ' ')
             bcftools view -e 'INFO/COVERED=1 && INFO/END="."' -Ou posthoc_marked.bcf \\
                 | bcftools annotate -x INFO/COVERED -h posthoc_hdr.txt -Ov - \\
@@ -243,7 +277,7 @@ def _merge_posthoc_commands(
             # case entirely — a header-only supplement that `concat` merges silently.
             n_kept=$(bcftools view -H posthoc_tagged.vcf.gz | wc -l | tr -d ' ')
             echo "post-hoc: $n_kept record(s) kept over $n_fill hole(s); $n_trespass dropped for" >&2
-            echo "reaching a defining site DRAGEN called, the rest had no reads there (DP=0)" >&2
+            echo "reaching a defining site they may not fill, the rest had no reads there (DP=0)" >&2
 
             # The two callers must agree on whose sample this is, and disagreeing is fatal.
             #
@@ -303,8 +337,12 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
     site absent from its input as a confident homozygous reference call, so dropping a
     borderline genotype does not produce a no-call — it manufactures a wild-type call at
     a site that defines a blood-group antigen. DRAGEN has already hard-filtered these
-    gVCFs (records are FILTER=PASS); DP and GQ are reported as a per-system QC flag
-    instead of silently removing data.
+    gVCFs: a record that failed keeps its filter name (DRAGENSnpHardQUAL,
+    DRAGENIndelHardQUAL or LowDepth on the recalibrated gVCFs), and rbceq2 excludes an
+    allele whose defining variant is not PASS. DP and GQ are reported as a per-system QC
+    flag instead of silently removing data. Post-hoc records are given the same FILTER
+    semantics in the merge, since HaplotypeCaller leaves the column `.`, which rbceq2
+    would read as a failure.
 
     For an exome sequencing group this stage also merges in the post-hoc calls from
     PosthocGenotypeOffTargetSites, which fill the defining sites the capture-target BED

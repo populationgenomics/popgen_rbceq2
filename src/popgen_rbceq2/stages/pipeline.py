@@ -64,11 +64,13 @@ GenotypeBloodGroupsWithRbceq2: cpg_flow.stage.StageDecorator = stage_support.wir
     analysis_keys=['geno'],
     update_analysis_meta=analysis_meta.blood_group_calls,
 )
-# Requires the conversion stage for the DP/GQ extract, and the genotyping stage for the columns
-# the QC TSV has to match. Registers its own Analysis, separate from the calls above.
+# Requires the conversion stage for the DP/GQ extract, the genotyping stage for the columns
+# the QC TSV has to match, and the design subtraction so an exome's QC knows which sites the
+# merge was allowed to fill and disregards a post-hoc record anywhere else. Registers its own
+# Analysis, separate from the calls above.
 FlagBloodGroupCallQc: cpg_flow.stage.StageDecorator = stage_support.wire(
     call_qc.FlagBloodGroupCallQc,
-    requires=[FilterAndConvertGvcfsForRbceq2, GenotypeBloodGroupsWithRbceq2],
+    requires=[FilterAndConvertGvcfsForRbceq2, GenotypeBloodGroupsWithRbceq2, SelectOffDesignDefiningSites],
     analysis_type='blood_group_qc',
     analysis_keys=['qc'],
     update_analysis_meta=analysis_meta.call_qc,

@@ -37,7 +37,7 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
 
 **Report low-quality sites; do not remove them**
 - RBCeq2 has no depth or quality filtering of its own, and reads a blood-group site absent from its input as a *confident homozygous reference call*. Dropping a borderline genotype therefore does not produce a no-call — it manufactures a wild-type call at a site that defines an antigen.
-- So genotypes are not filtered on DP or GQ. DRAGEN has already hard-filtered these gVCFs. `FlagBloodGroupCallQc` instead reports per-system flags (`LOWQ`, `DEL`, `NOCOV`, `NA`) naming the defining site and what the caller reported there, and the thresholds are recorded alongside the flags so a reader can tell what `LOWQ` meant on that run. See the [README](../README.md) for how to read a flag.
+- So genotypes are not filtered on DP or GQ. DRAGEN has already hard-filtered these gVCFs, keeping a failed record with its filter name, and rbceq2 excludes an allele whose defining variant is not `PASS`; post-hoc records are given `PASS` or DRAGEN's `LowDepth` in the merge so they are judged the same way, since HaplotypeCaller leaves FILTER `.` and rbceq2 would discard every recovered allele. `FlagBloodGroupCallQc` instead reports per-system flags (`LOWQ`, `DEL`, `NOCOV`, `NA`) naming the defining site and what the caller reported there, and the thresholds are recorded alongside the flags so a reader can tell what `LOWQ` meant on that run. See the [README](../README.md) for how to read a flag.
 - This reverses an earlier decision to delete sub-threshold sites. Deletion was not neutral: it moved uncertain calls to false reference rather than removing them from analysis.
 
 **Post-hoc recall of off-target sites, for exomes only (`PosthocGenotypeOffTargetSites`)**
@@ -59,17 +59,22 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
   design keeps two findings apart that were being conflated: "the capture never targeted this
   site", which the recall exists to fix, and "the capture targeted it and DRAGEN still said
   nothing", which is a fact about that DRAGEN run and stays `NOCOV`. The design is configured
-  per run, not defaulted, and the job fails if DRAGEN has records outside it. Which sites the
+  per run, not defaulted, and the job fails if a DRAGEN reference block reaches a defining site
+  outside it, which only a wrong file can produce; a DRAGEN deletion running off a capture edge
+  is a carrier, and the site under it is covered and left unfilled. Which sites the
   design missed is subtracted once for the whole run, in bedtools, because that answer depends
   on no individual sample; judging each sample's silence stays per sample, in the conversion
   job, because it cannot be anything else.
-- **The primary caller wins wherever both speak, including at bases a post-hoc record only
-  reaches.** A record kept for covering a hole is kept whole, so one anchored in a hole can
-  extend over a neighbouring defining site DRAGEN did call. Where that record is a variant it is
-  dropped, because keeping it would put two callers' alleles on one base in rbceq2's input with
-  nothing to choose between them, and the QC would read that base as an ordinary `PASS`. The
-  hole returns to `NOCOV`. A reference block is kept, since it asserts nothing rbceq2 sees and
-  dropping it would lose the hole it was kept for.
+- **The primary caller wins wherever both speak, and the design bound holds at every site a
+  post-hoc record merely reaches.** A record kept for covering a hole is kept whole, so one
+  anchored in a hole can extend over a neighbouring defining site it may not fill: one DRAGEN
+  did call, or a hole inside the design. Where that record is a variant it is dropped, because
+  keeping it would put two callers' alleles on one base in rbceq2's input with nothing to choose
+  between them, or let the second caller decide a site the design targeted. The hole returns to
+  `NOCOV`. A reference block is kept, since it asserts nothing rbceq2 sees and dropping it would
+  lose the hole it was kept for; the QC then reads the same off-design BED the merge did and
+  counts a post-hoc record only at a site the merge was allowed to fill, so an in-design hole
+  the block spans stays `NOCOV`.
 - **A call resting on a recovered site is always annotated as such.** The site's QC flag name
   carries `POSTHOC`, because the antigen then rests on a different caller, without the sample's
   DRAGstr model, over reads the capture design did not target. That is a fact a

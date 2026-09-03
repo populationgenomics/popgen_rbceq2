@@ -9,11 +9,13 @@ its answer depends only on the configured design and the committed defining site
 per sequencing group meant an awk pass over a vendor BED's ~230k intervals in every conversion
 job, for an answer identical across the cohort.
 
-Four things have to hold and none has a type error to catch it. An exome run that does not name
+Five things have to hold and none has a type error to catch it. An exome run that does not name
 a design must fail while the graph is being built, not on the first sequencing group, because
 the whole cohort is wasted either way and only one of those says why. A genome run must never
-read the key at all. Repointing the key must not reuse the previous design's output. And the
+read the key at all. Repointing the key must not reuse the previous design's output. The
 conversion job must still refuse to run when DRAGEN's own records contradict the named design.
+And the QC job must be handed the same subtraction, so it can disregard a post-hoc record at a
+site the merge was not allowed to fill.
 
 No batch runs here: each job's command is read off the mock the stage builds it on.
 """
@@ -88,6 +90,20 @@ def _queue_conversion(mocker, sequencing_group, multicohort) -> MagicMock:
     inputs.as_path.return_value = OFF_DESIGN_BED
     pipeline.FilterAndConvertGvcfsForRbceq2().queue_jobs(sequencing_group, inputs)
     return batch
+
+
+def _queue_qc(mocker, sequencing_group, multicohort) -> str:
+    """Queue the QC stage's job on a mock batch and return the command it was given."""
+    batch = MagicMock()
+    mocker.patch('cpg_utils.hail_batch.get_batch', return_value=batch)
+    mocker.patch('cpg_flow.inputs.get_multicohort', return_value=multicohort)
+    inputs = MagicMock()
+    inputs.as_str.return_value = 'gs://bucket/SG000001.some-input'
+    inputs.as_path.return_value = OFF_DESIGN_BED
+    # The localised BED renders under a fixed name so the command can be asserted on.
+    batch.read_input.return_value = '/io/off_design_defining_sites.GRCh38.bed'
+    pipeline.FlagBloodGroupCallQc().queue_jobs(sequencing_group, inputs)
+    return batch.new_bash_job.return_value.command.call_args.args[0]
 
 
 # --- demanding the design ---
@@ -232,10 +248,12 @@ def test_an_exome_merge_fails_when_dragen_called_outside_the_configured_design(
     mock_multicohort,
     shm_tmp_path: Path,
 ):
-    # DRAGEN emits over exactly the target BED with no padding, so a record at an off-design
-    # defining site means the configured file is not the one the gVCF was called against.
-    # Measured on the validation cohorts: a target-regions file where the gVCF used the probe
-    # footprint leaves 309 such sites and silently gates off three quarters of the recoveries.
+    # DRAGEN emits reference blocks over exactly the target BED with no padding, so a block
+    # reaching an off-design defining site means the configured file is not the one the gVCF
+    # was called against. Measured on the validation cohorts: a target-regions file where the
+    # gVCF used the probe footprint leaves 309 such sites and silently gates off three quarters
+    # of the recoveries. The gate itself runs under real bcftools in test_posthoc_trespass; this
+    # checks the stage puts it in the job.
     _config(shm_tmp_path, 'exome', design_key=TWIST_KEY)
 
     command = _queue_conversion(
@@ -244,9 +262,43 @@ def test_an_exome_merge_fails_when_dragen_called_outside_the_configured_design(
         mock_multicohort,
     ).new_bash_job.return_value.command.call_args.args[0]
 
-    assert 'off_design_called.bed' in command
+    assert 'off_design_in_blocks.bed' in command
     assert DESIGN_CONFIG_PATH in command
     assert 'exit 1' in command
+
+
+# --- handing the same subtraction to the QC ---
+
+
+def test_an_exome_qc_is_handed_the_subtraction_the_merge_filled_from(
+    mocker,
+    exome_sequencing_group,
+    mock_multicohort,
+    shm_tmp_path: Path,
+):
+    # A post-hoc reference block is kept whole, so one selected for an off-design hole can be
+    # the only record at an in-design hole beside it. The QC keeps that hole NOCOV only if it
+    # knows which sites were fillable, and the only right answer is the BED the merge read.
+    _config(shm_tmp_path, 'exome', design_key=TWIST_KEY)
+
+    command = _queue_qc(mocker, exome_sequencing_group, mock_multicohort)
+
+    assert '--fillable-sites /io/off_design_defining_sites.GRCh38.bed' in command
+
+
+def test_a_genome_qc_is_handed_no_fillable_set(
+    mocker,
+    mock_sequencing_group,
+    mock_multicohort,
+    shm_tmp_path: Path,
+):
+    # Nothing was merged, so there is no set to hand over, and the job refuses a post-hoc record
+    # rather than assuming one. Reading the design key here would also break every genome run.
+    _config(shm_tmp_path, 'genome', design_key=None)
+
+    command = _queue_qc(mocker, mock_sequencing_group, mock_multicohort)
+
+    assert '--fillable-sites' not in command
 
 
 def test_a_genome_conversion_never_asks_for_a_design(

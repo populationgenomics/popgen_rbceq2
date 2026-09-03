@@ -110,6 +110,14 @@ as `NOCOV`. Measured on the validation cohorts this is 4 of 1,674 Twist recoveri
 1,657 CREv2 ones, in C4B, RHD, RHCE and A4GALT — a small set, and the point is which
 question each flag answers rather than the count.
 
+Leaving it as `NOCOV` takes two steps, because a post-hoc record kept for an off-design
+hole is kept whole and can reach an in-design hole beside it. The merge's `COVERED` mark
+is drawn from every site the merge may not fill, the in-design holes included, so a
+post-hoc *variant* reaching one is dropped. A post-hoc *reference block* reaching one is
+kept for the hole it was selected for, and is then the only record at the in-design hole;
+`FlagBloodGroupCallQc` reads the same off-design BED and counts a post-hoc record only at
+a site in it, so the QC reports that hole `NOCOV` (§5).
+
 The design is named by `exome_design_bed` in `SelectOffDesignDefiningSites`' config
 section, as a `[references]` key resolved through `reference_path`. It is deliberately not
 defaulted: every default is the wrong design for some cohort, and being wrong is silent
@@ -121,10 +129,13 @@ its answer depends only on the configured design and the committed sites. It is 
 hand-written awk containment loop it replaced (§10). Its output path carries the design key as a segment, because the release segment
 above it cannot see a config change and a repointed key must not reuse the old BED.
 
-**The configured design is checked against the gVCF.** DRAGEN emits records over exactly
-the target BED with no padding, so a DRAGEN record at a defining site outside the
-configured design means the file is not the one the gVCF was called against, and the job
-fails naming the key. This is not hypothetical: Agilent ships both `Regions` and `Covered`
+**The configured design is checked against the gVCF.** DRAGEN emits reference blocks over
+exactly the target BED with no padding, so a DRAGEN reference block reaching a defining
+site outside the configured design means the file is not the one the gVCF was called
+against, and the job fails naming the key. The check reads blocks only: a variant is
+anchored inside the target but its REF can run past the edge, so a deletion at a capture
+edge can cover an off-design site legitimately. That site is covered, so not filled, and
+the QC reports `DEL` from DRAGEN's record. This is not hypothetical: Agilent ships both `Regions` and `Covered`
 for CREv2 and they differ. Across the two validation cohorts, DRAGEN's records fall inside
 Twist covered-targets and CREv2 `Covered` with **zero** off-design records in 32,500
 site-resolutions, while CREv2 `Regions` leaves 309 off-design records and would gate off
@@ -141,13 +152,22 @@ Mechanically, as implemented:
    which would make a covered site look like a hole.
 3. Subtract the covered spans from the run's off-design sites to get what may be filled.
    The off-design set arrives from `SelectOffDesignDefiningSites` and is not recomputed
-   here; this subtraction is the awk one, over a few hundred spans (see §10). The
-   difference between the two subtractions is the off-design sites DRAGEN *did* call, which
-   must be empty — a non-empty difference fails the job, since it means the configured
-   design is not the gVCF's.
+   here; this subtraction is the awk one, over a few hundred spans (see §10). Separately,
+   the off-design sites inside a DRAGEN *reference block*
+   (`bcftools query -T <off_design.bed> --targets-overlap 1 -i 'INFO/END!="."'`) must be
+   none — any fails the job, since it means the configured design is not the gVCF's. An
+   off-design site under a DRAGEN variant's span is covered and unfilled, not an error.
 4. Subset the post-hoc gVCF to records reaching a hole
-   (`bcftools view -T <uncovered.bed> --targets-overlap 2 -e 'FORMAT/DP=0'`), strip it to
-   the fields the pipeline reads, and split multiallelics.
+   (`bcftools view -T <uncovered.bed> --targets-overlap 2 -e 'FORMAT/DP=0'`), set FILTER
+   (`bcftools filter -s LowDepth -e 'FORMAT/DP<=1'`, which writes `PASS` on every other
+   record), strip it to the fields the pipeline reads, and split multiallelics. FILTER has
+   to be set because HaplotypeCaller leaves it `.` and rbceq2 uses an allele only when its
+   defining variant is literally `PASS`; left alone, every recovered alternate allele was
+   discarded before genotyping. `LowDepth` at DP<=1 is DRAGEN's own rule on these cohorts
+   and the only one that means the same on both callers. DRAGEN's QUAL rule is not copied:
+   the recalibrated gVCFs score QUAL on an ML scale (threshold 3) that is not comparable to
+   HaplotypeCaller's, so post-hoc variants are used at any QUAL and their DP and GQ reach the
+   QC flags, as a `PASS` DRAGEN variant's already do.
 5. Drop the post-hoc *variants* that reach a base DRAGEN called (see **Boundary overlap**
    below), then tag every surviving record `INFO/POSTHOC=gatk-hc-<version>`.
 6. Require the supplement and the primary gVCF to name the same sample, failing if they do
@@ -185,7 +205,7 @@ the honest answer — DRAGEN wins wherever both speak, and here both spoke.
 Two bcftools details make the drop work, and both were confirmed against the pinned 1.24
 rather than reasoned about:
 
-- `annotate -a <called_sites.bed.gz> -m COVERED` marks on a record's whole span, not its POS,
+- `annotate -a <unfillable_sites.bed.gz> -m COVERED` marks on a record's whole span, not its POS,
   so a deletion anchored on a hole and reaching a called site one base away is marked. The
   annotation source is the defining sites DRAGEN covered (every site, less the holes), not the
   DRAGEN records' spans: marking on spans would also drop a post-hoc variant that merely clips
@@ -248,6 +268,11 @@ moot — new tree, no stale files).
 - **`resolve_coverage` prefers primary records.** Where both a DRAGEN record and a
   post-hoc record cover a site (the §4 boundary case), the DRAGEN one is chosen —
   "DRAGEN wins wherever both speak" applies to the QC's view as well as the merge.
+- **A post-hoc record counts only at a fillable site.** The QC stage is handed the
+  off-design BED the merge filled from, and `flags_by_system` disregards a post-hoc
+  record at any site not in it. That is what keeps an in-design hole `NOCOV` when a kept
+  post-hoc reference block spans it (§4). A genome run hands over no BED, and the job
+  refuses an extract carrying post-hoc records without one rather than trusting them.
 
 ## 6. DAG and config
 
@@ -257,10 +282,18 @@ moot — new tree, no stale files).
 PosthocGenotypeOffTargetSites = stage_support.wire(
     posthoc_genotype.PosthocGenotypeOffTargetSites,
 )  # reads sequencing_group.cram directly; no requires, no Metamist Analysis
+SelectOffDesignDefiningSites = stage_support.wire(
+    off_design_sites.SelectOffDesignDefiningSites,
+)  # run-level; the defining sites outside the configured design
 FilterAndConvertGvcfsForRbceq2 = stage_support.wire(
     filter_and_convert.FilterAndConvertGvcfsForRbceq2,
-    requires=[PosthocGenotypeOffTargetSites],
+    requires=[PosthocGenotypeOffTargetSites, SelectOffDesignDefiningSites],
 )
+FlagBloodGroupCallQc = stage_support.wire(
+    call_qc.FlagBloodGroupCallQc,
+    requires=[FilterAndConvertGvcfsForRbceq2, GenotypeBloodGroupsWithRbceq2, SelectOffDesignDefiningSites],
+    ...
+)  # the QC reads the same off-design BED the merge filled from (§5)
 ```
 
 No Metamist Analysis for the new stage: its output is an intermediate consumed by the

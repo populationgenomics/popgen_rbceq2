@@ -542,11 +542,36 @@ def flag_site(site: DefiningSite, coverage: Coverage | None, min_depth: int, min
     return f'{name}:{coordinate}({allele},{_render_metrics(coverage)})'
 
 
+def load_fillable_sites(text: str) -> frozenset[tuple[str, int]]:
+    """Read the defining sites the post-hoc caller was allowed to fill.
+
+    Args:
+        text: Contents of the off-design defining-sites BED `SelectOffDesignDefiningSites`
+            writes: one 0-based half-open single-base interval per site, no header.
+
+    Returns:
+        The sites as (contig, 1-based position), the coordinates `DefiningSite` carries.
+
+    Raises:
+        ValueError: A row is not a single-base interval, so it names no defining site.
+    """
+    sites = set()
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        chrom, start, end = line.split('\t')[:3]
+        if int(end) != int(start) + 1:
+            raise ValueError(f'Fillable-sites BED line {line_no} is not a single-base interval: {line!r}')
+        sites.add((chrom, int(end)))
+    return frozenset(sites)
+
+
 def flags_by_system(
     sites: list[DefiningSite],
     records: list[GvcfRecord],
     min_depth: int,
     min_gq: int,
+    fillable_sites: frozenset[tuple[str, int]] | None = None,
 ) -> tuple[dict[str, str], list[DefiningSite]]:
     """Aggregate per-site flags into one cell per blood-group system.
 
@@ -555,6 +580,12 @@ def flags_by_system(
         records: Extracted GVCF records to resolve coverage from.
         min_depth: DP below which a site is flagged.
         min_gq: GQ below which a site is flagged.
+        fillable_sites: The (contig, position) set the merge was allowed to fill from the
+            post-hoc caller, or None on a run that merged nothing. A post-hoc record counts as
+            covering a site only if the site is in this set. The merge keeps a post-hoc
+            reference block whole, so one selected for an off-design hole can reach an
+            in-design hole beside it, where it is the only record; without this the QC would
+            report that hole as recovered when the rule says it stays NOCOV.
 
     Returns:
         A `{system: cell}` map covering every system in `sites`, where a system with no
@@ -563,7 +594,19 @@ def flags_by_system(
 
         Every finding is carried by the site flags themselves, so this only groups and orders
         them. `rests_on_posthoc` answers whether a cell's system needed the recall.
+
+    Raises:
+        ValueError: `fillable_sites` is None but a record carries INFO/POSTHOC. The merge
+            that produced it read a fillable set, so the QC has to be handed the same one; a
+            run that has none cannot say which post-hoc records to believe.
     """
+    if fillable_sites is None and any(not record.is_primary for record in records):
+        raise ValueError(
+            'The extract carries post-hoc records but no fillable-sites BED was given. The QC '
+            'needs the off-design defining sites the merge filled from, to disregard a post-hoc '
+            'record at any other site.'
+        )
+
     by_chrom: dict[str, list[GvcfRecord]] = defaultdict(list)
     for record in records:
         by_chrom[record.chrom].append(record)
@@ -571,7 +614,10 @@ def flags_by_system(
     per_system: dict[str, list[tuple[tuple[int, str], int, str]]] = defaultdict(list)
     uncovered = []
     for site in sites:
-        coverage = resolve_coverage(by_chrom[site.chrom], site.chrom, site.pos)
+        candidates = by_chrom[site.chrom]
+        if fillable_sites is not None and (site.chrom, site.pos) not in fillable_sites:
+            candidates = [record for record in candidates if record.is_primary]
+        coverage = resolve_coverage(candidates, site.chrom, site.pos)
         if coverage is None:
             uncovered.append(site)
         flag = flag_site(site, coverage, min_depth, min_gq)
@@ -644,6 +690,11 @@ def build_qc_tsv(geno_tsv: str, system_flags: dict[str, str]) -> str:
 @click.option('--output', required=True, help='<sg>.qc.tsv to write')
 @click.option('--min-depth', type=int, required=True, help='Flag a defining site with DP below this')
 @click.option('--min-gq', type=int, required=True, help='Flag a defining site with GQ below this')
+@click.option(
+    '--fillable-sites',
+    default=None,
+    help='Off-design defining-sites BED the merge filled from; required when the extract carries post-hoc records',
+)
 def main(
     geno_tsv: str,
     site_systems: str,
@@ -651,6 +702,7 @@ def main(
     output: str,
     min_depth: int,
     min_gq: int,
+    fillable_sites: str | None,
 ) -> None:
     """Write the per-sequencing-group blood-group QC TSV.
 
@@ -661,13 +713,18 @@ def main(
         output: Path to write the QC TSV to.
         min_depth: DP below which a defining site is flagged.
         min_gq: GQ below which a defining site is flagged.
+        fillable_sites: The off-design defining-sites BED the merge was allowed to fill from,
+            or None on a run that merged nothing. See `flags_by_system`.
     """
     setup_logging(force=True)
     sites = load_site_systems(to_path(site_systems).read_text())
     records = parse_extract(to_path(defining_sites_extract).read_text())
+    fillable = None if fillable_sites is None else load_fillable_sites(to_path(fillable_sites).read_text())
     logger.info(f'Assessing {len(sites)} defining sites against {len(records)} extracted GVCF records')
+    if fillable is not None:
+        logger.info(f'{len(fillable)} defining site(s) were fillable by the post-hoc caller')
 
-    system_flags, uncovered = flags_by_system(sites, records, min_depth, min_gq)
+    system_flags, uncovered = flags_by_system(sites, records, min_depth, min_gq, fillable)
     if uncovered:
         listed = ', '.join(f'{s.chrom}:{s.pos} ({s.system})' for s in uncovered[:20])
         ellipsis = ' ...' if len(uncovered) > 20 else ''

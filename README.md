@@ -80,10 +80,13 @@ DRAGEN emits over the latter. On the CREv2 validation cohort, naming `Regions` w
 recovered 691 sites instead of 1,650. Some older designs were specified at exon resolution and
 ship a `Regions` entry only; there the choice does not arise.
 
-Naming the wrong file is caught rather than tolerated. DRAGEN emits records over exactly the
-design with no padding, so a DRAGEN record at a defining site *outside* the configured design
-means the named file is not the one the gVCF was called against, and the job fails saying so.
-That is what the `Regions`-for-`Covered` mistake trips over: 309 such sites on the CREv2 cohort.
+Naming the wrong file is caught rather than tolerated. DRAGEN emits reference blocks over exactly
+the design with no padding, so a DRAGEN reference block reaching a defining site *outside* the
+configured design means the named file is not the one the gVCF was called against, and the job
+fails saying so. That is what the `Regions`-for-`Covered` mistake trips over: 309 such sites on
+the CREv2 cohort. A DRAGEN *variant* proves nothing, because its REF can run past the target
+edge; a deletion at a capture edge that covers an off-design site is a carrier, and that site is
+simply not filled.
 
 If you do not know a cohort's design, read `sequencing_library` from the sequencing-group meta
 in Metamist, and confirm the cohort is one design rather than a mix.
@@ -216,7 +219,10 @@ tests pass:
 A hole *inside* the design is left alone and reaches the QC as `NOCOV`. Recalling it would use
 a second caller to answer a question about that sample's DRAGEN run, which is a different
 question from the one this feature exists to answer. On the validation cohorts this is 4 of
-1,674 Twist recoveries and 7 of 1,657 CREv2 ones, in C4B, RHD, RHCE and A4GALT.
+1,674 Twist recoveries and 7 of 1,657 CREv2 ones, in C4B, RHD, RHCE and A4GALT. Keeping that
+promise takes two steps, because a post-hoc record kept for an off-design hole is kept whole and
+can reach an in-design hole beside it: the merge drops a post-hoc *variant* that does, and the
+QC, handed the same off-design BED, disregards a post-hoc *reference block* there.
 
 The two tests are two subtractions, and they run in different places for a reason. Taking the
 design's intervals out of the defining sites depends on nothing about any sample, so
@@ -227,28 +233,35 @@ left is per sample by nature, so it stays in awk inside the conversion job, whos
 no bedtools.
 
 The sites the first subtraction keeps and the second drops are the off-design sites DRAGEN
-*did* call, which must be empty; a non-empty set fails the job, because it means the named
-design is not the one the gVCF was called against.
+*did* cover. Where the covering record is a reference block the job fails, because blocks stop
+at the target edge and one reaching an off-design site means the named design is not the one
+the gVCF was called against. Where it is a variant, most often a deletion anchored inside the
+design whose REF runs past the edge, the site is left covered and unfilled, and the QC reports
+`DEL` from DRAGEN's record.
 
-A record is selected for reaching a hole and is selected *whole*, so one anchored in a hole can
-extend over a neighbouring defining site DRAGEN did call. Defining sites are dense enough that
-this is the ordinary case near a capture edge, and what happens next depends on the record:
+A record is selected for reaching a fillable hole and is selected *whole*, so one anchored in a
+hole can extend over a neighbouring defining site it may not fill: one DRAGEN did call, or a hole
+inside the design. Defining sites are dense enough that this is the ordinary case near a capture
+edge, and what happens next depends on the record:
 
-- **A post-hoc variant reaching a called base is dropped.** Kept, it would put two callers'
-  alleles on one base in the file rbceq2 reads, with nothing to choose between them, and the QC
-  would still report that base as `PASS` because `resolve_coverage` prefers the primary record.
-  The hole the dropped record would have filled goes back to `NOCOV`. DRAGEN wins wherever both
-  speak, and here both spoke.
-- **A post-hoc reference block reaching a called base is kept whole.** It asserts nothing rbceq2
+- **A post-hoc variant reaching a site it may not fill is dropped.** At a called base, keeping
+  it would put two callers' alleles on one base in the file rbceq2 reads, with nothing to choose
+  between them, and the QC would still report that base as `PASS` because `resolve_coverage`
+  prefers the primary record. At an in-design hole, keeping it would let the second caller decide
+  the genotype at a site the design targeted. Either way the hole the dropped record would have
+  filled goes back to `NOCOV`.
+- **A post-hoc reference block reaching such a site is kept whole.** It asserts nothing rbceq2
   sees, since the conversion drops every `<NON_REF>`-only record first, and dropping the block
-  instead would throw away the hole it was kept for. Two records then cover the called site in
-  the extract, which is why `resolve_coverage` prefers the one with no `INFO/POSTHOC`.
+  instead would throw away the hole it was kept for. At a called base two records then cover the
+  site in the extract, and `resolve_coverage` prefers the one with no `INFO/POSTHOC`. At an
+  in-design hole the block is the only record, so `FlagBloodGroupCallQc` reads the same
+  off-design BED and counts a post-hoc record only at a site in it; the hole stays `NOCOV`.
 
 Mechanically the drop is an `INFO/COVERED` mark from `bcftools annotate -m`, which matches on a
 record's whole span rather than its POS, followed by removing every marked record that carries
-no `INFO/END`. Two details carry the weight. The mark's source is the defining sites DRAGEN
-covered, every site less the holes, not the DRAGEN records' spans, so a variant that merely
-clips the tail of a long reference block is left alone. And `INFO/END` is what separates a real
+no `INFO/END`. Two details carry the weight. The mark's source is the defining sites the merge
+may not fill, every site less the fillable holes, not the DRAGEN records' spans, so a variant
+that merely clips the tail of a long reference block is left alone. And `INFO/END` is what separates a real
 reference block from the `<NON_REF>` twin `norm -m -any` splits off a variant, which carries
 the variant's own REF span and would otherwise fill the hole with an apparent hom-ref call.
 
@@ -257,8 +270,19 @@ merged for it and the merge is a plain rename. Its command is not otherwise unch
 every run now gains the `INFO/POSTHOC` header line on the intermediate and a trailing `POSTHOC`
 column in the extract, which is why the release version bumped.
 
-Three more details that are easy to get wrong:
+Four more details that are easy to get wrong:
 
+- **Post-hoc records are given a FILTER value, because HaplotypeCaller leaves it `.`.** rbceq2
+  uses an allele only when its defining variant is literally `PASS`, and a DRAGEN gVCF keeps a
+  failed record with its filter name rather than removing it, so rbceq2 already excludes
+  DRAGEN's `LowDepth` and `DRAGENSnpHardQUAL` alleles today. Left as `.`, every recovered
+  alternate allele would be discarded before genotyping and the site typed as reference by
+  absence, under a `POSTHOC` flag saying the call rested on the recall. The merge runs
+  `bcftools filter -s LowDepth -e 'FORMAT/DP<=1'`, which marks DRAGEN's depth rule and writes
+  `PASS` on everything else. DRAGEN's QUAL rule is not copied: on these cohorts QUAL is
+  ML-recalibrated by a second DRAGEN pass and its threshold is not comparable to
+  HaplotypeCaller's scale, so a post-hoc variant is used at any QUAL and its DP and GQ reach the
+  QC flags, exactly as a `PASS` DRAGEN variant's do.
 - Hole-finding reads covered spans with `--targets-overlap 1`, not the `2` the extract uses.
   Mode 1 asks whether the **record** overlaps, which is what `%END` reports and what the QC
   counts as covering; mode 2 asks whether the **variant** does, and drops a deletion anchored on
@@ -386,7 +410,10 @@ systems. Grepping `POSTHOC` finds all of them.
 
 A site that is neither poor nor recovered is not listed at all, which is what makes a bare
 `PASS` cell mean "nothing to report". `NOCOV` never carries `POSTHOC`: no record from either
-caller means there is no caller to name.
+caller means there is no caller to name. A post-hoc record counts as covering a site only where
+the merge was allowed to fill one, so a hole inside the capture design that a kept post-hoc
+reference block happens to span is still `NOCOV`; the QC stage reads the same off-design BED
+the merge did.
 
 A cell can therefore say both things at once. Only `POSTHOC` names is a clean recovery; a
 `LOWQ+POSTHOC` or a `POSTHOC` beside a `NOCOV` site is a recovery that is also compromised,

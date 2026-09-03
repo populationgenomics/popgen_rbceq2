@@ -24,6 +24,7 @@ from popgen_rbceq2.jobs.rbceq2_call_qc_job import (
     flag_site,
     flags_by_system,
     is_posthoc_only,
+    load_fillable_sites,
     load_site_systems,
     parse_extract,
     resolve_coverage,
@@ -733,6 +734,52 @@ def test_a_site_neither_caller_covers_is_still_nocov():
     records = [_record('chr9', 1000, 'A', 'G', dp=40, gq=99, posthoc=CALLER)]
     assert resolve_coverage(records, 'chr1', 3774964) is None
     assert flag_site(_site(), None, MIN_DEPTH, MIN_GQ) == f'{NOCOV}:1:3774964(A>G)'
+
+
+# --- the fillable set: where a post-hoc record is allowed to count ----------------------------
+
+POSTHOC_BLOCK = _record('chr1', 3774900, 'G', '<NON_REF>', end=3775000, dp=40, gq=60, min_dp=35, posthoc=CALLER)
+
+
+def test_a_posthoc_record_counts_only_at_a_site_the_merge_could_fill():
+    """A hole inside the design stays NOCOV even when a kept post-hoc block spans it."""
+    # The merge keeps a block whole for the off-design hole it was selected for, so the block
+    # can be the only record at an in-design hole beside it. The QC is where the design bound
+    # is kept for that case, by reading the same off-design BED the merge read.
+    fillable, _ = flags_by_system([_site()], [POSTHOC_BLOCK], MIN_DEPTH, MIN_GQ, frozenset({('chr1', 3774964)}))
+    assert fillable['VEL'].startswith(f'{POSTHOC}:1:3774964(')
+
+    not_fillable, uncovered = flags_by_system([_site()], [POSTHOC_BLOCK], MIN_DEPTH, MIN_GQ, frozenset())
+    assert not_fillable['VEL'] == f'{NOCOV}:1:3774964(A>G)'
+    assert uncovered == [_site()]
+
+
+def test_a_primary_record_counts_at_every_site_whatever_the_fillable_set_says():
+    """The set bounds the post-hoc caller only; DRAGEN's own records are never disregarded."""
+    records = [_record('chr1', 3774964, 'A', 'G', dp=4, gq=8), POSTHOC_BLOCK]
+    flags, _ = flags_by_system([_site()], records, MIN_DEPTH, MIN_GQ, frozenset())
+    assert flags['VEL'] == f'{LOWQ}:1:3774964(A>G,DP=4,GQ=8)'
+
+
+def test_posthoc_records_with_no_fillable_set_are_refused():
+    """An extract carrying POSTHOC records came from a merge that read a fillable set."""
+    # Silently trusting every post-hoc record would reintroduce the leak on any run whose QC
+    # stage lost the BED, and a genome run never has such a record, so None is only right there.
+    with pytest.raises(ValueError, match='no fillable-sites BED'):
+        flags_by_system([_site()], [POSTHOC_BLOCK], MIN_DEPTH, MIN_GQ)
+
+
+def test_load_fillable_sites_reads_the_off_design_bed_as_gvcf_coordinates():
+    """A 0-based single-base BED row becomes the 1-based (contig, pos) DefiningSite carries."""
+    assert load_fillable_sites('chr1\t3774963\t3774964\nchrX\t100\t101\n\n') == frozenset(
+        {('chr1', 3774964), ('chrX', 101)}
+    )
+
+
+def test_load_fillable_sites_rejects_a_row_that_is_not_one_base():
+    """The file is a set of sites; an interval names no site and is a wrong input, not a span."""
+    with pytest.raises(ValueError, match='not a single-base interval'):
+        load_fillable_sites('chr1\t3774963\t3774970\n')
 
 
 @pytest.mark.parametrize(
