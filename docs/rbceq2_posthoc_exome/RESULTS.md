@@ -304,3 +304,22 @@ post-hoc gVCFs, with the QC stage's own `resolve_coverage`.
 which looks worse than the cohort tables do; 35 of those are HPA, whose database coordinates are
 GRCh37 and were never lifted. rbceq2 emits no columns for them, so they do not appear in the
 cohort tables at all. Unrelated to this work.
+
+## Confirmed after the 2026-09-04 review fixes: same answers, new tree
+
+Batch [1136826](https://batch.hail.populationgenomics.org.au/batches/1136826), COH13446 on
+`v4` again, on the image built from `8123bc9` (digest `9529007…`), after the second review's
+fixes: the design key in every exome output path, the wrong-build guard on the DRAGEN
+intermediate before the merge, the sample-name check first, the contig-mismatch guard on the
+subtraction, and the graph-build log of skipped sequencing groups. 63/63 jobs, 7.8 min, $0.11.
+A duplicate batch (1136827) from an analysis-runner submission that timed out but was
+accepted was cancelled after 20 jobs; it wrote nothing 1136826 did not also write.
+
+Outputs landed under the design-keyed tree,
+`rbceq2_2_4_3_v4/exome_probesets_hg38_agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed/`,
+and not in the tree batch 1136802 wrote to. All four cohort tables (geno, both pheno, QC) are
+identical to 1136802's apart from rbceq2's per-run UUID in the header cell, so none of the
+fixes changed an answer on a correctly configured run, which is what they were meant not to
+do. The subtraction again found 165 of 1,625 sites off-design; the driver logged
+"post-hoc calling applies to 10 of 10 sequencing group(s)"; every conversion job ran the
+sample-name comparison as its first step and passed the pre-merge guard.
