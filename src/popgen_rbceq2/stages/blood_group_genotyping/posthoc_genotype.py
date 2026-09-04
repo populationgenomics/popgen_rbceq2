@@ -170,12 +170,9 @@ class PosthocGenotypeOffTargetSites(cpg_flow.stage.SequencingGroupStage):
 
         # The fasta is localised (GATK reads it randomly throughout the run, and needs the .fai
         # and .dict beside it); the CRAM is not (GATK reads a few hundred kb of it, by index).
-        fasta_path = cpg_utils.config.reference_path('broad/ref_fasta')
-        reference = b.read_input_group(
-            base=str(fasta_path),
-            fai=f'{fasta_path}.fai',
-            dict=str(fasta_path).removesuffix('.fasta') + '.dict',
-        )
+        # The shared helper resolves `broad/ref_fasta` and its two sidecars the same way every
+        # CPG pipeline does, and honours a `workflow.ref_fasta` override if one is ever set.
+        reference = cpg_utils.hail_batch.fasta_res_group(b)
         padded_bed = b.read_input(stage_support.blood_group_resource(f'bg_defining_sites_padded.{genome}.bed'))
         j.declare_resource_group(out={'g.vcf.gz': '{root}.g.vcf.gz', 'g.vcf.gz.tbi': '{root}.g.vcf.gz.tbi'})
         out = typing.cast('hailtop.batch.resource.ResourceGroup', j.out)
