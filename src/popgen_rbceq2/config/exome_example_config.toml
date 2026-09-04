@@ -1,0 +1,30 @@
+# A complete exome run config: what config_template.toml asks for, filled in for the CREv2
+# validation cohort. Pass after popgen_rbceq2_default_config.toml so this wins:
+#
+#   analysis-runner --dataset mackenzie --access-level test --output-dir '' \
+#     --config src/popgen_rbceq2/config/popgen_rbceq2_default_config.toml \
+#     --config src/popgen_rbceq2/config/exome_example_config.toml \
+#     --description "rbceq2 post-hoc exome recall, COH13446" \
+#     --image australia-southeast1-docker.pkg.dev/cpg-common/images/popgen_rbceq2:<tag> \
+#     --skip-repo-checkout \
+#     popgen_rbceq2
+#
+# COH13446 (mackenzie-test-exome-NSWPH-crev2-20260609): 10 exomes, all AgilentCREv2WES, all in
+# the mackenzie-test Metamist project, each with a DRAGEN 3.7.8 CRAM and its matching recal
+# gVCF in gs://cpg-mackenzie-test. This is the cohort the runs in
+# docs/rbceq2_posthoc_exome/RESULTS.md were measured on.
+#
+# For another exome cohort, change input_cohorts and exome_design_bed together: the design must
+# be the one that cohort's gVCFs were called against, and the run fails if DRAGEN has reference
+# blocks at sites outside it. The README section "An exome run must name its capture design"
+# lists the known designs' keys and how to find a cohort's design in Metamist.
+
+[workflow]
+input_cohorts = ['COH13446']
+sequencing_type = 'exome'
+
+[workflow.select_off_design_defining_sites]
+# Covered, the probe footprint, NOT Regions. Both exist for CREv2 and they differ: against
+# Regions, 309 site-resolutions across these 10 samples have a DRAGEN record outside the design
+# and the run fails on the first of them, and 907 recoveries would have been gated off.
+exome_design_bed = 'exome_probesets_hg38/agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed'

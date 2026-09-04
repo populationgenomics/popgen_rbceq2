@@ -58,6 +58,9 @@ sequencing_type = 'exome'
 exome_design_bed = 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'
 ```
 
+[`exome_example_config.toml`](src/popgen_rbceq2/config/exome_example_config.toml) is a complete,
+runnable example for the CREv2 validation cohort.
+
 The value is a key into the `[references]` config section, the same mechanism the pipeline uses
 for the reference fasta. It is deliberately not defaulted: every default is the wrong design for
 some cohort, and a wrong design does not fail, it just recovers the wrong set of sites. An exome
