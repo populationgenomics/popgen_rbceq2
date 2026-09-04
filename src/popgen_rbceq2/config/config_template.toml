@@ -16,7 +16,9 @@
 input_cohorts = ['COH123']
 sequencing_type = 'genome'
 
-# Uncomment to run part of the branch only. Stage names are the class names.
+# Uncomment to run part of the branch only. Stage names are the class names. An exome list
+# must also name 'PosthocGenotypeOffTargetSites' and 'SelectOffDesignDefiningSites', which the
+# conversion stage requires; cpg-flow otherwise expects their outputs to exist already.
 # only_stages = ['FilterAndConvertGvcfsForRbceq2', 'GenotypeBloodGroupsWithRbceq2']
 
 # Uncomment to rebuild a stage whose outputs already exist.

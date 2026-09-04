@@ -594,6 +594,9 @@ pre-commit install
 
 The tests that run the real merge shell and the real design subtraction need `bcftools`,
 `bgzip`, `tabix` and `bedtools` on PATH and skip otherwise; `uv run pytest -rs` lists any skip.
+Install them with `brew install bcftools htslib bedtools` on macOS (`bgzip` and `tabix` come
+from `htslib`, not the `bcftools` formula) or `apt-get install bcftools tabix bedtools` on
+Debian and Ubuntu, which is what CI does.
 CI installs them and runs those checks on every pull request, then builds the driver image and
 runs the suite again inside it.
 
