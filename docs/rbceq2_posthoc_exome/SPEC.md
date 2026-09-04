@@ -462,7 +462,10 @@ Environment facts worth keeping:
   own stage (§4). Three behaviours had to match the awk for the swap to be safe, and all
   three were checked against the pinned image on both vendor designs in use: half-open
   interval semantics, skipping `track`/`browser` lines, and ignoring columns past the third.
-  Its output diffed identical to the awk's.
+  Its output diffed identical to the awk's. One behaviour does not match and is refused
+  instead: a row with end not greater than start, which the awk ignored and bedtools counts as
+  covering a base. Neither design has one, so the stage fails on such a row rather than choose
+  a meaning for it.
 - **bedtools is not in the bcftools image** (`debian:bookworm-slim` plus bcftools binaries
   only), and its awk is **mawk**, not gawk; the remaining awk program was re-run under mawk in
   that exact image. There *is* a `cpg-common/images/bedtools` at `2.30.0-1`, which is what the

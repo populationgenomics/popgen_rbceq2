@@ -135,6 +135,15 @@ def _subtraction_commands(sites_bed: str, design_bed: str, out_bed: str, design_
       two BEDs name their contigs differently (`1` against `chr1`). bedtools warns about that
       on stderr and exits 0 with every site off-design.
 
+    A third input is refused for the opposite reason, that it would narrow the fill silently:
+    a design row whose end is not greater than its start. BED is half-open, so such a row
+    describes no bases, but `bedtools intersect` treats it as covering the base at its
+    coordinate and the one before (probed on 2.31.1), so a defining site there would count as
+    in-design and stay NOCOV instead of being filled. The awk loop this stage replaced ignored
+    such rows. Neither real design has one (0 of 229,273 Twist rows, 0 of 275,017 CREv2 rows),
+    so rather than pick a meaning for a malformed row the stage fails naming it: a design with
+    one is not the file DRAGEN was given, or has been mangled since.
+
     Args:
         sites_bed: Localised `bg_defining_sites.<genome>.bed`.
         design_bed: Localised capture design BED.
@@ -148,6 +157,16 @@ def _subtraction_commands(sites_bed: str, design_bed: str, out_bed: str, design_
     return f"""
             if [ ! -s {design_bed} ]; then
                 echo "ERROR: the capture design BED is empty." >&2
+                echo "{stage_support.DESIGN_CONFIG_PATH} = {design_key}" >&2
+                echo "resolved to {design_path}" >&2
+                exit 1
+            fi
+            awk -F'\\t' '!/^(track|browser|#)/ && $3 <= $2' {design_bed} > zero_length_rows.bed
+            if [ -s zero_length_rows.bed ]; then
+                n_zero=$(wc -l < zero_length_rows.bed | tr -d ' ')
+                echo "ERROR: $n_zero capture design row(s) have end <= start, so describe no bases." >&2
+                echo "bedtools would count each as covering a base, narrowing the fill silently. First rows:" >&2
+                head -n 5 zero_length_rows.bed >&2
                 echo "{stage_support.DESIGN_CONFIG_PATH} = {design_key}" >&2
                 echo "resolved to {design_path}" >&2
                 exit 1

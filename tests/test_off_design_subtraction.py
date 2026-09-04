@@ -117,3 +117,28 @@ def test_the_reported_sites_keep_the_committed_beds_own_rows(tmp_path):
     sites = [('chr1', 500), ('chr1', 1050), ('chr2', 700)]
 
     assert _off_design(tmp_path, 'chr1\t999\t1100\n', sites) == [('chr1', 500), ('chr2', 700)]
+
+
+def test_a_design_row_with_end_not_greater_than_start_fails_the_subtraction(tmp_path):
+    # BED is half-open, so such a row describes no bases, but bedtools treats it as covering
+    # the base at its coordinate and the one before: probed here, the zero-length row at 1005
+    # would otherwise make the site at 1005 in-design and leave its hole NOCOV. The awk this
+    # stage replaced ignored such rows. Neither real design has one, so the stage refuses the
+    # file rather than choosing a meaning for a malformed row.
+    design = 'chr1\t999\t1100\nchr1\t1004\t1004\nchr1\t3000\t2990\n'
+
+    result = _subtract(tmp_path, design, [('chr1', 1050), ('chr1', 1005), ('chr1', 2000)])
+
+    assert result.returncode == 1
+    assert '2 capture design row(s) have end <= start' in result.stderr
+    assert 'chr1\t1004\t1004' in result.stderr
+    assert 'chr1\t3000\t2990' in result.stderr
+    assert not (tmp_path / 'off_design.bed').exists()
+
+
+def test_a_track_line_is_not_mistaken_for_a_zero_length_row(tmp_path):
+    # The header line has no numeric columns, so `$3 <= $2` compares strings there; it must be
+    # excluded rather than reported.
+    design = 'track name="Covered"\nchr1\t999\t1100\n'
+
+    assert _off_design(tmp_path, design, [('chr1', 1050), ('chr1', 2000)]) == [('chr1', 2000)]
