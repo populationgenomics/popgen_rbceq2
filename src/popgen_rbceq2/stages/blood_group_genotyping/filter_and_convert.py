@@ -188,6 +188,39 @@ def _merge_posthoc_commands(
         # itself, which would make a covered site look like a hole and let a post-hoc record
         # displace a DRAGEN call.
         bcftools index -t --threads {cpu} dragen.vcf.gz
+
+        # The two callers must agree on whose sample this is, and disagreeing is fatal.
+        #
+        # The post-hoc caller takes its sample name from the CRAM's read group and DRAGEN
+        # named the gVCF from the same run, so a mismatch means the CRAM and the gVCF this
+        # sequencing group resolves to do not describe one individual. Merging them would
+        # splice another person's genotypes into this one's calls at exactly the sites
+        # nothing else covers, and the result would look like an ordinary recovery.
+        #
+        # Relabelling the supplement instead would satisfy `concat`, which requires
+        # identical sample sets, and would bury that. Some mackenzie DRAGEN 3.7.8 test
+        # CRAMs do trip this benignly, carrying a retired sequencing-group ID for the same
+        # individual from an upstream test-set reheadering bug that is fixed for newer
+        # additions. That is a reason to fix those inputs, not to weaken the check for
+        # every cohort: this is the only place the pipeline compares the two files it was
+        # handed, and a real swap and a stale header are indistinguishable from here.
+        #
+        # First, before anything is computed, and whether or not this sample has a hole to
+        # fill: the check is about the inputs, not about the data in them, so it must not
+        # depend on the data. It reads two headers and fails in seconds.
+        posthoc_sample=$(bcftools query -l {posthoc_gvcf})
+        dragen_sample=$(bcftools query -l dragen.vcf.gz)
+        if [ "$posthoc_sample" != "$dragen_sample" ]; then
+            echo "ERROR: the post-hoc calls and the gVCF name different samples." >&2
+            echo "  CRAM/post-hoc: $posthoc_sample" >&2
+            echo "  primary gVCF:  $dragen_sample" >&2
+            echo "The CRAM and gVCF registered for this sequencing group are not from one" >&2
+            echo "DRAGEN run of one individual. Either the CRAM is registered against the" >&2
+            echo "wrong sequencing group, or its read group was never updated to the" >&2
+            echo "current ID. Check somalier, then fix the input; do not merge." >&2
+            exit 1
+        fi
+
         bcftools query -T {sites_bed} --targets-overlap 1 \\
             -f '%CHROM\\t%POS0\\t%END\\n' dragen.vcf.gz > covered.bed
 
@@ -314,33 +347,6 @@ def _merge_posthoc_commands(
             echo "post-hoc: $n_kept record(s) kept over $n_fill hole(s); $n_trespass variant(s) dropped for" >&2
             echo "reaching a defining site they may not fill, the rest had no reads there (DP=0)" >&2
 
-            # The two callers must agree on whose sample this is, and disagreeing is fatal.
-            #
-            # The post-hoc caller takes its sample name from the CRAM's read group and DRAGEN
-            # named the gVCF from the same run, so a mismatch means the CRAM and the gVCF this
-            # sequencing group resolves to do not describe one individual. Merging them would
-            # splice another person's genotypes into this one's calls at exactly the sites
-            # nothing else covers, and the result would look like an ordinary recovery.
-            #
-            # Relabelling the supplement instead would satisfy `concat`, which requires
-            # identical sample sets, and would bury that. Some mackenzie DRAGEN 3.7.8 test
-            # CRAMs do trip this benignly, carrying a retired sequencing-group ID for the same
-            # individual from an upstream test-set reheadering bug that is fixed for newer
-            # additions. That is a reason to fix those inputs, not to weaken the check for
-            # every cohort: this is the only place the pipeline compares the two files it was
-            # handed, and a real swap and a stale header are indistinguishable from here.
-            posthoc_sample=$(bcftools query -l posthoc_tagged.vcf.gz)
-            dragen_sample=$(bcftools query -l dragen.vcf.gz)
-            if [ "$posthoc_sample" != "$dragen_sample" ]; then
-                echo "ERROR: the post-hoc calls and the gVCF name different samples." >&2
-                echo "  CRAM/post-hoc: $posthoc_sample" >&2
-                echo "  primary gVCF:  $dragen_sample" >&2
-                echo "The CRAM and gVCF registered for this sequencing group are not from one" >&2
-                echo "DRAGEN run of one individual. Either the CRAM is registered against the" >&2
-                echo "wrong sequencing group, or its read group was never updated to the" >&2
-                echo "current ID. Check somalier, then fix the input; do not merge." >&2
-                exit 1
-            fi
             bcftools index -t --threads {cpu} posthoc_tagged.vcf.gz
             bcftools concat -a --threads {cpu} -Oz -o merged.vcf.gz dragen.vcf.gz posthoc_tagged.vcf.gz
         else

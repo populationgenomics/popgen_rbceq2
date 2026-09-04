@@ -410,6 +410,20 @@ def test_a_dragen_reference_block_over_an_off_design_site_fails_the_job_naming_t
     assert not (tmp_path / 'merged.vcf.gz').exists()
 
 
+def test_a_posthoc_file_naming_another_sample_fails_even_when_there_is_nothing_to_fill(tmp_path):
+    # The check is about the two inputs, not about the data in them, so it must not depend on
+    # the data: here DRAGEN covers every defining site, no hole is fillable, and the mismatch
+    # still fails the job before anything is computed.
+    dragen_covering_both = 'chr1\t1990\t.\tA\t<NON_REF>\t.\t.\tEND=2010\tGT:DP:GQ:MIN_DP\t0/0:50:50:50\n'
+    snp = f'chr1\t{OFF_DESIGN}\t.\tC\tT,<NON_REF>\t80\t.\t.\tGT:DP:GQ\t0/1:44:80\n'
+
+    result = _merge(tmp_path, snp, dragen_records=dragen_covering_both, posthoc_sample='SAMPLE2', check=False)
+
+    assert result.returncode == 1
+    assert 'name different samples' in result.stderr
+    assert not (tmp_path / 'covered.bed').exists()
+
+
 def test_a_posthoc_file_naming_another_sample_fails_the_job_rather_than_relabelling(tmp_path):
     # The CRAM's read group names the post-hoc sample and DRAGEN named the gVCF from the same
     # run, so a disagreement means the two inputs do not describe one individual. Relabelling
