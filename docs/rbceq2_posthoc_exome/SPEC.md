@@ -4,7 +4,8 @@
 [`RESULTS.md`](./RESULTS.md) for the run and its measurements. Kept as the record of why.
 **Area:** rbceq2 blood-group genotyping pipeline (`FilterAndConvertGvcfsForRbceq2` →
 `GenotypeBloodGroupsWithRbceq2` → `FlagBloodGroupCallQc`), in `popgen_rbceq2`.
-**Author:** Joshua Schmidt · **Reviewers:** (fill in)
+**Author:** Joshua Schmidt · **Reviewers:** Michael Harper (PR #14); agent-assisted reviews
+2026-09-03 and 2026-09-04, findings and fixes recorded in PR #14.
 
 Design agreed in outline 2026-08-14, from the mackenzie exome coverage analysis. This spec
 maps that agreement onto the pipeline as it stands today.
