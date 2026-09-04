@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from popgen_rbceq2.stages.blood_group_genotyping.off_design_sites import _subtraction_commands
+
 pytestmark = [
     pytest.mark.fast,
     pytest.mark.skipif(not shutil.which('bedtools'), reason='bedtools is not on PATH'),
@@ -38,19 +40,28 @@ def _sites_bed(sites: list[tuple[str, int]]) -> str:
     return ''.join(f'{chrom}\t{pos - 1}\t{pos}\n' for chrom, pos in sites)
 
 
-def _off_design(tmp_path: Path, design: str, sites: list[tuple[str, int]]) -> list[tuple[str, int]]:
-    """Run the stage's subtraction and return the sites it reports as off-design."""
+def _subtract(tmp_path: Path, design: str, sites: list[tuple[str, int]]) -> subprocess.CompletedProcess[str]:
+    """Run the stage's own subtraction command, verbatim, under real bedtools."""
     design_bed = tmp_path / 'design.bed'
     design_bed.write_text(design)
     sites_bed = tmp_path / 'sites.bed'
     sites_bed.write_text(_sites_bed(sites))
-    out = subprocess.run(  # noqa: S603
-        ['bedtools', 'intersect', '-v', '-a', str(sites_bed), '-b', str(design_bed)],  # noqa: S607
-        capture_output=True,
-        text=True,
-        check=True,
+    script = 'set -euo pipefail\n' + _subtraction_commands(
+        str(sites_bed),
+        str(design_bed),
+        str(tmp_path / 'off_design.bed'),
+        'exome_probesets_hg38/test_design_bed',
+        'gs://bucket/test_design.bed',
     )
-    return [(line.split('\t')[0], int(line.split('\t')[2])) for line in out.stdout.splitlines()]
+    return subprocess.run(['bash', '-c', script], cwd=tmp_path, capture_output=True, text=True, check=False)  # noqa: S603, S607
+
+
+def _off_design(tmp_path: Path, design: str, sites: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    """Run the stage's subtraction and return the sites it reports as off-design."""
+    result = _subtract(tmp_path, design, sites)
+    assert result.returncode == 0, result.stderr
+    lines = (tmp_path / 'off_design.bed').read_text().splitlines()
+    return [(line.split('\t')[0], int(line.split('\t')[2])) for line in lines]
 
 
 @pytest.mark.parametrize('pos', [1000, 1100])
@@ -60,11 +71,38 @@ def test_both_ends_of_a_design_interval_are_targeted(tmp_path, pos):
 
 @pytest.mark.parametrize('pos', [999, 1101])
 def test_one_base_outside_a_design_interval_is_off_design(tmp_path, pos):
-    assert _off_design(tmp_path, 'chr1\t999\t1100\n', [('chr1', pos)]) == [('chr1', pos)]
+    # A second, targeted site alongside, because a set that is entirely off-design is the
+    # contig-mismatch failure below, and the command refuses it.
+    assert _off_design(tmp_path, 'chr1\t999\t1100\n', [('chr1', 1050), ('chr1', pos)]) == [('chr1', pos)]
 
 
 def test_a_site_on_a_contig_the_design_never_mentions_is_off_design(tmp_path):
-    assert _off_design(tmp_path, 'chr1\t999\t1100\n', [('chr2', 1050)]) == [('chr2', 1050)]
+    assert _off_design(tmp_path, 'chr1\t999\t1100\n', [('chr1', 1050), ('chr2', 1050)]) == [('chr2', 1050)]
+
+
+def test_a_design_that_targets_every_site_leaves_nothing_to_fill(tmp_path):
+    # Legitimate, and the opposite of the two failures below: every hole then reaches the QC
+    # as NOCOV, which is the pre-recall answer.
+    assert _off_design(tmp_path, 'chr1\t0\t5000\n', [('chr1', 1050), ('chr1', 2000)]) == []
+
+
+def test_an_empty_design_bed_fails_the_subtraction(tmp_path):
+    result = _subtract(tmp_path, '', [('chr1', 1050)])
+
+    assert result.returncode == 1
+    assert 'the capture design BED is empty' in result.stderr
+
+
+def test_a_design_naming_its_contigs_differently_fails_the_subtraction(tmp_path):
+    # `1` against `chr1`: bedtools warns on stderr and exits 0 with every site off-design, the
+    # same observable as an empty design. Left alone it fails one sample at a time in the
+    # conversion job, with a message blaming the design file rather than its contig names.
+    result = _subtract(tmp_path, '1\t0\t5000\n2\t0\t5000\n', [('chr1', 1050), ('chr2', 2000)])
+
+    assert result.returncode == 1
+    assert 'every defining site is outside the capture design' in result.stderr
+    assert 'defining sites: chr1 chr2' in result.stderr
+    assert 'design:         1 2' in result.stderr
 
 
 def test_a_design_bed_with_extra_columns_and_a_track_line_is_read_as_intervals(tmp_path):

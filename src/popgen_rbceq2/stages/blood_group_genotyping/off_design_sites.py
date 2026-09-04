@@ -71,30 +71,65 @@ class SelectOffDesignDefiningSites(cpg_flow.stage.MultiCohortStage):
 
         sites_bed = b.read_input(stage_support.blood_group_resource(f'bg_defining_sites.{genome}.bed'))
         design_bed = b.read_input(design_path)
-
-        # An empty result is legitimate — a design that targets every defining site leaves
-        # nothing to fill, and every hole then reaches the QC as NOCOV. An empty *design* is
-        # not: it would report every defining site as off-design, which the per-sample check on
-        # DRAGEN's records would then fail on, one sample at a time, naming the design rather
-        # than the fact that it was empty. Caught here instead, once, before any of that.
         j.command(
-            f"""
-            set -euxo pipefail
+            'set -euxo pipefail\n'
+            + _subtraction_commands(str(sites_bed), str(design_bed), str(j.bed), design_key, str(design_path)),
+        )
+        b.write_output(j.bed, str(outputs['bed']))
+        return self.make_outputs(multicohort, data=outputs, jobs=[j])
+
+
+def _subtraction_commands(sites_bed: str, design_bed: str, out_bed: str, design_key: str, design_path: str) -> str:
+    """Shell that writes the defining sites outside the design, or fails on a design that cannot be right.
+
+    A pure function of its arguments so the test suite can run it under real bedtools; the
+    subtraction is bedtools' interval semantics and nothing of ours, and a test that spelled
+    the command out again would stay green if this one changed.
+
+    An empty *result* is legitimate: a design that targets every defining site leaves nothing
+    to fill, and every hole then reaches the QC as NOCOV. Two inputs are not, and both would
+    otherwise surface the same way, as every defining site off-design, which the per-sample
+    check on DRAGEN's records then fails on one sample at a time, naming the design file rather
+    than what was wrong with it. Both are caught here instead, once, before any of that:
+
+    - an empty design BED;
+    - a design that shares no interval with any site, which for a real exome design means the
+      two BEDs name their contigs differently (`1` against `chr1`). bedtools warns about that
+      on stderr and exits 0 with every site off-design.
+
+    Args:
+        sites_bed: Localised `bg_defining_sites.<genome>.bed`.
+        design_bed: Localised capture design BED.
+        out_bed: Where to write the off-design sites.
+        design_key: The `[references]` key the design came from, for the messages.
+        design_path: The path it resolved to, for the messages.
+
+    Returns:
+        Shell lines, for the job command.
+    """
+    return f"""
             if [ ! -s {design_bed} ]; then
                 echo "ERROR: the capture design BED is empty." >&2
                 echo "{stage_support.DESIGN_CONFIG_PATH} = {design_key}" >&2
                 echo "resolved to {design_path}" >&2
                 exit 1
             fi
-            bedtools intersect -v -a {sites_bed} -b {design_bed} > {j.bed}
-            n_off=$(wc -l < {j.bed} | tr -d ' ')
+            bedtools intersect -v -a {sites_bed} -b {design_bed} > {out_bed}
+            n_off=$(wc -l < {out_bed} | tr -d ' ')
             n_sites=$(wc -l < {sites_bed} | tr -d ' ')
+            if [ "$n_off" -eq "$n_sites" ]; then
+                echo "ERROR: every defining site is outside the capture design, which no exome design leaves." >&2
+                echo "The two BEDs most likely name their contigs differently:" >&2
+                echo "  defining sites: $(cut -f1 {sites_bed} | sort -u | tr '\\n' ' ')" >&2
+                design_contigs=$(awk '!/^(track|browser|#)/ {{print $1}}' {design_bed} | sort -u | tr '\\n' ' ')
+                echo "  design:         $design_contigs" >&2
+                echo "{stage_support.DESIGN_CONFIG_PATH} = {design_key}" >&2
+                echo "resolved to {design_path}" >&2
+                exit 1
+            fi
             echo "off-design: $n_off of $n_sites defining site(s) are outside {design_key}," >&2
             echo "and so are the only sites a post-hoc record may fill" >&2
-            """,
-        )
-        b.write_output(j.bed, str(outputs['bed']))
-        return self.make_outputs(multicohort, data=outputs, jobs=[j])
+    """
 
 
 def off_design_bed(
