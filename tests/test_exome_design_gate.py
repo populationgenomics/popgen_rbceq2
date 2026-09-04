@@ -138,6 +138,35 @@ def test_an_exome_run_naming_a_design_that_is_not_configured_fails(
         _queue_subtraction(mocker, mock_multicohort, [exome_sequencing_group])
 
 
+def test_the_run_says_which_exome_sequencing_groups_the_recall_is_skipped_for(
+    mocker,
+    exome_sequencing_group,
+    mock_cohort,
+    mock_multicohort,
+    shm_tmp_path: Path,
+    caplog,
+):
+    # A sequencing group without a CRAM is skipped, not failed, and its QC then reads NOCOV at
+    # every off-design site exactly as before the recall existed. Correct per sample, but with
+    # nothing said a cohort whose CRAMs were never registered would run green with the recall
+    # silently off. So the run names them, once, at graph build.
+    _config(shm_tmp_path, 'exome', design_key=TWIST_KEY)
+    no_cram = MagicMock()
+    no_cram.dataset = mock_cohort.dataset
+    no_cram.id = 'SG000002'
+    no_cram.gvcf = 'gs://bucket/SG000002.g.vcf.gz'
+    no_cram.cram = None
+    no_cram.sequencing_type = 'exome'
+
+    with caplog.at_level('INFO'):
+        _queue_subtraction(mocker, mock_multicohort, [exome_sequencing_group, no_cram])
+
+    assert 'post-hoc calling applies to 1 of 2 sequencing group(s)' in caplog.text
+    assert 'skipped for 1 exome sequencing group(s)' in caplog.text
+    assert 'SG000002' in caplog.text
+    assert 'SG000001' not in caplog.text.split('skipped')[1]
+
+
 def test_a_run_with_no_exome_sequencing_group_produces_no_design_subtraction(
     mocker,
     mock_sequencing_group,

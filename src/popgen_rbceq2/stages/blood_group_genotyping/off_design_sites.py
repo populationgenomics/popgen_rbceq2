@@ -1,5 +1,6 @@
 """Which blood-group defining sites an exome cohort's capture design never targeted."""
 
+import logging
 import typing
 
 import cpg_flow.inputs
@@ -11,6 +12,8 @@ import hailtop.batch.resource
 
 from popgen_rbceq2 import constants, stage_support
 from popgen_rbceq2.stages.blood_group_genotyping import posthoc_genotype
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class SelectOffDesignDefiningSites(cpg_flow.stage.MultiCohortStage):
@@ -50,6 +53,7 @@ class SelectOffDesignDefiningSites(cpg_flow.stage.MultiCohortStage):
         multicohort: cpg_flow.targets.MultiCohort,
         inputs: cpg_flow.stage.StageInput,  # noqa: ARG002
     ) -> cpg_flow.stage.StageOutput | None:
+        _log_who_gets_the_recall(multicohort)
         outputs = self.expected_outputs(multicohort)
         if outputs is None:
             return None
@@ -77,6 +81,40 @@ class SelectOffDesignDefiningSites(cpg_flow.stage.MultiCohortStage):
         )
         b.write_output(j.bed, str(outputs['bed']))
         return self.make_outputs(multicohort, data=outputs, jobs=[j])
+
+
+def _log_who_gets_the_recall(multicohort: cpg_flow.targets.MultiCohort) -> None:
+    """Say at graph build which sequencing groups post-hoc calling will and will not run for.
+
+    The recall is gated per sequencing group on having both a CRAM and a gVCF, and a
+    sequencing group that fails the gate is skipped, not failed: its conversion is a plain
+    rename and every off-design site reaches its QC as NOCOV, exactly as before the recall
+    existed. That is the honest per-sample answer, but with nothing said a run in which no
+    exome sequencing group had a CRAM registered would go green with the recall silently off,
+    indistinguishable in its logs from one where it ran. So the count is logged once per run,
+    and the skipped exome sequencing groups are named.
+
+    Logged here, once for the run, rather than in the post-hoc stage's expected_outputs, which
+    cpg_flow calls more than once per sequencing group.
+
+    Args:
+        multicohort: The run's targets.
+    """
+    sequencing_groups = multicohort.get_sequencing_groups(only_active=True)
+    exomes = [sg for sg in sequencing_groups if sg.sequencing_type == constants.EXOME]
+    skipped = [sg.id for sg in exomes if not posthoc_genotype.applies_to(sg)]
+    _LOGGER.info(
+        'post-hoc calling applies to %d of %d sequencing group(s) in this run',
+        len(exomes) - len(skipped),
+        len(sequencing_groups),
+    )
+    if skipped:
+        _LOGGER.warning(
+            'post-hoc calling skipped for %d exome sequencing group(s) with no CRAM or no gVCF registered; '
+            'every off-design defining site will reach their QC as NOCOV: %s',
+            len(skipped),
+            ', '.join(skipped),
+        )
 
 
 def _subtraction_commands(sites_bed: str, design_bed: str, out_bed: str, design_key: str, design_path: str) -> str:
