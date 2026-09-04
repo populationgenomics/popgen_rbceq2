@@ -37,6 +37,7 @@ from popgen_rbceq2.stages.blood_group_genotyping.filter_and_convert import (
     _EXTRACT_FORMAT,
     _POSTHOC_HEADER_LINE,
     _merge_posthoc_commands,
+    _primary_records_guard,
 )
 
 pytestmark = [
@@ -143,6 +144,37 @@ def _merge(
         capture_output=True,
         text=True,
         check=check,
+    )
+
+
+def _guard_then_merge(
+    tmp_path: Path,
+    posthoc_records: str,
+    *,
+    dragen_records: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run the wrong-build guard and then the merge, the order the stage runs them in."""
+    posthoc = _bgzip(tmp_path, 'posthoc.g.vcf', posthoc_records, index=True)
+    sites = tmp_path / 'sites.bed'
+    sites.write_text(SITES_BED)
+    off_design = tmp_path / 'off_design_defining_sites.bed'
+    off_design.write_text(OFF_DESIGN_BED)
+    (tmp_path / 'posthoc_hdr.txt').write_text(f'{_POSTHOC_HEADER_LINE}\n')
+    _bgzip(tmp_path, 'dragen.vcf', dragen_records, index=False, extra_header=_POSTHOC_HEADER_LINE)
+
+    script = (
+        'set -euo pipefail\n'
+        + _primary_records_guard(str(sites), 'GRCh38')
+        + _merge_posthoc_commands(
+            str(posthoc), str(sites), str(off_design), 'exome_probesets_hg38/test_design_bed', cpu=1
+        )
+    )
+    return subprocess.run(  # noqa: S603
+        ['bash', '-c', script],  # noqa: S607
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 
@@ -393,3 +425,37 @@ def test_a_posthoc_file_naming_another_sample_fails_the_job_rather_than_relabell
     assert 'CRAM/post-hoc: SAMPLE2' in result.stderr
     assert 'primary gVCF:  SAMPLE1' in result.stderr
     assert not (tmp_path / 'merged.vcf.gz').exists()
+
+
+# --- the wrong-build guard, and why it runs before the merge ---
+
+
+def test_a_gvcf_with_no_dragen_record_at_any_defining_site_fails_before_the_merge(tmp_path):
+    # A gVCF called against another build, or naming its contigs without `chr`, matches no
+    # blood-group region and leaves an empty DRAGEN set with exit 0. The post-hoc caller takes
+    # its contigs from the reference fasta, so its records are well-formed regardless, and
+    # would fill every off-design hole and populate the extract. Asked after the merge, "does
+    # any record overlap a defining site" is therefore answered yes by the supplement alone,
+    # and the sample is typed from the second caller with everything else NOCOV. The guard
+    # reads the DRAGEN intermediate, before the merge, so this input fails as it did before
+    # post-hoc calling existed.
+    posthoc = f'chr1\t{OFF_DESIGN}\t.\tC\tT,<NON_REF>\t80\t.\t.\tGT:DP:GQ\t0/1:44:80\n'
+
+    result = _guard_then_merge(tmp_path, posthoc, dragen_records='')
+
+    assert result.returncode == 1
+    assert 'no DRAGEN gVCF record overlaps any blood-group defining site' in result.stderr
+    assert not (tmp_path / 'merged.vcf.gz').exists()
+
+
+def test_the_guard_passes_a_gvcf_dragen_called_a_defining_site_in(tmp_path):
+    # The ordinary exome: DRAGEN called the in-design site, so the guard is satisfied by a
+    # primary record and the merge goes on to fill the off-design hole from the supplement.
+    posthoc = f'chr1\t{OFF_DESIGN}\t.\tC\tT,<NON_REF>\t80\t.\t.\tGT:DP:GQ\t0/1:44:80\n'
+
+    result = _guard_then_merge(tmp_path, posthoc, dragen_records=DRAGEN_RECORDS)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'merged.vcf.gz').exists()
+    flags = _flags(tmp_path)
+    assert flags[OFF_DESIGN].startswith('POSTHOC:')

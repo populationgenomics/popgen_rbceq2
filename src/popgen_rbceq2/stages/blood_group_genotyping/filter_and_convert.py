@@ -78,6 +78,39 @@ _COVERED_HEADER_LINE = (
 _EXTRACT_FORMAT = r'%CHROM\t%POS\t%REF\t%ALT\t%INFO/END\t[%GT\t%DP\t%GQ\t%MIN_DP]\t%INFO/POSTHOC\n'
 
 
+def _primary_records_guard(sites_bed: str, genome: str) -> str:
+    """Shell that fails the job unless a DRAGEN record overlaps some blood-group defining site.
+
+    Reads `dragen.vcf.gz`, the DRAGEN-only intermediate, and nothing else. An empty answer means
+    the input is wrong rather than the sample poor: a gVCF called against another build, or one
+    naming its contigs `1` where the BEDs say `chr1`, matches no region and `bcftools norm -R`
+    reports that as zero records with exit 0.
+
+    It runs before the merge on purpose. The post-hoc caller takes its contigs from the
+    reference fasta, not from the gVCF, so its records are well-formed whatever the gVCF looks
+    like. Asked of the merged file, this question is answered by the supplement alone: a
+    wrong-build exome gVCF yields an empty DRAGEN set, every off-design site becomes a hole,
+    the trespass check passes with no DRAGEN blocks to trip it, and the post-hoc records fill
+    the holes and populate the extract. That sample is then typed from the second caller with
+    everything else NOCOV, and looks like a poor exome rather than a broken input.
+
+    Args:
+        sites_bed: Localised `bg_defining_sites.<genome>.bed`.
+        genome: The configured genome build, for the message.
+
+    Returns:
+        Shell lines, indented for the job command.
+    """
+    return f"""
+            bcftools query -T {sites_bed} --targets-overlap 2 -f '%POS\\n' dragen.vcf.gz > dragen_at_sites.txt
+            if [ ! -s dragen_at_sites.txt ]; then
+                echo "ERROR: no DRAGEN gVCF record overlaps any blood-group defining site." >&2
+                echo "Check the gVCF contig naming, and that references.genome_build" >&2
+                echo "({genome}) matches the build the gVCF was called against." >&2
+                exit 1
+            fi"""
+
+
 def _merge_posthoc_commands(
     posthoc_gvcf: str,
     sites_bed: str,
@@ -477,22 +510,20 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
         # INFO/POSTHOC is extracted unconditionally, on genome runs as well as exome ones,
         # where it renders `.` for every record. One extract format everywhere means the
         # parser needs no per-sequencing-type branch to know how many columns to expect.
+        #
+        # The wrong-build guard reads the DRAGEN intermediate, before the merge, and not the
+        # extract: see _primary_records_guard for why the extract cannot answer it on an exome.
         j.command(
             f"""
             set -euxo pipefail
             echo '{_POSTHOC_HEADER_LINE}' > posthoc_hdr.txt
             bcftools norm -m -any --threads {cpu} -R {regions_bed} -Ou {gvcf} \\
                 | bcftools annotate -h posthoc_hdr.txt --threads {cpu} -Oz -o dragen.vcf.gz -
+{_primary_records_guard(str(sites_bed), genome)}
 {merge_posthoc}
             bcftools query -T {sites_bed} --targets-overlap 2 \\
                 -f '{_EXTRACT_FORMAT}' \\
                 merged.vcf.gz > {j.sites}
-            if [ ! -s {j.sites} ]; then
-                echo "ERROR: no gVCF record overlaps any blood-group defining site." >&2
-                echo "Check the gVCF contig naming, and that references.genome_build" >&2
-                echo "({genome}) matches the build the gVCF was called against." >&2
-                exit 1
-            fi
             bcftools view \\
                     -e 'ALT="<NON_REF>"' \\
                     --trim-alt-alleles -Ou merged.vcf.gz \\
