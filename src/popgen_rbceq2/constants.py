@@ -11,6 +11,12 @@ RBCEQ2_VERSION = '2.4.3'
 # current tag when bumping either.
 RBCEQ2_IMAGE_TAG = '2.4.3-1'
 
+# The `workflow.sequencing_type` value of an exome run. An exome gVCF is called against a
+# capture-target BED, which is what puts defining sites outside it beyond reach; a genome gVCF
+# has no such edge. Post-hoc calling exists for this type, and stage_support keys an exome
+# run's output tree on the capture design that type makes load-bearing.
+EXOME = 'exome'
+
 # GATK, for the post-hoc exome caller (PosthocGenotypeOffTargetSites). Pinned as its own
 # literal for the same reason as the rbceq2 image tag: the build-number suffix moves on any
 # rebuild. Check the registry when bumping.

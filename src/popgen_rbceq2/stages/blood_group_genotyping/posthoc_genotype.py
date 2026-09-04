@@ -10,11 +10,6 @@ import hailtop.batch.resource
 
 from popgen_rbceq2 import constants, stage_support
 
-# The sequencing type this stage exists for. An exome gVCF is called against a capture-target
-# BED, which is what puts defining sites outside it beyond reach; a genome gVCF has no such
-# edge, so recalling from its CRAM would re-derive calls DRAGEN already made.
-EXOME = 'exome'
-
 # The memory tier this stage asks for when its config section does not set one.
 MEMORY_TIER = 'standard'
 
@@ -75,7 +70,11 @@ def applies_to(sequencing_group: cpg_flow.targets.SequencingGroup) -> bool:
     Returns:
         True for an exome with both a CRAM to call from and a gVCF to supplement.
     """
-    return sequencing_group.sequencing_type == EXOME and bool(sequencing_group.cram) and bool(sequencing_group.gvcf)
+    return (
+        sequencing_group.sequencing_type == constants.EXOME
+        and bool(sequencing_group.cram)
+        and bool(sequencing_group.gvcf)
+    )
 
 
 class PosthocGenotypeOffTargetSites(cpg_flow.stage.SequencingGroupStage):

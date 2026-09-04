@@ -64,6 +64,13 @@ some cohort, and a wrong design does not fail, it just recovers the wrong set of
 run that omits the key fails while the stage graph is built, before any job starts. Genome runs
 never read it.
 
+The design is also a segment of every exome output path, directly under the release:
+`.../rbceq2_<tool>_<release>/<design key>/<stage>/...`. cpg-flow reuses a stage whose outputs
+already exist without asking how they were made, and every exome output from the conversion
+onward is built from the holes the design leaves. So repointing `exome_design_bed` starts a
+fresh tree for the whole run rather than reusing the previous design's genotypes and QC. Genome
+paths have no design segment.
+
 The keys for the designs seen so far, so you do not have to open the
 [references](https://github.com/populationgenomics/references) repo:
 
@@ -188,10 +195,9 @@ rests on a recovered site — reaches Metamist as a `POSTHOC` flag on the QC TSV
 ### `SelectOffDesignDefiningSites` (once per run, exomes only)
 
 Subtract the configured capture design's intervals from the committed defining sites with
-`bedtools intersect -v`, giving the sites the post-hoc calls may fill. The output path carries
-the design key, so repointing `exome_design_bed` cannot reuse another design's answer. Both the
-merge in the conversion stage and the QC read this one BED; the section on merging below says
-why the subtraction lives here and not in the per-sample job.
+`bedtools intersect -v`, giving the sites the post-hoc calls may fill. Both the merge in the
+conversion stage and the QC read this one BED; the section on merging below says why the
+subtraction lives here and not in the per-sample job.
 
 ### `FilterAndConvertGvcfsForRbceq2` (per sequencing group)
 

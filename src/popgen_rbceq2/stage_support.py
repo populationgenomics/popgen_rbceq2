@@ -210,28 +210,95 @@ def job_script(name: str) -> str:
     return str(_package_file('jobs', name, 'Stages may only run a script committed to jobs/.'))
 
 
-def _output_version(stage_name: str) -> str:
-    """The version segment for a stage's outputs: `rbceq2_<tool version>_<release>`.
+# The stage config key naming the capture design an exome cohort was called against, as a key
+# into the `[references]` section, e.g.
+# `exome_probesets_hg38/agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed`.
+# Required for an exome run; a genome run never reads it.
+EXOME_DESIGN_KEY = 'exome_design_bed'
+# The config section the key is read from: SelectOffDesignDefiningSites' section, since that
+# stage is the one that turns the design into the sites the fill may reach. Spelled out here
+# rather than derived from the class, because the release tree below needs the design before
+# any stage module is importable; test_output_namespacing holds the two together.
+DESIGN_CONFIG_SECTION = 'select_off_design_defining_sites'
+# The fully-qualified path, for the error messages that have to name it.
+DESIGN_CONFIG_PATH = f'workflow.{DESIGN_CONFIG_SECTION}.{EXOME_DESIGN_KEY}'
+
+
+def exome_design_bed() -> tuple[str, str]:
+    """The reference key and path of the capture design BED an exome run fills holes outside of.
+
+    Read at graph-build time, so a run missing it fails before a job starts rather than on the
+    first exome sequencing group's merge.
+
+    Returns:
+        The `[references]` key as configured, and the path it resolves to.
+
+    Raises:
+        cpg_utils.config.ConfigError: The key is not set, or names no reference.
+    """
+    try:
+        key = cpg_utils.config.config_retrieve(['workflow', DESIGN_CONFIG_SECTION, EXOME_DESIGN_KEY])
+    except cpg_utils.config.ConfigError as e:
+        raise cpg_utils.config.ConfigError(
+            f'An exome run needs {DESIGN_CONFIG_PATH}: the [references] key of the capture design '
+            'BED the gVCFs were called against, e.g. '
+            "'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'. Post-hoc calls "
+            'fill defining sites only outside that design.'
+        ) from e
+    return key, cpg_utils.config.reference_path(key)
+
+
+def design_segment(design_key: str) -> str:
+    """The output-path segment identifying an exome run's capture design.
+
+    Args:
+        design_key: The `[references]` key the design came from.
+
+    Returns:
+        The key with anything outside `[A-Za-z0-9._-]` replaced, so it is one path segment.
+    """
+    return re.sub(r'[^A-Za-z0-9._-]', '_', design_key)
+
+
+def _release_tree(stage_name: str) -> str:
+    """The release tree a stage's outputs land in, as the path below the workflow name.
+
+    `rbceq2_<tool version>_<release>` for a genome run, and
+    `rbceq2_<tool version>_<release>/<design>` for an exome run.
 
     The tool-version half is derived from constants.RBCEQ2_VERSION, so a tool bump always
     lands in a fresh tree and the segment can never drift from the version actually run. The
     release half is ours — the stage's own output_versions pin if set, else workflow.version —
     bumped only when a pipeline change alters the outputs (deliberately not the image tag,
     which moves on rebuilds that change nothing about the outputs).
+
+    The design segment is there because cpg_flow reuses a stage whose expected outputs exist
+    and asks nothing about how they were made. Every exome output from the conversion onward
+    depends on the configured design: which holes the merge filled, so the converted VCF, the
+    genotypes rbceq2 calls from it, the QC flags and the cohort tables. None of those stages
+    reads the design itself, so none could put it in its own path, and the release segment
+    cannot see a config change. Repointing EXOME_DESIGN_KEY inside one release would otherwise
+    rebuild the run-level site subtraction and then reuse every sample's outputs from the old
+    design without a word in any log. With the design in the tree, repointing it starts a
+    fresh tree for the whole run. A genome run never reads the key, so its tree is unchanged.
     """
     pinned = cpg_utils.config.config_retrieve(['workflow', 'output_versions', stage_name], None)
     release = pinned or cpg_utils.config.config_retrieve(['workflow', 'version'], 'v1')
-    return f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_{release}'
+    tree = f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_{release}'
+    if cpg_utils.config.config_retrieve(['workflow', 'sequencing_type']) == constants.EXOME:
+        design_key, _ = exome_design_bed()
+        tree = f'{tree}/{design_segment(design_key)}'
+    return tree
 
 
 def get_output_prefix(cohort: cpg_flow.targets.Cohort, stage_name: str, category: str | None = None) -> cpg_utils.Path:
     """Standardised output prefix for CohortStage outputs.
 
-    Format: cohort.dataset.prefix() / workflow.name / rbceq2_<tool version>_<release> / stage_name / cohort.id
+    Format: cohort.dataset.prefix() / workflow.name / <release tree> / stage_name / cohort.id
 
-    The version segment sits directly under the workflow name so one release is one browsable
-    tree; see _output_version for what its two halves mean. A stage with its own
-    output_versions pin writes under its pinned release's tree instead.
+    The release tree sits directly under the workflow name so one release is one browsable
+    tree, and for an exome run one design within it; see _release_tree for its segments. A
+    stage with its own output_versions pin writes under its pinned release's tree instead.
 
     cohort.id is a path segment, so a different set of sequencing groups is a different cohort
     and therefore a different tree — outputs from one cohort can never be mistaken for another's.
@@ -239,7 +306,7 @@ def get_output_prefix(cohort: cpg_flow.targets.Cohort, stage_name: str, category
     return (
         cohort.dataset.prefix(category=category)
         / cpg_flow.workflow.get_workflow().name
-        / _output_version(stage_name)
+        / _release_tree(stage_name)
         / stage_name
         / cohort.id
     )
@@ -252,21 +319,20 @@ def get_multicohort_output_prefix(
 ) -> cpg_utils.Path:
     """Standardised output prefix for MultiCohortStage outputs.
 
-    Format: multicohort.analysis_dataset.prefix() / workflow.name / rbceq2_<tool version>_<release>
-    / stage_name
+    Format: multicohort.analysis_dataset.prefix() / workflow.name / <release tree> / stage_name
 
     No target segment, unlike the cohort and sequencing-group prefixes. A MultiCohortStage runs
     once for the whole workflow run, and its target's name is either the analysis dataset or a
     hash of the input cohorts — neither of which describes what the output depends on. A stage
-    whose output varies with something other than the release must put that in its own filename;
-    see SelectOffDesignDefiningSites, which keys on the capture design it subtracted.
+    whose output varies with something other than the release tree must put that in its own
+    filename.
 
-    See get_output_prefix and _output_version for what the version segment means.
+    See get_output_prefix and _release_tree for what the release tree's segments mean.
     """
     return (
         multicohort.analysis_dataset.prefix(category=category)
         / cpg_flow.workflow.get_workflow().name
-        / _output_version(stage_name)
+        / _release_tree(stage_name)
         / stage_name
     )
 
@@ -278,14 +344,14 @@ def get_sg_output_prefix(
 ) -> cpg_utils.Path:
     """Standardised output prefix for SequencingGroupStage outputs.
 
-    Format: sg.dataset.prefix() / workflow.name / rbceq2_<tool version>_<release> / stage_name / sg.id
+    Format: sg.dataset.prefix() / workflow.name / <release tree> / stage_name / sg.id
 
-    See get_output_prefix and _output_version for what the version segment means.
+    See get_output_prefix and _release_tree for what the release tree's segments mean.
     """
     return (
         sequencing_group.dataset.prefix(category=category)
         / cpg_flow.workflow.get_workflow().name
-        / _output_version(stage_name)
+        / _release_tree(stage_name)
         / stage_name
         / sequencing_group.id
     )

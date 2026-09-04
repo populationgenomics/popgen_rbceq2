@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from popgen_rbceq2 import constants
+from popgen_rbceq2 import constants, stage_support
 from popgen_rbceq2.stages import pipeline
-from popgen_rbceq2.stages.blood_group_genotyping import posthoc_genotype
+from popgen_rbceq2.stages.blood_group_genotyping import off_design_sites, posthoc_genotype
 from tests.helpers import set_config
 
 pytestmark = pytest.mark.fast
@@ -46,6 +46,47 @@ def test_filter_and_convert_output_namespacing(mock_sequencing_group):
     prefix = Path('gs://bucket-tmp') / 'popgen_rbceq2' / VERSION_SEGMENT / 'FilterAndConvertGvcfsForRbceq2' / 'SG000001'
     assert str(output['vcf']) == str(prefix / 'SG000001.converted.vcf.gz')
     assert str(output['defining_sites']) == str(prefix / 'SG000001.defining_sites.tsv')
+
+
+def test_an_exome_run_writes_under_its_capture_design(exome_sequencing_group, mock_cohort, shm_tmp_path):
+    # The design sits directly under the release segment, once for the whole run, rather than
+    # in each stage that reads it: every exome output from the conversion onward is built from
+    # the holes the design leaves, whether or not the stage itself opens the BED. A genome run
+    # never reads the key and its tree is unchanged (every other test in this file).
+    design_key = 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'
+    set_config(
+        {
+            'references': {
+                'exome_probesets_hg38': {'twist_vcgs_custom_exome_covered_targets_bed': 'gs://ref/twist.bed'}
+            },
+            'workflow': {
+                'name': 'popgen_rbceq2',
+                'version': 'v1',
+                'sequencing_type': 'exome',
+                stage_support.DESIGN_CONFIG_SECTION: {stage_support.EXOME_DESIGN_KEY: design_key},
+            },
+        },
+        shm_tmp_path / 'exome.toml',
+    )
+    design = 'exome_probesets_hg38_twist_vcgs_custom_exome_covered_targets_bed'
+
+    sg_output = outputs_of(pipeline.GenotypeBloodGroupsWithRbceq2(), exome_sequencing_group)
+    sg_prefix = (
+        Path('gs://bucket') / 'popgen_rbceq2' / VERSION_SEGMENT / design / 'GenotypeBloodGroupsWithRbceq2' / 'SG000001'
+    )
+    assert str(sg_output['geno']) == str(sg_prefix / 'SG000001.geno.tsv')
+
+    cohort_output = outputs_of(pipeline.CombineRbceq2OutputsPerCohort(), mock_cohort)
+    cohort_prefix = Path('gs://bucket') / 'popgen_rbceq2' / VERSION_SEGMENT / design / 'CombineRbceq2OutputsPerCohort'
+    assert str(cohort_output['geno']) == str(cohort_prefix / 'test-cohort' / 'combined.test-cohort.geno.tsv')
+
+
+def test_the_design_key_is_read_from_the_subtraction_stages_config_section():
+    # stage_support spells the section out as a literal, because the release tree needs the
+    # design before any stage module is importable. This holds it to the class name the
+    # config_section convention would derive, so renaming the stage cannot strand the key.
+    derived = stage_support.camel_to_snake(off_design_sites.SelectOffDesignDefiningSites.__name__)
+    assert derived == stage_support.DESIGN_CONFIG_SECTION
 
 
 def test_posthoc_output_namespacing(exome_sequencing_group):
@@ -167,6 +208,7 @@ def test_output_version_can_be_pinned_per_stage(mock_sequencing_group, shm_tmp_p
             'workflow': {
                 'name': 'popgen_rbceq2',
                 'version': 'v1',
+                'sequencing_type': 'genome',
                 'output_versions': {'FlagBloodGroupCallQc': 'v2'},
             },
         },

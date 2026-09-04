@@ -30,6 +30,9 @@ sequencing_type = 'genome'
 # Where a vendor ships both, take the *Covered* (probe footprint) entry, not Regions. The two
 # differ, and on the validation cohorts Regions would have recovered 691 sites instead of 1,650.
 #
+# The key is a segment of every exome output path, under the release, so changing it starts a
+# fresh tree for the whole run: nothing built from the previous design is reused.
+#
 # The README section "An exome run must name its capture design" lists the values for the
 # designs seen so far, so you should not need the references repo. The two used to date:
 #

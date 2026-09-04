@@ -184,7 +184,7 @@ def _merge_posthoc_commands(
         if [ -s off_design_in_blocks.bed ]; then
             n_in_blocks=$(wc -l < off_design_in_blocks.bed | tr -d ' ')
             echo "ERROR: DRAGEN reference blocks cover $n_in_blocks defining site(s) outside the capture design." >&2
-            echo "{off_design_sites.DESIGN_CONFIG_PATH} = {design_key} is not the BED this gVCF" >&2
+            echo "{stage_support.DESIGN_CONFIG_PATH} = {design_key} is not the BED this gVCF" >&2
             echo "was called against." >&2
             echo "For an Agilent design that usually means Regions configured where the gVCF" >&2
             echo "used Covered. First sites:" >&2
@@ -441,7 +441,7 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
             # The design BED itself is not localised here. Only the 167-line subtraction of it
             # is, from SelectOffDesignDefiningSites, which saves moving 5.5Mb of vendor
             # intervals to every sequencing group to re-derive one cohort-constant answer.
-            design_key, _ = off_design_sites.exome_design_bed()
+            design_key, _ = stage_support.exome_design_bed()
             off_design = off_design_sites.off_design_bed(inputs)
             merge_posthoc = _merge_posthoc_commands(
                 str(posthoc_gvcf),

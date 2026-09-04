@@ -129,8 +129,10 @@ rather than fatal, so an exome run that does not name one fails while the graph 
 That subtraction is its own **run-level** stage, not a step in the conversion job, because
 its answer depends only on the configured design and the committed sites. It is done in
 `bedtools intersect -v`, a standard tool for exactly this operation, rather than the
-hand-written awk containment loop it replaced (§10). Its output path carries the design key as a segment, because the release segment
-above it cannot see a config change and a repointed key must not reuse the old BED.
+hand-written awk containment loop it replaced (§10). The design key is a segment of every
+exome output path, directly under the release (§7): the release segment cannot see a config
+change, and every output from the conversion onward is built from the holes the design
+leaves, so a repointed key must not reuse any of them, not only the BED.
 
 **The configured design is checked against the gVCF.** DRAGEN emits reference blocks over
 exactly the target BED with no padding, so a DRAGEN reference block reaching a defining
@@ -341,6 +343,16 @@ rbceq2 therefore excluded every recovered alternate allele; and the QC disregard
 reference block at an in-design hole (§5). The v3 re-run in RESULTS.md predates both, so its
 genotype tables used no recovered allele.
 
+An exome run's tree has one more segment than a genome run's, the configured design:
+`rbceq2_<tool>_<release>/<design key>/<stage>/...`. cpg_flow reuses a stage whose expected
+outputs exist and asks nothing about how they were made, and the release segment cannot see a
+config change. The first draft put the design only in the run-level subtraction's own path,
+which let a repointed key rebuild that BED and then reuse every sample's conversion, genotypes
+and QC from the old design, silently. Putting it under the release moves the whole run
+instead. A genome run never reads the key and its tree is unchanged, so genome outputs stay
+where v4 put them; the v4 CREv2 re-run in RESULTS.md predates the design segment and sits
+directly under `rbceq2_2_4_3_v4`.
+
 ## 8. Change table
 
 | file | change |
@@ -352,9 +364,10 @@ genotype tables used no recovered allele.
 | `scripts/gen_bg_resources.py` + `scripts/bg_db.py` | write `bg_defining_sites_padded.<genome>.bed` |
 | `resources/` | the new committed BED: 199 intervals, 135,579 bases |
 | `config/popgen_rbceq2_default_config.toml` | new stage section; `version = 'v4'` |
-| `stages/blood_group_genotyping/off_design_sites.py` | new stage: the run-level design subtraction, and the design key it reads |
+| `stages/blood_group_genotyping/off_design_sites.py` | new stage: the run-level design subtraction |
 | `config/config_template.toml` | the required `exome_design_bed` key, with how to pick it |
 | `constants.py` | `GATK_VERSION`, `GATK_IMAGE_TAG`, `POSTHOC_CALLER` |
+| `stage_support.py` | the design key, its config section and `exome_design_bed()`; an exome run's release tree gains the design as a segment |
 | README / PRODUCT.md / GLOSSARY.md | document `POSTHOC`, the stage, and the fill rule |
 | `tests/test_posthoc_merge.py` | new: runs the real awk against `GvcfRecord.covers` |
 | `tests/test_exome_design_gate.py` | new: the design key is required, resolved and enforced |

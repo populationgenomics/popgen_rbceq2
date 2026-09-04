@@ -1,6 +1,5 @@
 """Which blood-group defining sites an exome cohort's capture design never targeted."""
 
-import re
 import typing
 
 import cpg_flow.inputs
@@ -13,30 +12,6 @@ import hailtop.batch.resource
 from popgen_rbceq2 import constants, stage_support
 from popgen_rbceq2.stages.blood_group_genotyping import posthoc_genotype
 
-# The stage config key naming the capture design an exome cohort was called against, as a key
-# into the `[references]` section, e.g.
-# `exome_probesets_hg38/agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed`.
-# Required for an exome run; a genome run never reads it.
-EXOME_DESIGN_KEY = 'exome_design_bed'
-
-
-def _design_segment(design_key: str) -> str:
-    """The output-path segment identifying which design was subtracted.
-
-    The result depends on the configured design and on nothing else about the run, and the
-    release segment above it cannot see a config change. Without this, repointing
-    EXOME_DESIGN_KEY at a different design would find the previous run's BED already written
-    and reuse it, and every sample would then be gated on the wrong design without a word in
-    any log.
-
-    Args:
-        design_key: The `[references]` key the design came from.
-
-    Returns:
-        The key with anything outside `[A-Za-z0-9._-]` replaced, so it is one path segment.
-    """
-    return re.sub(r'[^A-Za-z0-9._-]', '_', design_key)
-
 
 class SelectOffDesignDefiningSites(cpg_flow.stage.MultiCohortStage):
     """Subtract the capture design's intervals from the defining sites, once for the run.
@@ -47,7 +22,10 @@ class SelectOffDesignDefiningSites(cpg_flow.stage.MultiCohortStage):
     why the design bounds the fill at all.
 
     Run once per workflow run, not per sequencing group, because the answer depends only on the
-    configured design and the committed defining sites, both fixed for the whole run.
+    configured design and the committed defining sites, both fixed for the whole run. The design
+    is a segment of every exome output path, this one included (see
+    `stage_support._release_tree`), so repointing it starts a fresh tree rather than reusing the
+    previous design's BED or anything built from it.
 
     A MultiCohortStage because the output is one file per run, and the run's MultiCohort is the
     one target a per-sequencing-group consumer can always name to read it back (see
@@ -63,10 +41,9 @@ class SelectOffDesignDefiningSites(cpg_flow.stage.MultiCohortStage):
         # so the two cannot disagree about whether a run needs a design.
         if not any(posthoc_genotype.applies_to(sg) for sg in multicohort.get_sequencing_groups(only_active=True)):
             return None
-        design_key, _ = exome_design_bed()
         genome = cpg_utils.config.genome_build()
         prefix = stage_support.get_multicohort_output_prefix(multicohort, stage_name=self.name, category='tmp')
-        return {'bed': prefix / _design_segment(design_key) / f'off_design_defining_sites.{genome}.bed'}
+        return {'bed': prefix / f'off_design_defining_sites.{genome}.bed'}
 
     def queue_jobs(
         self,
@@ -79,7 +56,7 @@ class SelectOffDesignDefiningSites(cpg_flow.stage.MultiCohortStage):
         cfg = stage_support.config_section(self)
         cpu = cpg_utils.config.config_retrieve(['workflow', cfg, 'cpu'], 1)
         genome = cpg_utils.config.genome_build()
-        design_key, design_path = exome_design_bed()
+        design_key, design_path = stage_support.exome_design_bed()
 
         b = cpg_utils.hail_batch.get_batch()
         j = b.new_bash_job(self.name, self.get_job_attrs(multicohort) | {'tool': 'bedtools'})
@@ -105,7 +82,7 @@ class SelectOffDesignDefiningSites(cpg_flow.stage.MultiCohortStage):
             set -euxo pipefail
             if [ ! -s {design_bed} ]; then
                 echo "ERROR: the capture design BED is empty." >&2
-                echo "{DESIGN_CONFIG_PATH} = {design_key}" >&2
+                echo "{stage_support.DESIGN_CONFIG_PATH} = {design_key}" >&2
                 echo "resolved to {design_path}" >&2
                 exit 1
             fi
@@ -118,38 +95,6 @@ class SelectOffDesignDefiningSites(cpg_flow.stage.MultiCohortStage):
         )
         b.write_output(j.bed, str(outputs['bed']))
         return self.make_outputs(multicohort, data=outputs, jobs=[j])
-
-
-# The config section EXOME_DESIGN_KEY is read from, and its fully-qualified path for the error
-# messages that have to name it. Both come from the class above rather than a repeated string
-# literal, so renaming the stage moves its section, its messages and its docs together — and
-# they sit below the class for that reason, not above it with the key they complete.
-DESIGN_CONFIG_SECTION = stage_support.camel_to_snake(SelectOffDesignDefiningSites.__name__)
-DESIGN_CONFIG_PATH = f'workflow.{DESIGN_CONFIG_SECTION}.{EXOME_DESIGN_KEY}'
-
-
-def exome_design_bed() -> tuple[str, str]:
-    """The reference key and path of the capture design BED an exome run fills holes outside of.
-
-    Read at graph-build time, so a run missing it fails before a job starts rather than on the
-    first exome sequencing group's merge.
-
-    Returns:
-        The `[references]` key as configured, and the path it resolves to.
-
-    Raises:
-        cpg_utils.config.ConfigError: The key is not set, or names no reference.
-    """
-    try:
-        key = cpg_utils.config.config_retrieve(['workflow', DESIGN_CONFIG_SECTION, EXOME_DESIGN_KEY])
-    except cpg_utils.config.ConfigError as e:
-        raise cpg_utils.config.ConfigError(
-            f'An exome run needs {DESIGN_CONFIG_PATH}: the [references] key of the capture design '
-            'BED the gVCFs were called against, e.g. '
-            "'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'. Post-hoc calls "
-            'fill defining sites only outside that design.'
-        ) from e
-    return key, cpg_utils.config.reference_path(key)
 
 
 def off_design_bed(

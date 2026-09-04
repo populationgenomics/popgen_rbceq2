@@ -12,7 +12,8 @@ job, for an answer identical across the cohort.
 Five things have to hold and none has a type error to catch it. An exome run that does not name
 a design must fail while the graph is being built, not on the first sequencing group, because
 the whole cohort is wasted either way and only one of those says why. A genome run must never
-read the key at all. Repointing the key must not reuse the previous design's output. The
+read the key at all. Repointing the key must not reuse any output built from the previous
+design, which is every exome output from the conversion onward, not just the subtraction. The
 conversion job must still refuse to run when DRAGEN's own records contradict the named design.
 And the QC job must be handed the same subtraction, so it can disregard a post-hoc record at a
 site the merge was not allowed to fill.
@@ -26,11 +27,8 @@ from unittest.mock import MagicMock
 import cpg_utils.config
 import pytest
 
+from popgen_rbceq2.stage_support import DESIGN_CONFIG_PATH, EXOME_DESIGN_KEY
 from popgen_rbceq2.stages import pipeline
-from popgen_rbceq2.stages.blood_group_genotyping.off_design_sites import (
-    DESIGN_CONFIG_PATH,
-    EXOME_DESIGN_KEY,
-)
 from tests.helpers import set_config
 from tests.test_output_namespacing import outputs_of
 
@@ -197,24 +195,54 @@ def test_an_empty_design_bed_fails_the_subtraction(
     assert 'exit 1' in command
 
 
-def test_repointing_the_design_key_writes_to_a_different_path(
-    mocker,  # noqa: ARG001
+def test_repointing_the_design_key_moves_every_output_of_an_exome_run(
     exome_sequencing_group,
+    mock_cohort,
     mock_multicohort,
     shm_tmp_path: Path,
 ):
-    # The release segment above this output cannot see a config change, so without the design
-    # in the path a re-run against a different design would find the previous run's BED already
-    # written and reuse it. Every sample would then be gated on the wrong design, silently.
+    # cpg_flow reuses a stage whose expected outputs exist and asks nothing about how they were
+    # made, and the release segment cannot see a config change. The subtraction is not the only
+    # output that depends on the design: the merge fills the holes it names, so the converted
+    # VCF, the genotypes, the QC flags and the cohort tables all do too. Were only the
+    # subtraction's path to carry the design, repointing the key would rebuild that one BED and
+    # then reuse every sample's outputs from the old design, silently. So the design is a
+    # segment of the whole exome tree, and every stage's output moves with it.
     mock_multicohort.get_sequencing_groups.return_value = [exome_sequencing_group]
-    stage = pipeline.SelectOffDesignDefiningSites()
+    stages_and_targets = [
+        (pipeline.SelectOffDesignDefiningSites(), mock_multicohort),
+        (pipeline.PosthocGenotypeOffTargetSites(), exome_sequencing_group),
+        (pipeline.FilterAndConvertGvcfsForRbceq2(), exome_sequencing_group),
+        (pipeline.GenotypeBloodGroupsWithRbceq2(), exome_sequencing_group),
+        (pipeline.FlagBloodGroupCallQc(), exome_sequencing_group),
+        (pipeline.CombineRbceq2OutputsPerCohort(), mock_cohort),
+    ]
 
     _config(shm_tmp_path, 'exome', design_key=TWIST_KEY)
-    twist = outputs_of(stage, mock_multicohort)
+    twist = [outputs_of(stage, target) for stage, target in stages_and_targets]
     _config(shm_tmp_path, 'exome', design_key=CREV2_KEY)
-    crev2 = outputs_of(stage, mock_multicohort)
+    crev2 = [outputs_of(stage, target) for stage, target in stages_and_targets]
 
-    assert twist['bed'] != crev2['bed']
+    for (stage, _), before, after in zip(stages_and_targets, twist, crev2, strict=True):
+        for key in before:
+            assert str(before[key]) != str(after[key]), f'{stage.name}[{key}] did not move with the design'
+
+
+def test_an_exome_run_without_a_design_fails_at_the_first_output_path(
+    exome_sequencing_group,
+    shm_tmp_path: Path,
+):
+    # The design is in every exome output path, so a run that omits it cannot even name where
+    # its first stage would write. That is the earliest a graph build can fail, and it holds
+    # for an exome run whose sequencing groups happen to have no CRAM, where the subtraction
+    # stage itself would have nothing to do and would not have asked.
+    _config(shm_tmp_path, 'exome', design_key=None)
+    exome_sequencing_group.cram = None
+
+    with pytest.raises(cpg_utils.config.ConfigError) as raised:
+        pipeline.FilterAndConvertGvcfsForRbceq2().expected_outputs(exome_sequencing_group)
+
+    assert DESIGN_CONFIG_PATH in str(raised.value)
 
 
 # --- enforcing it, per sequencing group ---
