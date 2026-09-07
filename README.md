@@ -20,8 +20,13 @@ analysis-runner \
   --config <your-cohort>.toml \
   --description "rbceq2 blood-group genotyping for <your-cohort>" \
   --image australia-southeast1-docker.pkg.dev/cpg-common/images/popgen_rbceq2:<image-tag> \
+  --skip-repo-checkout \
   popgen_rbceq2
 ```
+
+`--skip-repo-checkout` is required, not a convenience: analysis-runner otherwise clones this
+repo into the job, and a dataset only permits repos on its allowed list in the infrastructure
+config. The image already holds the code at `<image-tag>`, which is what runs either way.
 
 On a first run, append `--dry_run` after `popgen_rbceq2`: it checks the config and builds the
 stage graph without submitting any jobs, so a config mistake costs seconds rather than a batch.

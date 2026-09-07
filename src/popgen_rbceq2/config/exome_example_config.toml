@@ -10,6 +10,10 @@
 #     --skip-repo-checkout \
 #     popgen_rbceq2
 #
+# --skip-repo-checkout is required, not a convenience: analysis-runner otherwise clones this
+# repo into the job, and a dataset only permits repos on its allowed list in the infrastructure
+# config. The image already holds the code at <tag>, which is what runs either way.
+#
 # Change input_cohorts and exome_design_bed together: the design must be the one that cohort's
 # gVCFs were called against, and the run fails if DRAGEN has reference blocks at defining sites
 # outside it. Every sequencing group in the cohort must be one design, and must have both a
