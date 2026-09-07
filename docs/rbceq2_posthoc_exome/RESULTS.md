@@ -323,3 +323,20 @@ fixes changed an answer on a correctly configured run, which is what they were m
 do. The subtraction again found 165 of 1,625 sites off-design; the driver logged
 "post-hoc calling applies to 10 of 10 sequencing group(s)"; every conversion job ran the
 sample-name comparison as its first step and passed the pre-merge guard.
+
+## Confirmed after the 2026-09-07 review fixes: same answers again
+
+Batch [1136910](https://batch.hail.populationgenomics.org.au/batches/1136910), COH13446 on
+`v4`, on the image built from `416ecc9` (digest `695e6c94…`), after the third review's fixes:
+the trespass mark and drop moved ahead of `norm` and keyed on the alleles rather than a
+missing `INFO/END`, the sample-name check first in the job reading the raw gVCF, an empty
+off-design set refused by the generator and at graph build, and awk row counts in the
+subtraction. Every stage was forced, because 1136826 had already written to the same tree and
+cpg-flow reused all of it on a plain resubmission (batches 1136905 and 1136907 did nothing
+else). 62/62 jobs, 9.2 min, $0.13.
+
+All four cohort tables (geno, both pheno, QC) are identical to 1136826's apart from rbceq2's
+per-run UUID in the header cell. Across the ten conversion jobs the new drop expression found
+0 trespassing variants, 642 records were kept over 1,650 holes, and each job's log opens with
+the two `bcftools query -l` calls before the norm pass, as the comment now says. The new
+`N_ALT>1 || ALT!="<NON_REF>"` drop and the pre-`norm` order are visible in every job's trace.
