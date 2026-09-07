@@ -279,12 +279,13 @@ edge, and what happens next depends on the record:
   off-design BED and counts a post-hoc record only at a site in it; the hole stays `NOCOV`.
 
 Mechanically the drop is an `INFO/COVERED` mark from `bcftools annotate -m`, which matches on a
-record's whole span rather than its POS, followed by removing every marked record that carries
-no `INFO/END`. Two details carry the weight. The mark's source is the defining sites the merge
-may not fill, every site less the fillable holes, not the DRAGEN records' spans, so a variant
-that merely clips the tail of a long reference block is left alone. And `INFO/END` is what separates a real
-reference block from the `<NON_REF>` twin `norm -m -any` splits off a variant, which carries
-the variant's own REF span and would otherwise fill the hole with an apparent hom-ref call.
+record's whole span rather than its POS, followed by removing every marked record whose alleles
+are not `<NON_REF>` alone. Two details carry the weight. The mark's source is the defining sites
+the merge may not fill, every site less the fillable holes, not the DRAGEN records' spans, so a
+variant that merely clips the tail of a long reference block is left alone. And the mark and
+drop run before `norm -m -any` splits a variant from its `<NON_REF>` allele, so a variant is
+recognised by its alleles rather than by any INFO tag, and no split-off `<NON_REF>` twin is
+around to pass as a reference block.
 
 A genome sequencing group has no post-hoc input and never reads the design key, so nothing is
 merged for it and the merge is a plain rename. Its command is not otherwise unchanged, though:

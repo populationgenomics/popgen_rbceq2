@@ -323,18 +323,23 @@ def _merge_posthoc_commands(
             bcftools view -T uncovered.bed --targets-overlap 2 -e 'FORMAT/DP=0' -Ou {posthoc_gvcf} \\
                 | bcftools filter -s LowDepth -e 'FORMAT/DP<=1' -Ou - \\
                 | bcftools annotate -x '^INFO/END,^FORMAT/GT,FORMAT/DP,FORMAT/GQ,FORMAT/MIN_DP' -Ou - \\
-                | bcftools norm -m -any --threads {cpu} -Ou - \\
                 | bcftools annotate -a unfillable_sites.bed.gz -h covered_hdr.txt -c CHROM,FROM,TO -m COVERED \\
                     -Ob -o posthoc_marked.bcf -
 
-            # A marked record with no INFO/END is dropped: it is a variant, or the <NON_REF>
-            # twin `norm` split off one, and either way it asserts something about a defining
-            # site it may not fill, in the file rbceq2 reads. INFO/END is what tells a real
-            # reference block from that twin, and a block is kept — see the docstring. The
-            # count excludes the twin so it says how many variants went, not how many records.
-            n_trespass=$(bcftools view -H -i 'INFO/COVERED=1 && INFO/END="." && ALT!="<NON_REF>"' posthoc_marked.bcf \\
+            # A marked variant is dropped: it asserts something about a defining site it may
+            # not fill, in the file rbceq2 reads. A marked reference block is kept, see the
+            # docstring. The two are told apart before `norm -m -any` splits anything, while a
+            # gVCF variant is still `<real ALT>,<NON_REF>` and a block is `<NON_REF>` alone, so
+            # the test is the alleles and nothing about INFO tags. Keying it on a missing
+            # INFO/END would rest on HaplotypeCaller's habit of not writing END on a variant,
+            # and a variant that carried one would survive; and after the split, a variant's
+            # `<NON_REF>` twin inherits its REF span and any END, so it would pass as a block
+            # and fill the hole with an apparent hom-ref call. Here there is no twin yet, and
+            # the count is one per variant however many alleles `norm` later splits it into.
+            n_trespass=$(bcftools view -H -i 'INFO/COVERED=1 && (N_ALT>1 || ALT!="<NON_REF>")' posthoc_marked.bcf \\
                 | wc -l | tr -d ' ')
-            bcftools view -e 'INFO/COVERED=1 && INFO/END="."' -Ou posthoc_marked.bcf \\
+            bcftools view -e 'INFO/COVERED=1 && (N_ALT>1 || ALT!="<NON_REF>")' -Ou posthoc_marked.bcf \\
+                | bcftools norm -m -any --threads {cpu} -Ou - \\
                 | bcftools annotate -x INFO/COVERED -h posthoc_hdr.txt -Ov - \\
                 | awk -v OFS='\\t' -v tag='POSTHOC={constants.POSTHOC_CALLER}' '{_TAG_POSTHOC_AWK}' \\
                 | bgzip -c --threads {cpu} > posthoc_tagged.vcf.gz

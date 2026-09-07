@@ -16,10 +16,10 @@ So these tests run the real merge shell under real bcftools, then read the resul
 extract format and the real QC functions, handed the same off-design BED the merge read. A
 Python stand-in would test a restatement of `annotate -m`'s overlap rule rather than the rule,
 and that rule is the whole mechanism: `-m` marks on a record's span, so it catches a deletion
-anchored on a hole that reaches a called site one base away, and `INFO/END` is what separates
-a real reference block from the `<NON_REF>` twin `norm -m -any` splits off a variant. The mark
-is the unfillable defining sites rather than the DRAGEN records' spans, which is the last test
-of the called-site group here.
+anchored on a hole that reaches a called site one base away, and it runs before `norm -m -any`
+splits a variant from its `<NON_REF>` allele, so a variant is recognised by its alleles and no
+split-off twin is around to pass as a block. The mark is the unfillable defining sites rather
+than the DRAGEN records' spans, which is the last test of the called-site group here.
 
 Skipped where bcftools is not installed. Local bcftools is expected to be the pinned image's
 1.24, so the semantics checked here are the ones the job will meet.
@@ -225,6 +225,20 @@ def test_a_posthoc_deletion_reaching_a_called_base_is_dropped_and_the_site_stays
     assert _flags(tmp_path) == {OFF_DESIGN: 'NOCOV:1:2000(C>T)', IN_DESIGN: 'PASS'}
 
 
+def test_a_posthoc_deletion_carrying_an_end_tag_is_still_dropped(tmp_path):
+    # Harper's second-review repro. HaplotypeCaller never writes INFO/END on a variant, so a
+    # drop keyed on "no END" worked on its output alone; a variant that carries END must go
+    # too, because what makes it a variant is its alleles, not the absence of a tag one caller
+    # happens not to write. Its <NON_REF> twin would inherit the END and pass as a block, which
+    # is why the drop runs before norm splits one off.
+    deletion = f'chr1\t{OFF_DESIGN}\t.\tACGTAC\tA,<NON_REF>\t60\t.\tEND={IN_DESIGN};SPARE=1\tGT:DP:GQ\t0/1:44:80\n'
+
+    stderr = _merge(tmp_path, deletion).stderr
+
+    assert '1 variant(s) dropped for' in stderr
+    assert _flags(tmp_path) == {OFF_DESIGN: 'NOCOV:1:2000(C>T)', IN_DESIGN: 'PASS'}
+
+
 def test_a_posthoc_reference_block_reaching_a_called_base_is_kept_and_fills_its_hole(tmp_path):
     # The case Harper's one-line `-T ^covered.bed` would have broken. A block straddling the
     # capture edge is how many holes get filled at all, and it asserts nothing rbceq2 sees:
@@ -239,6 +253,17 @@ def test_a_posthoc_reference_block_reaching_a_called_base_is_kept_and_fills_its_
     # The primary record still wins at the site DRAGEN called, which is the existing rule the
     # kept block relies on.
     assert flags[IN_DESIGN] == 'PASS'
+
+
+def test_a_multiallelic_trespasser_is_counted_once(tmp_path):
+    # The log promises variants dropped, not alleles. HaplotypeCaller does emit multiallelic
+    # records, and after `norm -m -any` one would count as two.
+    deletion = f'chr1\t{OFF_DESIGN}\t.\tCATGAAAAA\tC,CA,<NON_REF>\t60\t.\tSPARE=1\tGT:DP:GQ\t1/2:44:80\n'
+
+    stderr = _merge(tmp_path, deletion).stderr
+
+    assert '1 variant(s) dropped for' in stderr
+    assert _flags(tmp_path) == {OFF_DESIGN: 'NOCOV:1:2000(C>T)', IN_DESIGN: 'PASS'}
 
 
 def test_a_posthoc_variant_confined_to_its_hole_is_kept(tmp_path):

@@ -220,9 +220,16 @@ rather than reasoned about:
   DRAGEN records' spans: marking on spans would also drop a post-hoc variant that merely clips
   the tail of a long reference block, reaching no called defining site and contradicting
   nothing rbceq2 reads.
-- `INFO/END` separates a real reference block from the `<NON_REF>` twin `norm -m -any` splits
-  off a variant. Filtering on `ALT="<NON_REF>"` would keep that twin, which carries the
-  deletion's own REF span and would fill the hole with an apparent hom-ref call.
+- The mark and the drop run *before* `norm -m -any`, and the drop is
+  `COVERED=1 && (N_ALT>1 || ALT!="<NON_REF>")`: a gVCF variant is still
+  `<real ALT>,<NON_REF>` there and a block is `<NON_REF>` alone, so the alleles tell them
+  apart and no INFO tag is consulted. The first version ran after the split and dropped a
+  marked record with no `INFO/END`. That rested on HaplotypeCaller's habit of not writing
+  `END` on a variant, and a variant that carried one survived; and switching to the ALT alone
+  did not fix it, because after the split a variant's `<NON_REF>` twin inherits its REF span
+  and its `END`, passes as a block, and fills the hole with an apparent hom-ref call. Before
+  the split there is no twin. It also makes the logged drop count one per variant rather than
+  one per allele `norm` would have split it into.
 
 Note also that `--targets-overlap 2` in step 4 does *not* drop a deletion anchored on the
 hole, the way it does in the extract. The record is still multiallelic there, and the
