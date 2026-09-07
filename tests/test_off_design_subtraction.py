@@ -107,6 +107,27 @@ def test_a_design_naming_its_contigs_differently_fails_the_subtraction(tmp_path)
     assert 'design:         1 2' in result.stderr
 
 
+def test_the_every_site_off_design_guard_counts_a_final_line_without_a_newline(tmp_path):
+    # `wc -l` counts newlines, so a sites BED whose last line has none made the guard compare
+    # 2 against 1 and pass a design on the wrong contigs. Harper's second-review probe.
+    design_bed = tmp_path / 'design.bed'
+    design_bed.write_text('1\t0\t5000\n')
+    sites_bed = tmp_path / 'sites.bed'
+    sites_bed.write_text('chr1\t1049\t1050\nchr1\t1999\t2000')
+    script = 'set -euo pipefail\n' + subtraction_commands(
+        str(sites_bed),
+        str(design_bed),
+        str(tmp_path / 'off_design.bed'),
+        'exome_probesets_hg38/test_design_bed',
+        'gs://bucket/test_design.bed',
+    )
+
+    result = subprocess.run(['bash', '-c', script], cwd=tmp_path, capture_output=True, text=True, check=False)  # noqa: S603, S607
+
+    assert result.returncode == 1
+    assert 'every defining site is outside the capture design' in result.stderr
+
+
 def test_a_design_bed_with_extra_columns_and_a_track_line_is_read_as_intervals(tmp_path):
     design = 'track name="Covered" description="probe footprint"\nchr1\t999\t1100\tTARGET_1\t0\t+\n'
 

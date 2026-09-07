@@ -221,8 +221,11 @@ def subtraction_commands(sites_bed: str, design_bed: str, out_bed: str, design_k
                 exit 1
             fi
             bedtools intersect -v -a {sites_bed} -b {design_bed} > {out_bed}
-            n_off=$(wc -l < {out_bed} | tr -d ' ')
-            n_sites=$(wc -l < {sites_bed} | tr -d ' ')
+            # awk's NR, not `wc -l`: wc counts newlines, so a file whose last line lacks one
+            # comes up one short and the two counts below could disagree for a reason that is
+            # nothing to do with the data.
+            n_off=$(awk 'END {{print NR}}' {out_bed})
+            n_sites=$(awk 'END {{print NR}}' {sites_bed})
             if [ "$n_off" -eq "$n_sites" ]; then
                 echo "ERROR: every defining site is outside the capture design, which no exome design leaves." >&2
                 echo "The two BEDs most likely name their contigs differently:" >&2
