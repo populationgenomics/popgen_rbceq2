@@ -55,7 +55,7 @@ def generate(design_key: str, design_path: str, genome: str, out_dir: Path) -> o
     Raises:
         FileNotFoundError: `out_dir` has no sites BED for the build.
         RuntimeError: bedtools, or one of the design checks around it, failed; stderr is in
-            the message.
+            the message. Or the design targets every defining site, leaving nothing to commit.
     """
     # Absolute, because the shell below runs in a scratch directory.
     sites_bed = (out_dir / f'bg_defining_sites.{genome}.bed').resolve()
@@ -80,7 +80,16 @@ def generate(design_key: str, design_path: str, genome: str, out_dir: Path) -> o
         if result.returncode != 0:
             raise RuntimeError(f'the subtraction failed for {design_key}:\n{result.stderr}')
         logger.info(result.stderr.strip())
-        resource.write_bytes(out_bed.read_bytes())
+        off_design_bytes = out_bed.read_bytes()
+        if not off_design_bytes:
+            # A valid subtraction with nothing in it. Not committed, because a run would hand
+            # the empty file to `bcftools -T`, which aborts, and because the honest run for
+            # such a cohort is one with no recall configured at all.
+            raise RuntimeError(
+                f'{design_key} targets every defining site in {sites_bed.name}, so post-hoc calling has nothing to '
+                'fill for it. Nothing written: run cohorts on this design without the recall.'
+            )
+        resource.write_bytes(off_design_bytes)
 
     row = off_design.ManifestRow(
         design_key=design_key,

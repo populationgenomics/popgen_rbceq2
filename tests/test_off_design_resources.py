@@ -128,6 +128,20 @@ def test_a_resource_without_a_manifest_row_is_refused_at_graph_build(shm_tmp_pat
         off_design.resource_path(TWIST_KEY)
 
 
+def test_an_empty_committed_set_is_refused_at_graph_build(shm_tmp_path, monkeypatch):
+    # The generator never writes one; this is the same refusal where a hand-edited manifest
+    # or resource would otherwise reach `bcftools -T` inside every exome's merge job.
+    set_config({'references': {'genome_build': GENOME}}, shm_tmp_path / 'build.toml')
+    rows = {
+        key: (row if key[0] != TWIST_KEY else off_design.ManifestRow(**{**row.__dict__, 'n_off_design': 0}))
+        for key, row in _manifest().items()
+    }
+    monkeypatch.setattr(off_design, 'read_manifest', lambda _path: rows)
+
+    with pytest.raises(ValueError, match='targets every defining site'):
+        off_design.resource_path(TWIST_KEY)
+
+
 def _with_sites_md5(row: off_design.ManifestRow, sites_md5: str) -> off_design.ManifestRow:
     return off_design.ManifestRow(**{**row.__dict__, 'sites_md5': sites_md5})
 
@@ -193,6 +207,20 @@ def test_the_generator_fails_on_a_design_the_subtraction_refuses(tmp_path):
 
     with pytest.raises(RuntimeError, match='every defining site is outside the capture design'):
         gen_off_design_sites.generate('exome_probesets_hg38/wrong_contigs_bed', str(design), GENOME, out)
+
+    assert not list(out.glob('bg_off_design_sites.*'))
+
+
+@needs_bedtools
+def test_the_generator_refuses_a_design_that_targets_every_site(tmp_path):
+    # A valid subtraction with an empty result. Committed, it would reach `bcftools -T` in
+    # every exome's merge job, which aborts on an empty targets file naming a temp path.
+    out = _resources_dir(tmp_path)
+    design = tmp_path / 'design.bed'
+    design.write_text('chr1\t0\t5000\nchr2\t0\t5000\n')
+
+    with pytest.raises(RuntimeError, match='targets every defining site'):
+        gen_off_design_sites.generate('exome_probesets_hg38/everything_bed', str(design), GENOME, out)
 
     assert not list(out.glob('bg_off_design_sites.*'))
 

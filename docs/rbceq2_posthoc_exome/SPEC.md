@@ -415,8 +415,12 @@ committed subtraction for that design rather than being resolved to the vendor B
    `resources/bg_off_design_sites.<design>.<genome>.bed`, written once per design by
    `scripts/gen_off_design_sites.py` and resolved at graph build by `off_design.resource_path`,
    the way the defining sites it is a subset of already were. The generator keeps the three
-   input checks the stage made (empty design, mismatched contig names, zero-length rows), and
-   both committed files are byte-identical to what the stage wrote for the validation runs.
+   input checks the stage made (empty design, mismatched contig names, zero-length rows),
+   and adds one the stage lacked: a design that targets every defining site is refused
+   rather than committed as an empty BED, and the resolver refuses a manifest row recording
+   zero sites, because the merge hands the file to `bcftools -T`, which aborts on an empty
+   targets file. Both committed files are byte-identical to what the stage wrote for the
+   validation runs.
    The cost is that derived data in the repo can go stale, which the manifest's `sites_md5`
    guards: the resolver and the test suite both refuse a subtraction of defining sites that
    are not the shipped ones, so regenerating the sites without the subtractions is a red suite

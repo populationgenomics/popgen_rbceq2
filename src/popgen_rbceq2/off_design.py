@@ -125,7 +125,8 @@ def resource_path(design_key: str) -> str:
 
     Raises:
         FileNotFoundError: No resource, or no manifest row, is committed for the design.
-        ValueError: The manifest row was built from a different sites BED than the one shipped.
+        ValueError: The manifest row was built from a different sites BED than the one shipped,
+            or records no off-design site, so there is nothing for the recall to fill.
     """
     genome = cpg_utils.config.genome_build()
     regenerate = f'Generate it with {GENERATOR} against that design and commit it under resources/.'
@@ -149,6 +150,16 @@ def resource_path(design_key: str) -> str:
             f'{Path(path).name} was subtracted from a bg_defining_sites.{genome}.bed with MD5 {row.sites_md5}, '
             f'but the shipped one is {sites_md5}: the defining sites were regenerated without it. {regenerate}'
         )
+    if row.n_off_design == 0:
+        # The generator refuses to write this, so reaching it means a hand-edited manifest or
+        # resource. Refused here too because the merge hands the file to `bcftools -T`, which
+        # aborts on an empty targets file with a message naming a temp path and nothing about
+        # the design, once per exome sequencing group.
+        raise ValueError(
+            f'{Path(path).name} is empty: {design_key} targets every defining site on {genome}, so post-hoc '
+            'calling has nothing to fill. Run this cohort without the recall: leave '
+            f'{stage_support.DESIGN_CONFIG_PATH} unset and keep the post-hoc stages out of only_stages.'
+        )
     return path
 
 
@@ -159,8 +170,11 @@ def subtraction_commands(sites_bed: str, design_bed: str, out_bed: str, design_k
     subtraction is bedtools' interval semantics and nothing of ours, and a test that spelled
     the command out again would stay green if this one changed.
 
-    An empty *result* is legitimate: a design that targets every defining site leaves nothing
-    to fill, and every hole then reaches the QC as NOCOV. Two inputs are not, and both would
+    An empty *result* is a valid subtraction, and the generator, not this shell, refuses to
+    commit it: a design that targets every defining site leaves nothing to fill, and the
+    right run for such a cohort is one without the recall configured, not one that localises
+    an empty targets file to every exome (`bcftools -T` aborts on one). Two inputs are not
+    valid, and both would
     otherwise surface the same way, as every defining site off-design, which the per-sample
     check on DRAGEN's records then fails on one sample at a time, naming the design file rather
     than what was wrong with it. Both are caught here instead, once, before any of that:

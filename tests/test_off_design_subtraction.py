@@ -82,8 +82,9 @@ def test_a_site_on_a_contig_the_design_never_mentions_is_off_design(tmp_path):
 
 
 def test_a_design_that_targets_every_site_leaves_nothing_to_fill(tmp_path):
-    # Legitimate, and the opposite of the two failures below: every hole then reaches the QC
-    # as NOCOV, which is the pre-recall answer.
+    # A valid subtraction, and the opposite of the two failures below. The generator refuses
+    # to commit it (test_off_design_resources), because a run on such a design has nothing to
+    # fill and should not configure the recall.
     assert _off_design(tmp_path, 'chr1\t0\t5000\n', [('chr1', 1050), ('chr1', 2000)]) == []
 
 
