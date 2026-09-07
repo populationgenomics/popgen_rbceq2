@@ -324,7 +324,8 @@ Four more details that are easy to get wrong:
 The supplement is stripped to the fields the pipeline reads (GT, DP, GQ, MIN_DP, END), which
 keeps `concat` from having to reconcile two callers' definitions of tags nothing reads.
 
-**The job fails if the CRAM and the gVCF name different samples.** The post-hoc caller takes
+**The job fails if the CRAM and the gVCF name different samples.** This is the first thing
+the job does, read from the two input headers before anything is computed. The post-hoc caller takes
 its sample name from the CRAM's read group and DRAGEN named the gVCF from the same run, so a
 mismatch means the two files this sequencing group resolves to do not describe one individual.
 Merging them would splice another person's genotypes into these calls at exactly the sites

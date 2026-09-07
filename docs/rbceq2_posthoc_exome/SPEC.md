@@ -152,6 +152,9 @@ site-resolutions, while CREv2 `Regions` leaves 309 off-design records and would 
 
 Mechanically, as implemented:
 
+0. Compare the sample names in the two input headers and fail on a mismatch (§10).
+   First in the job, reading the raw gVCF, so it depends on nothing computed and fails in
+   seconds.
 1. Build the DRAGEN bg-regions intermediate (unchanged first step) and index it.
 2. Emit the covered span of every record reaching a defining site,
    `bcftools query -T <sites.bed> --targets-overlap 1 -f '%CHROM\t%POS0\t%END\n'`.

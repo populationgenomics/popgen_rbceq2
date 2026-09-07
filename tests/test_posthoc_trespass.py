@@ -38,6 +38,7 @@ from popgen_rbceq2.stages.blood_group_genotyping.filter_and_convert import (
     _POSTHOC_HEADER_LINE,
     _merge_posthoc_commands,
     _primary_records_guard,
+    _sample_check_commands,
 )
 
 pytestmark = [
@@ -129,14 +130,20 @@ def _merge(
     # stamped with that declaration so the extract can read the tag whether or not anything
     # was merged. Not indexed, because the fragment's own first line indexes it.
     (tmp_path / 'posthoc_hdr.txt').write_text(f'{_POSTHOC_HEADER_LINE}\n')
-    _bgzip(tmp_path, 'dragen.vcf', dragen_records, index=False, extra_header=_POSTHOC_HEADER_LINE)
+    dragen = _bgzip(tmp_path, 'dragen.vcf', dragen_records, index=False, extra_header=_POSTHOC_HEADER_LINE)
 
-    script = 'set -euo pipefail\n' + _merge_posthoc_commands(
-        str(posthoc),
-        str(sites),
-        str(off_design),
-        'exome_probesets_hg38/test_design_bed',
-        cpu=1,
+    # The sample check runs first in the stage's job and reads the raw gVCF; the intermediate
+    # carries the same header, so it stands in for the raw file here.
+    script = (
+        'set -euo pipefail\n'
+        + _sample_check_commands(str(posthoc), str(dragen))
+        + _merge_posthoc_commands(
+            str(posthoc),
+            str(sites),
+            str(off_design),
+            'exome_probesets_hg38/test_design_bed',
+            cpu=1,
+        )
     )
     return subprocess.run(  # noqa: S603
         ['bash', '-c', script],  # noqa: S607
