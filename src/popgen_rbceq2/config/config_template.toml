@@ -16,11 +16,37 @@
 input_cohorts = ['COH123']
 sequencing_type = 'genome'
 
-# Uncomment to run part of the branch only. Stage names are the class names.
+# Uncomment to run part of the branch only. Stage names are the class names. An exome list
+# must also name 'PosthocGenotypeOffTargetSites', which the conversion stage requires; cpg-flow
+# otherwise expects its outputs to exist already.
 # only_stages = ['FilterAndConvertGvcfsForRbceq2', 'GenotypeBloodGroupsWithRbceq2']
 
 # Uncomment to rebuild a stage whose outputs already exist.
 # force_stages = ['FlagBloodGroupCallQc']
+
+# Required for an exome run, ignored for a genome one. The references-repo key of the capture
+# design BED the gVCFs were called against. Post-hoc calls fill only the defining sites that
+# design never targeted, so this has to be the design DRAGEN used, not merely a design the
+# samples resemble: the job fails if DRAGEN has records at sites outside it.
+#
+# Where a vendor ships both, take the *Covered* (probe footprint) entry, not Regions. The two
+# differ, and on the validation cohorts Regions would have recovered 691 sites instead of 1,650.
+#
+# The key selects a committed resource, the defining sites outside that design
+# (resources/bg_off_design_sites.<key>.<genome>.bed); a key with no committed file fails while
+# the graph is built, and scripts/gen_off_design_sites.py adds one. It is also a segment of
+# every exome output path, under the release, so changing it starts a fresh tree for the whole
+# run: nothing built from the previous design is reused.
+#
+# The README section "An exome run must name its capture design" lists the values for the
+# designs seen so far, so you should not need the references repo. The two committed to date:
+#
+#   Twist Comprehensive Exome + VCGS custom content
+#     'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'
+#   Agilent SureSelect Clinical Research Exome v2
+#     'exome_probesets_hg38/agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed'
+#
+# exome_design_bed = 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'
 
 [references]
 # Only set this if the gVCFs were called against something other than the default GRCh38, and

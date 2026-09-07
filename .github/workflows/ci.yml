@@ -44,5 +44,10 @@ jobs:
           python-version: "3.11"
       - name: Install
         run: uv sync --group dev
+      # The merge-shell and design-subtraction tests run the real tools and skip without them,
+      # so a suite that has never seen bcftools goes green. The Ubuntu packages trail the
+      # pinned images (bcftools 1.24, bedtools 2.30.0) but carry every feature the shell uses.
+      - name: Install bcftools and bedtools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bcftools tabix bedtools
       - name: Tests
-        run: uv run pytest
+        run: uv run pytest -rs

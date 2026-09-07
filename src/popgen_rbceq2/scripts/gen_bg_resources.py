@@ -6,11 +6,12 @@ version the image installs, and commit the results:
 
     gen_bg_resources.py <db.tsv> GRCh38 src/popgen_rbceq2/resources
 
-Writes three files, all from one parse (see `bg_db`):
+Writes four files, all from one parse (see `bg_db`):
 
-    bg_regions.<genome>.bed         merged ±flank intervals; restricts the GVCF conversion
-    bg_defining_sites.<genome>.bed  the exact defining coordinates the QC pass extracts
-    bg_site_systems.<genome>.tsv    chrom/pos/ref/alt/kind/system, for per-system flagging
+    bg_regions.<genome>.bed              merged ±flank intervals; restricts the GVCF conversion
+    bg_defining_sites.<genome>.bed       the exact defining coordinates the QC pass extracts
+    bg_defining_sites_padded.<genome>.bed  ±padding around those, for the post-hoc caller
+    bg_site_systems.<genome>.tsv         chrom/pos/ref/alt/kind/system, for per-system flagging
 
 The regions BED must stay a strict superset of every coordinate RBCeq2 queries or
 blood-group calls go silently wrong, which is why it and the defining-sites BED are
@@ -28,6 +29,14 @@ from popgen_rbceq2.scripts import bg_db
 logger = logging.getLogger(__name__)
 
 DEFAULT_FLANK = 500_000
+
+# Bases each side of a defining site that the post-hoc exome caller re-genotypes from the
+# CRAM. From the 2026-08 exome coverage analysis: off-target defining sites within ~100bp of
+# a capture edge retain 40-110x MAPQ>=20 depth, while everything past ~250bp of both the
+# Twist and CREv2 designs is at ~0x and cannot be recovered at any padding. 250 covers the
+# recoverable set with margin for the caller to see flanking reads, and keeps the whole
+# interval list under 1Mb so the CRAM can be streamed rather than localised.
+DEFAULT_SITE_PADDING = 250
 
 
 def write_regions_bed(rows: list[dict[str, str]], genome: str, flank: int, out_path: Path) -> int:
@@ -66,6 +75,26 @@ def write_defining_sites_bed(rows: list[dict[str, str]], genome: str, out_path: 
     return len(sites)
 
 
+def write_padded_sites_bed(rows: list[dict[str, str]], genome: str, padding: int, out_path: Path) -> int:
+    """Write the merged ±padding intervals around the defining sites, for the post-hoc caller.
+
+    Args:
+        rows: Parsed db rows.
+        genome: Coordinate column to read, `GRCh37` or `GRCh38`.
+        padding: Bases to extend each defining site by on either side.
+        out_path: File to write.
+
+    Returns:
+        The number of merged intervals written.
+    """
+    merged = bg_db.padded_site_intervals(rows, genome, padding)
+    lines = [
+        f'{chrom}\t{start}\t{end}' for chrom in sorted(merged, key=bg_db.chrom_key) for start, end in merged[chrom]
+    ]
+    out_path.write_text('\n'.join(lines) + '\n')
+    return len(lines)
+
+
 def write_site_system_map(rows: list[dict[str, str]], genome: str, out_path: Path) -> int:
     """Write the site -> blood-group-system map, with a header row.
 
@@ -97,6 +126,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('genome', choices=['GRCh37', 'GRCh38'], help='db coordinate column to read')
     parser.add_argument('out_dir', type=Path, help='resources directory to write into')
     parser.add_argument('--flank', type=int, default=DEFAULT_FLANK, help='regions BED flank (bp)')
+    parser.add_argument(
+        '--site-padding',
+        type=int,
+        default=DEFAULT_SITE_PADDING,
+        help='padded defining-sites BED padding (bp), for the post-hoc caller',
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s', stream=sys.stderr)
@@ -106,12 +141,27 @@ def main(argv: list[str] | None = None) -> None:
 
     n_regions = write_regions_bed(rows, args.genome, args.flank, args.out_dir / f'bg_regions.{args.genome}.bed')
     n_sites = write_defining_sites_bed(rows, args.genome, args.out_dir / f'bg_defining_sites.{args.genome}.bed')
+    n_padded = write_padded_sites_bed(
+        rows,
+        args.genome,
+        args.site_padding,
+        args.out_dir / f'bg_defining_sites_padded.{args.genome}.bed',
+    )
     n_map = write_site_system_map(rows, args.genome, args.out_dir / f'bg_site_systems.{args.genome}.tsv')
     assessed = bg_db.site_system_map(rows, args.genome)
     systems = {s.system for s in assessed}
     logger.info(
         f'Wrote {n_regions} merged regions, {n_sites} defining sites, '
         f'{n_map} site-system rows across {len(systems)} blood-group systems'
+    )
+    padded_bases = sum(
+        end - start
+        for spans in bg_db.padded_site_intervals(rows, args.genome, args.site_padding).values()
+        for start, end in spans
+    )
+    logger.info(
+        f'Wrote {n_padded} merged intervals at +/-{args.site_padding}bp around those sites '
+        f'({padded_bases:,} bases) for the post-hoc caller'
     )
 
     # Name the systems the resources cannot speak for, so a system reported as not assessed

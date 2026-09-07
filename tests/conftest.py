@@ -94,9 +94,31 @@ def mock_cohort(mocker, shm_tmp_path: Path):
 
 @pytest.fixture
 def mock_sequencing_group(mock_cohort):
-    """A sequencing group with a gVCF, for the SequencingGroupStage outputs."""
+    """A genome sequencing group with a gVCF and a CRAM, for the SequencingGroupStage outputs."""
     sg = MagicMock()
     sg.dataset = mock_cohort.dataset
     sg.id = 'SG000001'
     sg.gvcf = 'gs://bucket/SG000001.g.vcf.gz'
+    sg.cram = 'gs://bucket/SG000001.cram'
+    # Set explicitly rather than left as a MagicMock attribute: post-hoc calling gates on this
+    # string, and an auto-created mock is truthy but never equal to 'exome', so the gate would
+    # pass for the wrong reason and stop testing anything.
+    sg.sequencing_type = 'genome'
+    return sg
+
+
+@pytest.fixture
+def exome_sequencing_group(mock_cohort):
+    """An exome sequencing group, the only kind post-hoc calling runs for.
+
+    Built from the cohort rather than from mock_sequencing_group, so a test can take both and
+    get two distinct objects. Deriving one from the other would hand back the same mock twice,
+    and a test comparing genome against exome behaviour would silently compare it to itself.
+    """
+    sg = MagicMock()
+    sg.dataset = mock_cohort.dataset
+    sg.id = 'SG000001'
+    sg.gvcf = 'gs://bucket/SG000001.g.vcf.gz'
+    sg.cram = 'gs://bucket/SG000001.cram'
+    sg.sequencing_type = 'exome'
     return sg

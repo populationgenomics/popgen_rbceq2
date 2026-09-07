@@ -242,6 +242,30 @@ def defining_site_positions(rows: Iterable[dict[str, str]], genome: str) -> list
     )
 
 
+def _merge_spans(intervals: dict[str, list[tuple[int, int]]]) -> dict[str, list[list[int]]]:
+    """Merge overlapping and touching spans within each contig.
+
+    Args:
+        intervals: Per-contig `(start, end)` spans, in any order.
+
+    Returns:
+        Per-contig merged `[start, end]` spans, sorted by start. Touching spans are merged
+        (`start > out[-1][1]` opens a new one), which is what `rbceq2.IO.vcf.build_intervals`
+        does and so what the regions BED has always done.
+    """
+    merged: dict[str, list[list[int]]] = {}
+    for chrom, spans in intervals.items():
+        spans.sort()
+        out: list[list[int]] = []
+        for start, end in spans:
+            if not out or start > out[-1][1]:
+                out.append([start, end])
+            else:
+                out[-1][1] = max(out[-1][1], end)
+        merged[chrom] = out
+    return merged
+
+
 def build_intervals(rows: Iterable[dict[str, str]], genome: str, flank: int) -> dict[str, list[list[int]]]:
     """Build merged ±flank intervals, as `rbceq2.IO.vcf.build_intervals` builds them.
 
@@ -258,14 +282,32 @@ def build_intervals(rows: Iterable[dict[str, str]], genome: str, flank: int) -> 
         chrom = norm_chrom(row['Chrom'])
         for pos in parse_positions(row[genome]):
             intervals[chrom].append((max(0, pos - flank), pos + flank))
-    merged: dict[str, list[list[int]]] = {}
-    for chrom, spans in intervals.items():
-        spans.sort()
-        out: list[list[int]] = []
-        for start, end in spans:
-            if not out or start > out[-1][1]:
-                out.append([start, end])
-            else:
-                out[-1][1] = max(out[-1][1], end)
-        merged[chrom] = out
-    return merged
+    return _merge_spans(intervals)
+
+
+def padded_site_intervals(rows: Iterable[dict[str, str]], genome: str, padding: int) -> dict[str, list[list[int]]]:
+    """Build merged ±padding intervals around the assessable defining sites.
+
+    This is the interval list the post-hoc caller re-genotypes from the CRAM, so it is built
+    from the same non-SV sites `defining_site_positions` extracts and `site_system_map`
+    assesses. A site the QC never assesses is not worth calling reads for, and a site the QC
+    does assess must be callable, so the two are generated from one parse and cannot drift.
+
+    Deliberately *not* `build_intervals`: that one is ±500kb around every db position
+    including SVs, which is 50Mb of genome — three orders of magnitude more than the caller
+    needs, and enough to make streaming pointless.
+
+    Args:
+        rows: Parsed db rows.
+        genome: Coordinate column to read, `GRCh37` or `GRCh38`.
+        padding: Bases to extend each defining site by on either side.
+
+    Returns:
+        Per-contig merged 0-based half-open `[start, end)` spans, sorted by start. A site at
+        1-based `pos` contributes `[pos - 1 - padding, pos + padding)`, clamped at 0, so the
+        span holds the site itself plus `padding` bases each side.
+    """
+    intervals: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for chrom, pos in defining_site_positions(rows, genome):
+        intervals[chrom].append((max(0, pos - 1 - padding), pos + padding))
+    return _merge_spans(intervals)

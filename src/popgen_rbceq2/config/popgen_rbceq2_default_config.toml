@@ -11,17 +11,57 @@ name = 'popgen_rbceq2'
 # Our release version: the trailing half of the rbceq2_<tool version>_<release> path segment
 # above the stage directories, so one release is one tree. Bump only when a pipeline change
 # alters the outputs — the tool-version half already separates rbceq2 bumps.
-version = 'v1'
+#
+# v2: the defining-sites extract gained a trailing INFO/POSTHOC column and the QC flags gained
+# the POSTHOC prefix and the src= metric. Both change every run, exome or genome, and an
+# extract written by v1 does not parse under v2 — a fresh tree is what keeps the two apart.
+#
+# v3: three exome-only output changes. The merge now fills only defining sites outside the
+# cohort's capture design, so a hole inside it stays NOCOV; it drops a post-hoc variant whose
+# span reaches a base DRAGEN called, so that hole stays NOCOV too; and a site's QC flag name
+# carries its provenance joined to its severity, so a sub-threshold recovered site reads
+# LOWQ+POSTHOC rather than LOWQ. None moves an output path, so without a fresh tree an exome
+# re-run would reuse its v2 files and none would take effect. Genome outputs are byte-identical
+# to v2; they move tree only because the release version is workflow-wide.
+#
+# v4: two exome-only output changes from review. Post-hoc records now carry FILTER PASS, or
+# LowDepth at DP<=1 as DRAGEN marks it, where HaplotypeCaller left `.`; rbceq2 excludes an
+# allele whose defining variant is not PASS, so under v3 no recovered alternate allele ever
+# reached a genotype. And the QC disregards a post-hoc reference block at a hole inside the
+# design, so such a hole reads NOCOV rather than POSTHOC. Genome outputs are again unchanged.
+version = 'v4'
 status_reporter = 'metamist'
 # driver_image =
 # sequencing_type = 'genome'
 # input_cohorts = []
+#
+# An exome run must set `exome_design_bed`: the references-repo key of the capture design BED
+# its gVCFs were called against, e.g.
+# 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'. Post-hoc calls fill only
+# the defining sites that design never targeted; a hole inside it reaches the QC as NOCOV. The
+# sites outside each known design are committed under resources/bg_off_design_sites.*, and the
+# key selects one of them; a key with no committed file fails while the graph is built
+# (scripts/gen_off_design_sites.py adds one).
+#
+# Deliberately not defaulted. Every default is the wrong design for some cohort, and being
+# wrong here is silent: it does not fail, it just fills the wrong set of sites. A run that
+# does not name a design fails while the graph is built. Genome runs never read the key.
+# exome_design_bed =
 
 [references]
 # Build the gVCFs were called against. Selects the committed resources/bg_*.<genome>.* and is
 # passed to `rbceq2 --reference_genome`; a build with no committed resources fails at graph
 # construction. Only GRCh38 is generated today.
 genome_build = 'GRCh38'
+
+[workflow.posthoc_genotype_off_target_sites]
+# Exome sequencing groups only. Streams the CRAM from GCS over GATK's NIO support and calls
+# only the ~136kb of padded defining-site intervals, so almost nothing is read: the storage
+# below is for the localised reference (about 3Gb of fasta, .fai and .dict) and the few-Mb
+# output gVCF, not for the CRAM.
+cpu = 2
+memory = "standard"
+storage = "20Gi"
 
 [workflow.filter_and_convert_gvcfs_for_rbceq2]
 # Sized higher than the other stages: this is the only one that localises the raw gVCF

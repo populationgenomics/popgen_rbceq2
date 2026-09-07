@@ -170,11 +170,13 @@ def _package_file(subdirectory: str, name: str, missing_hint: str) -> Traversabl
     return resource
 
 
-def blood_group_resource(name: str) -> str:
+def blood_group_resource(name: str, missing_hint: str | None = None) -> str:
     """Resolve a committed blood-group site resource to a path.
 
     Args:
         name: Resource filename, e.g. `bg_regions.GRCh38.bed`.
+        missing_hint: What the error should tell the reader to do if the file is not shipped.
+            Defaults to regenerating the `bg_*.<genome>.*` set from the rbceq2 database.
 
     Returns:
         The absolute path to the shipped resource.
@@ -187,8 +189,11 @@ def blood_group_resource(name: str) -> str:
         _package_file(
             'resources',
             name,
-            'Generate it with scripts/gen_bg_resources.py against the db.tsv from the pinned '
-            'rbceq2 image, and commit it under resources/.',
+            missing_hint
+            or (
+                'Generate it with scripts/gen_bg_resources.py against the db.tsv from the pinned '
+                'rbceq2 image, and commit it under resources/.'
+            ),
         ),
     )
 
@@ -210,28 +215,93 @@ def job_script(name: str) -> str:
     return str(_package_file('jobs', name, 'Stages may only run a script committed to jobs/.'))
 
 
-def _output_version(stage_name: str) -> str:
-    """The version segment for a stage's outputs: `rbceq2_<tool version>_<release>`.
+# The `[workflow]` key naming the capture design an exome cohort was called against, spelled as
+# the design's key in the references repo, e.g.
+# `exome_probesets_hg38/agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed`.
+# Required for an exome run; a genome run never reads it. The pipeline does not resolve it to
+# the vendor BED: it selects the committed subtraction of that BED from the defining sites
+# (`off_design.resource_path`), and is a segment of every exome output path (`_release_tree`).
+EXOME_DESIGN_KEY = 'exome_design_bed'
+# The fully-qualified path, for the error messages that have to name it.
+DESIGN_CONFIG_PATH = f'workflow.{EXOME_DESIGN_KEY}'
+
+
+def exome_design_bed() -> str:
+    """The key of the capture design an exome run fills holes outside of.
+
+    Read at graph-build time, so a run missing it fails before a job starts rather than on the
+    first exome sequencing group's merge. Whether a subtraction is committed for the key is
+    checked where it is read, in `off_design.resource_path`.
+
+    Returns:
+        The design key as configured.
+
+    Raises:
+        cpg_utils.config.ConfigError: The key is not set.
+    """
+    try:
+        return cpg_utils.config.config_retrieve(['workflow', EXOME_DESIGN_KEY])
+    except cpg_utils.config.ConfigError as e:
+        raise cpg_utils.config.ConfigError(
+            f'An exome run needs {DESIGN_CONFIG_PATH}: the references-repo key of the capture design '
+            'BED the gVCFs were called against, e.g. '
+            "'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'. Post-hoc calls "
+            'fill defining sites only outside that design, and the sites outside each known design '
+            'are committed under resources/.'
+        ) from e
+
+
+def design_segment(design_key: str) -> str:
+    """The output-path segment identifying an exome run's capture design.
+
+    Args:
+        design_key: The `[references]` key the design came from.
+
+    Returns:
+        The key with anything outside `[A-Za-z0-9._-]` replaced, so it is one path segment.
+    """
+    return re.sub(r'[^A-Za-z0-9._-]', '_', design_key)
+
+
+def _release_tree(stage_name: str) -> str:
+    """The release tree a stage's outputs land in, as the path below the workflow name.
+
+    `rbceq2_<tool version>_<release>` for a genome run, and
+    `rbceq2_<tool version>_<release>/<design>` for an exome run.
 
     The tool-version half is derived from constants.RBCEQ2_VERSION, so a tool bump always
     lands in a fresh tree and the segment can never drift from the version actually run. The
     release half is ours — the stage's own output_versions pin if set, else workflow.version —
     bumped only when a pipeline change alters the outputs (deliberately not the image tag,
     which moves on rebuilds that change nothing about the outputs).
+
+    The design segment is there because cpg_flow reuses a stage whose expected outputs exist
+    and asks nothing about how they were made. Every exome output from the conversion onward
+    depends on the configured design: which holes the merge filled, so the converted VCF, the
+    genotypes rbceq2 calls from it, the QC flags and the cohort tables. None of those stages
+    reads the design itself, so none could put it in its own path, and the release segment
+    cannot see a config change. Repointing EXOME_DESIGN_KEY inside one release would otherwise
+    select the other design's committed off-design sites and then reuse every sample's outputs
+    from the old design without a word in any log. With the design in the tree, repointing it
+    starts a fresh tree for the whole run. A genome run never reads the key, so its tree is
+    unchanged.
     """
     pinned = cpg_utils.config.config_retrieve(['workflow', 'output_versions', stage_name], None)
     release = pinned or cpg_utils.config.config_retrieve(['workflow', 'version'], 'v1')
-    return f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_{release}'
+    tree = f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_{release}'
+    if cpg_utils.config.config_retrieve(['workflow', 'sequencing_type']) == constants.EXOME:
+        tree = f'{tree}/{design_segment(exome_design_bed())}'
+    return tree
 
 
 def get_output_prefix(cohort: cpg_flow.targets.Cohort, stage_name: str, category: str | None = None) -> cpg_utils.Path:
     """Standardised output prefix for CohortStage outputs.
 
-    Format: cohort.dataset.prefix() / workflow.name / rbceq2_<tool version>_<release> / stage_name / cohort.id
+    Format: cohort.dataset.prefix() / workflow.name / <release tree> / stage_name / cohort.id
 
-    The version segment sits directly under the workflow name so one release is one browsable
-    tree; see _output_version for what its two halves mean. A stage with its own
-    output_versions pin writes under its pinned release's tree instead.
+    The release tree sits directly under the workflow name so one release is one browsable
+    tree, and for an exome run one design within it; see _release_tree for its segments. A
+    stage with its own output_versions pin writes under its pinned release's tree instead.
 
     cohort.id is a path segment, so a different set of sequencing groups is a different cohort
     and therefore a different tree — outputs from one cohort can never be mistaken for another's.
@@ -239,7 +309,7 @@ def get_output_prefix(cohort: cpg_flow.targets.Cohort, stage_name: str, category
     return (
         cohort.dataset.prefix(category=category)
         / cpg_flow.workflow.get_workflow().name
-        / _output_version(stage_name)
+        / _release_tree(stage_name)
         / stage_name
         / cohort.id
     )
@@ -252,20 +322,20 @@ def get_sg_output_prefix(
 ) -> cpg_utils.Path:
     """Standardised output prefix for SequencingGroupStage outputs.
 
-    Format: sg.dataset.prefix() / workflow.name / rbceq2_<tool version>_<release> / stage_name / sg.id
+    Format: sg.dataset.prefix() / workflow.name / <release tree> / stage_name / sg.id
 
-    See get_output_prefix and _output_version for what the version segment means.
+    See get_output_prefix and _release_tree for what the release tree's segments mean.
     """
     return (
         sequencing_group.dataset.prefix(category=category)
         / cpg_flow.workflow.get_workflow().name
-        / _output_version(stage_name)
+        / _release_tree(stage_name)
         / stage_name
         / sequencing_group.id
     )
 
 
-def _camel_to_snake(name: str) -> str:
+def camel_to_snake(name: str) -> str:
     s = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', name)
     s = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s)
     return s.lower()
@@ -273,7 +343,7 @@ def _camel_to_snake(name: str) -> str:
 
 def config_section(stage: cpg_flow.stage.Stage) -> str:
     """The [workflow.<section>] this stage reads, derived from its class name."""
-    return _camel_to_snake(stage.name)
+    return camel_to_snake(stage.name)
 
 
 def _resolved(stage: cpg_flow.stage.Stage, key: str, default: Any) -> Any:

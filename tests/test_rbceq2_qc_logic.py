@@ -11,18 +11,24 @@ import pytest
 
 from popgen_rbceq2.jobs.rbceq2_call_qc_job import (
     DELETED,
+    FLAG_JOIN,
     LOWQ,
     NOCOV,
     NOT_ASSESSED,
     PASS,
+    POSTHOC,
     Coverage,
     GvcfRecord,
     build_qc_tsv,
+    flag_severity,
     flag_site,
     flags_by_system,
+    is_posthoc_only,
+    load_fillable_sites,
     load_site_systems,
     parse_extract,
     resolve_coverage,
+    rests_on_posthoc,
 )
 from popgen_rbceq2.scripts import bg_db
 from popgen_rbceq2.scripts.bg_db import DefiningSite
@@ -50,9 +56,11 @@ def _site(chrom='chr1', pos=3774964, ref='A', alt='G', kind: bg_db.SiteKind = 'v
     return DefiningSite(chrom=chrom, pos=pos, ref=ref, alt=alt, kind=kind, system=system)
 
 
-def _record(chrom, pos, ref, alt, end=None, gt='0/1', dp=None, gq=None, min_dp=None) -> GvcfRecord:
+def _record(chrom, pos, ref, alt, end=None, gt='0/1', dp=None, gq=None, min_dp=None, posthoc=None) -> GvcfRecord:
     """Build one extracted GVCF record, defaulting the fields a test is not exercising."""
-    return GvcfRecord(chrom=chrom, pos=pos, ref=ref, alt=alt, end=end, gt=gt, dp=dp, gq=gq, min_dp=min_dp)
+    return GvcfRecord(
+        chrom=chrom, pos=pos, ref=ref, alt=alt, end=end, gt=gt, dp=dp, gq=gq, min_dp=min_dp, posthoc=posthoc
+    )
 
 
 def _db_row(chrom='chr1', genotype='VEL*01.01', genome='3774964_A_G', genotype_alt='') -> dict[str, str]:
@@ -196,10 +204,67 @@ def _resource(name: str) -> str:
 
 @pytest.mark.parametrize(
     'name',
-    ['bg_regions.GRCh38.bed', 'bg_defining_sites.GRCh38.bed', 'bg_site_systems.GRCh38.tsv'],
+    [
+        'bg_regions.GRCh38.bed',
+        'bg_defining_sites.GRCh38.bed',
+        'bg_defining_sites_padded.GRCh38.bed',
+        'bg_site_systems.GRCh38.tsv',
+    ],
 )
 def test_committed_resources_are_shipped(name):
     assert blood_group_resource(name).endswith(name)
+
+
+def _padded_intervals() -> dict[str, list[tuple[int, int]]]:
+    """The committed padded-sites BED, as per-contig 0-based half-open spans."""
+    intervals: dict[str, list[tuple[int, int]]] = {}
+    for line in _resource('bg_defining_sites_padded.GRCh38.bed').splitlines():
+        chrom, start, end = line.split('\t')
+        intervals.setdefault(chrom, []).append((int(start), int(end)))
+    return intervals
+
+
+def test_every_assessable_site_is_inside_the_padded_caller_intervals():
+    """The post-hoc caller's intervals cover every site the QC assesses."""
+    # A defining site outside them can never be recovered, so it stays NOCOV in every exome
+    # forever, and the reason would be a BED this test did not check rather than real absence
+    # of reads. The two files come from one parse; this is what stops a hand-edit separating
+    # them.
+    intervals = _padded_intervals()
+    for site in load_site_systems(_resource('bg_site_systems.GRCh38.tsv')):
+        zero_based = site.pos - 1
+        assert any(start <= zero_based < end for start, end in intervals.get(site.chrom, [])), (
+            f'{site.chrom}:{site.pos} ({site.system}) is outside bg_defining_sites_padded.GRCh38.bed'
+        )
+
+
+def test_the_padded_intervals_stay_small_enough_to_stream():
+    """The padded intervals are a tiny slice of the genome, which is what makes streaming pay."""
+    # The stage streams the CRAM over NIO instead of localising it, which is only worth doing
+    # while the interval list stays small. Padding raised far enough to approach the ±500kb
+    # regions BED (50Mb) would quietly turn every exome job into a whole-CRAM read.
+    total = sum(end - start for spans in _padded_intervals().values() for start, end in spans)
+    assert total < 2_000_000, f'padded caller intervals cover {total:,} bases, too many to stream'
+
+
+def test_padded_intervals_merge_neighbouring_sites():
+    """Sites closer together than twice the padding produce one interval, not two."""
+    rows = [_db_row(chrom='chr1', genotype='VEL*01.01', genome='1000_A_G,1100_C_T')]
+    assert bg_db.padded_site_intervals(rows, 'GRCh38', padding=250) == {'chr1': [[749, 1350]]}
+
+
+def test_padded_intervals_are_clamped_at_the_start_of_a_contig():
+    """Padding a site near position 1 cannot produce a negative BED start."""
+    rows = [_db_row(chrom='chr1', genotype='VEL*01.01', genome='10_A_G')]
+    assert bg_db.padded_site_intervals(rows, 'GRCh38', padding=250) == {'chr1': [[0, 260]]}
+
+
+def test_padded_intervals_exclude_structural_variant_sites():
+    """An SV site gets no caller interval, matching the sites the QC map assesses."""
+    # One base of DP/GQ cannot assess a 21kb deletion, so the QC never looks at these; calling
+    # reads for them would buy nothing and would put the two resources out of step.
+    rows = [_db_row(chrom='chr16', genotype='ABCC1*01N.01', genome='95018451_del_21kb')]
+    assert bg_db.padded_site_intervals(rows, 'GRCh38', padding=250) == {}
 
 
 def test_blood_group_resource_raises_for_a_build_we_have_not_generated():
@@ -265,8 +330,8 @@ def test_committed_bed_sites_fall_inside_the_committed_regions():
 def test_parse_extract_reads_blocks_and_variants():
     """Reference blocks and variant records both parse, and blank lines are skipped."""
     text = (
-        'chr20\t19999580\tT\t<NON_REF>\t20001310\t0/0\t31\t38\t25\n'
-        'chr20\t20003793\tC\tG\t.\t0/1\t25\t38\t.\n'
+        'chr20\t19999580\tT\t<NON_REF>\t20001310\t0/0\t31\t38\t25\t.\n'
+        'chr20\t20003793\tC\tG\t.\t0/1\t25\t38\t.\t.\n'
         '\n'  # bcftools output ends with a newline; a blank line is not a record
     )
     records = parse_extract(text)
@@ -279,9 +344,29 @@ def test_parse_extract_reads_blocks_and_variants():
     assert (records[0].span, records[1].span) == (1731, 1)
 
 
+def test_parse_extract_reads_the_posthoc_tag():
+    """A record carrying INFO/POSTHOC parses as non-primary, naming the caller."""
+    # bcftools renders an absent INFO tag as `.`, which is every record on a genome run, so
+    # the `.` has to mean "primary" rather than becoming a caller literally named '.'.
+    text = 'chr1\t159204893\tT\tC\t.\t0/1\t42\t99\t.\tgatk-hc-4.6.2.0\nchr1\t159204900\tG\tA\t.\t0/1\t30\t50\t.\t.\n'
+    recovered, primary = parse_extract(text)
+    assert recovered.posthoc == 'gatk-hc-4.6.2.0'
+    assert not recovered.is_primary
+    assert primary.posthoc is None
+    assert primary.is_primary
+
+
 def test_parse_extract_raises_on_unexpected_column_count():
     with pytest.raises(ValueError, match='columns'):
         parse_extract('chr20\t19999580\tT\n')
+
+
+def test_parse_extract_rejects_an_extract_written_before_the_posthoc_column():
+    """A nine-column extract from the previous release fails loudly rather than shifting."""
+    # Without the check the old ninth column (MIN_DP) would be read as `posthoc`, so every
+    # record with a MIN_DP would look like it came from the post-hoc caller.
+    with pytest.raises(ValueError, match='columns'):
+        parse_extract('chr20\t19999580\tT\t<NON_REF>\t20001310\t0/0\t31\t38\t25\n')
 
 
 def test_load_site_systems_raises_on_wrong_columns():
@@ -526,6 +611,200 @@ def test_a_long_deletion_in_a_del_flag_is_rendered_as_a_length():
     records = [_record('chr1', 3774900, 'A' + 'C' * 200, 'A', gt='1/1', dp=30, gq=50)]
     coverage = _resolved(records, 'chr1', 3774964)
     assert flag_site(_site(), coverage, MIN_DEPTH, MIN_GQ) == f'{DELETED}:1:3774964(A>G,del=201bp>A,GT=1/1,DP=30,GQ=50)'
+
+
+# --- post-hoc recovered sites -----------------------------------------------------------
+
+CALLER = 'gatk-hc-4.6.2.0'
+
+
+def test_a_passing_site_recovered_from_the_cram_is_flagged_posthoc_not_dropped():
+    """A good-quality recovered site is POSTHOC, never omitted like a clean primary one."""
+    # A primary site with nothing wrong yields no flag at all. A recovered one is listed even
+    # though it passes, because the antigen resting on a re-call of untargeted reads is itself
+    # the finding, and the reader needs the coordinate and the numbers behind it.
+    records = [_record('chr1', 159204893, 'T', 'C', dp=42, gq=99, posthoc=CALLER)]
+    site = _site(chrom='chr1', pos=159204893, ref='T', alt='C', system='FY')
+    coverage = _resolved(records, 'chr1', 159204893)
+    expected = f'{POSTHOC}:1:159204893(T>C,src={CALLER},DP=42,GQ=99)'
+    assert flag_site(site, coverage, MIN_DEPTH, MIN_GQ) == expected
+
+
+def test_a_recovered_site_below_threshold_reports_both_findings():
+    """The regression this design exists for: severity must not displace provenance."""
+    # Ranking the two would report only LOWQ here, and nothing would say the call rests on a
+    # recovery. On the validation cohorts that hid the reliance for 234 of 681 systems. Both
+    # are properties of this site, so both are in this site's flag name.
+    records = [_record('chr1', 159204893, 'T', 'C', dp=6, gq=12, posthoc=CALLER)]
+    site = _site(chrom='chr1', pos=159204893, ref='T', alt='C', system='FY')
+    coverage = _resolved(records, 'chr1', 159204893)
+    expected = f'{LOWQ}{FLAG_JOIN}{POSTHOC}:1:159204893(T>C,src={CALLER},DP=6,GQ=12)'
+    assert flag_site(site, coverage, MIN_DEPTH, MIN_GQ) == expected
+    assert rests_on_posthoc(expected)
+    assert flag_severity(expected) == LOWQ
+
+
+def test_a_recovered_deletion_reports_both_findings_too():
+    """DEL composes with POSTHOC the same way LOWQ does."""
+    records = [_record('chr1', 3774961, 'CATGA', 'C', gt='0/1', dp=30, gq=50, posthoc=CALLER)]
+    coverage = _resolved(records, 'chr1', 3774964)
+    flag = flag_site(_site(), coverage, MIN_DEPTH, MIN_GQ)
+    assert flag is not None
+    assert flag.startswith(f'{DELETED}{FLAG_JOIN}{POSTHOC}:')
+    assert flag_severity(flag) == DELETED
+
+
+def test_a_recovered_reference_block_reports_its_span_and_its_caller():
+    """A recovered site inside a post-hoc reference block carries both src= and block=."""
+    records = [_record('chr1', 159204800, 'G', '<NON_REF>', end=159204950, dp=42, gq=99, min_dp=38, posthoc=CALLER)]
+    site = _site(chrom='chr1', pos=159204893, ref='T', alt='C', system='FY')
+    coverage = _resolved(records, 'chr1', 159204893)
+    expected = f'{POSTHOC}:1:159204893(T>C,src={CALLER},block=151bp,DP=42,MIN_DP=38,GQ=99)'
+    assert flag_site(site, coverage, MIN_DEPTH, MIN_GQ) == expected
+
+
+def test_a_site_neither_caller_covered_carries_no_provenance():
+    """NOCOV never composes with POSTHOC: no record means no caller to name."""
+    flag = flag_site(_site(), None, MIN_DEPTH, MIN_GQ)
+    assert flag is not None
+    assert flag == f'{NOCOV}:1:3774964(A>G)'
+    assert not rests_on_posthoc(flag)
+
+
+def test_a_system_with_no_recovered_site_rests_on_nothing_recovered():
+    """Genome runs and fully-covered exome systems are untouched by the annotation."""
+    records = [_record('chr1', 3774964, 'A', 'G', dp=40, gq=99)]
+    flags, _ = flags_by_system([_site()], records, MIN_DEPTH, MIN_GQ)
+    assert flags['VEL'] == PASS
+    assert not rests_on_posthoc(flags['VEL'])
+
+
+@pytest.mark.parametrize(
+    ('cell', 'expected'),
+    [
+        (f'{POSTHOC}:1:159204893(T>C,src={CALLER},DP=42,GQ=99)', True),
+        (f'{LOWQ}{FLAG_JOIN}{POSTHOC}:1:159204893(T>C,src={CALLER},DP=1,GQ=3)', True),
+        (f'{DELETED}{FLAG_JOIN}{POSTHOC}:1:3774964(A>G,src={CALLER},DP=30,GQ=50)', True),
+        # A recovery anywhere in the cell counts, even beside a site neither caller covered.
+        (f'{NOCOV}:1:25272548(A>G);{POSTHOC}:1:25290763(C>T,src={CALLER},DP=55,GQ=99)', True),
+        (f'{LOWQ}:1:3774964(A>G,DP=8,GQ=45)', False),
+        (f'{NOCOV}:1:3774964(A>G)', False),
+        (PASS, False),
+        (NOT_ASSESSED, False),
+    ],
+)
+def test_rests_on_posthoc_finds_every_call_that_needed_the_recall(cell, expected):
+    """The annotation, read back off a cell: did this system need the post-hoc caller?"""
+    # Equivalently, was it typable from the primary caller alone. A quality flag on the
+    # recovered site must not hide the answer, which is the whole reason the two findings are
+    # joined in the flag name rather than ranked against each other.
+    assert rests_on_posthoc(cell) is expected
+
+
+def test_a_primary_record_is_preferred_over_a_posthoc_block_reaching_the_same_site():
+    """Where both callers cover a site, the primary one is what the flag reports."""
+    # The merge keeps a post-hoc reference block whole, so one straddling a capture edge
+    # reaches sites DRAGEN did call. The innermost-record rule would otherwise pick the
+    # post-hoc block purely because it starts later, and report a recovery at a site that was
+    # never a hole — the exact case observed in the merge's own boundary behaviour.
+    records = [
+        _record('chr1', 3774900, 'T', '<NON_REF>', end=3775000, dp=40, gq=50, min_dp=35),
+        _record('chr1', 3774950, 'G', '<NON_REF>', end=3776000, dp=45, gq=99, min_dp=40, posthoc=CALLER),
+    ]
+    coverage = _resolved(records, 'chr1', 3774964)
+    assert coverage.record.is_primary
+    assert coverage.dp == 40
+    assert flag_site(_site(), coverage, MIN_DEPTH, MIN_GQ) is None
+
+
+def test_a_low_quality_primary_record_still_beats_a_good_posthoc_one():
+    """Primary precedence is not a quality contest: DRAGEN wins wherever both speak."""
+    # Preferring the better-looking record would silently launder a poor primary call into a
+    # confident post-hoc one, and the QC would stop reporting a site the reader needs to see.
+    records = [
+        _record('chr1', 3774964, 'A', 'G', dp=4, gq=8),
+        _record('chr1', 3774950, 'G', '<NON_REF>', end=3776000, dp=90, gq=99, min_dp=85, posthoc=CALLER),
+    ]
+    coverage = _resolved(records, 'chr1', 3774964)
+    assert flag_site(_site(), coverage, MIN_DEPTH, MIN_GQ) == f'{LOWQ}:1:3774964(A>G,DP=4,GQ=8)'
+
+
+def test_a_site_neither_caller_covers_is_still_nocov():
+    """NOCOV keeps one meaning: no record from either caller."""
+    records = [_record('chr9', 1000, 'A', 'G', dp=40, gq=99, posthoc=CALLER)]
+    assert resolve_coverage(records, 'chr1', 3774964) is None
+    assert flag_site(_site(), None, MIN_DEPTH, MIN_GQ) == f'{NOCOV}:1:3774964(A>G)'
+
+
+# --- the fillable set: where a post-hoc record is allowed to count ----------------------------
+
+POSTHOC_BLOCK = _record('chr1', 3774900, 'G', '<NON_REF>', end=3775000, dp=40, gq=60, min_dp=35, posthoc=CALLER)
+
+
+def test_a_posthoc_record_counts_only_at_a_site_the_merge_could_fill():
+    """A hole inside the design stays NOCOV even when a kept post-hoc block spans it."""
+    # The merge keeps a block whole for the off-design hole it was selected for, so the block
+    # can be the only record at an in-design hole beside it. The QC is where the design bound
+    # is kept for that case, by reading the same off-design BED the merge read.
+    fillable, _ = flags_by_system([_site()], [POSTHOC_BLOCK], MIN_DEPTH, MIN_GQ, frozenset({('chr1', 3774964)}))
+    assert fillable['VEL'].startswith(f'{POSTHOC}:1:3774964(')
+
+    not_fillable, uncovered = flags_by_system([_site()], [POSTHOC_BLOCK], MIN_DEPTH, MIN_GQ, frozenset())
+    assert not_fillable['VEL'] == f'{NOCOV}:1:3774964(A>G)'
+    assert uncovered == [_site()]
+
+
+def test_a_primary_record_counts_at_every_site_whatever_the_fillable_set_says():
+    """The set bounds the post-hoc caller only; DRAGEN's own records are never disregarded."""
+    records = [_record('chr1', 3774964, 'A', 'G', dp=4, gq=8), POSTHOC_BLOCK]
+    flags, _ = flags_by_system([_site()], records, MIN_DEPTH, MIN_GQ, frozenset())
+    assert flags['VEL'] == f'{LOWQ}:1:3774964(A>G,DP=4,GQ=8)'
+
+
+def test_posthoc_records_with_no_fillable_set_are_refused():
+    """An extract carrying POSTHOC records came from a merge that read a fillable set."""
+    # Silently trusting every post-hoc record would reintroduce the leak on any run whose QC
+    # stage lost the BED, and a genome run never has such a record, so None is only right there.
+    with pytest.raises(ValueError, match='no fillable-sites BED'):
+        flags_by_system([_site()], [POSTHOC_BLOCK], MIN_DEPTH, MIN_GQ)
+
+
+def test_load_fillable_sites_reads_the_off_design_bed_as_gvcf_coordinates():
+    """A 0-based single-base BED row becomes the 1-based (contig, pos) DefiningSite carries."""
+    assert load_fillable_sites('chr1\t3774963\t3774964\nchrX\t100\t101\n\n') == frozenset(
+        {('chr1', 3774964), ('chrX', 101)}
+    )
+
+
+def test_load_fillable_sites_rejects_a_row_that_is_not_one_base():
+    """The file is a set of sites; an interval names no site and is a wrong input, not a span."""
+    with pytest.raises(ValueError, match='not a single-base interval'):
+        load_fillable_sites('chr1\t3774963\t3774970\n')
+
+
+@pytest.mark.parametrize(
+    ('flag', 'expected'),
+    [
+        (f'{POSTHOC}:1:159204893(T>C,src={CALLER},DP=42,GQ=99)', True),
+        # Several recovered sites in one system is still a recovery, not a quality problem.
+        (f'{POSTHOC}:1:159204893(T>C,DP=42,GQ=99);{POSTHOC}:1:159204900(G>A,DP=40,GQ=99)', True),
+        # One genuine quality problem anywhere in the cell makes the system quality-flagged,
+        # even though its flags still say the call rests on recovered data.
+        (f'{POSTHOC}:1:159204893(T>C,DP=42,GQ=99);{LOWQ}:1:159204900(G>A,DP=4,GQ=9)', False),
+        (f'{LOWQ}{FLAG_JOIN}{POSTHOC}:1:159204893(T>C,DP=1,GQ=3)', False),
+        (f'{NOCOV}:1:159204900(G>A);{POSTHOC}:1:159204893(T>C,DP=42,GQ=99)', False),
+        # A quality flag with no provenance is a primary-caller problem, not a recovery.
+        (f'{LOWQ}:1:3774964(A>G,DP=8,GQ=45)', False),
+        (f'{NOCOV}:1:3774964(A>G)', False),
+        (PASS, False),
+        (NOT_ASSESSED, False),
+    ],
+)
+def test_posthoc_only_systems_are_counted_apart_from_quality_flagged_ones(flag, expected):
+    """A system flagged only for provenance is a recovery, and is counted separately."""
+    # Counting them together would make a successful exome run, where recovery is the point,
+    # read as a cohort that had got worse.
+    assert is_posthoc_only(flag) is expected
 
 
 # --- aggregation ----------------------------------------------------------------------

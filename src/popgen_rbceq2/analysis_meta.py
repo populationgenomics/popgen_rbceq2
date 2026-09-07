@@ -68,6 +68,13 @@ def call_qc(output: str) -> dict[str, Any]:
         or ``NA`` for a system rbceq2 called that has no defining site in the map, e.g.
         ``{'JK': 'PASS', 'VEL': 'LOWQ:1:3774964(A>G,DP=8,GQ=45)', 'FUT2': 'NA'}``.
 
+        A site the post-hoc caller supplied carries ``POSTHOC`` in its flag name, joined to
+        any severity with ``+``, e.g. ``{'FY': 'POSTHOC:1:159204893(T>C,src=...)'}`` or
+        ``{'VEL': 'LOWQ+POSTHOC:1:3774964(A>G,src=...)'}``. Filtering these values on
+        ``POSTHOC`` is how a reader finds every call that needed the exome recall, and
+        equivalently every system that was not typable without it;
+        ``rbceq2_call_qc_job.rests_on_posthoc`` answers it on one cell.
+
     The ``min_depth``/``min_gq`` thresholds the flags were produced at are not read here:
     the stage's ``queue_jobs`` puts them in the static Analysis meta from the same values it
     hands the job, so a re-read of config could not disagree with what ran.

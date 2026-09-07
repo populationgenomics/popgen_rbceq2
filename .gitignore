@@ -28,3 +28,6 @@ docs/superpowers/
 
 # OS / editor
 .DS_Store
+
+# CRAM indexes pulled down for local coverage checks; regenerable, never repo content
+*.crai

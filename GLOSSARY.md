@@ -16,6 +16,30 @@ Lane's paper); RBCeq2 adds the reference allele to complete the genotype.
 - `build_intervals` / regions / flank: how RBCeq2 (and the committed `bg_regions.<genome>.bed`) derive read regions from `db.tsv` (±500 kb).
 - `Undetermined`: placeholder output value meaning RBCeq2 couldn't resolve a system, not read as "reference."
 - `NOT_REPORTED`: cell value in the combined cohort TSVs for a system RBCeq2 emitted no column for in that sample's own file. Distinct from `NA` (system checked by QC but no assessable defining site) and `Undetermined` (RBCeq2 called the system but couldn't resolve it).
+- Capture target BED / covered regions: the intervals an exome kit is designed to enrich, and
+  which DRAGEN is given when calling an exome. With no `--vc-target-bed-padding` it stops
+  emitting gVCF records at these edges, so anything outside them is silent rather than poorly
+  called. Twist VCGS and Agilent CREv2 are the two designs in our cohorts; for CREv2 use the
+  `Covered` BED, not `Regions`, because the gVCF boundaries match the covered footprint.
+- Off-target site: a blood-group defining coordinate outside the capture target BED, so the
+  exome gVCF has no record for it at all. Not the same as a low-quality site — there is nothing
+  there to judge, which is why rbceq2 silently reads it as homozygous reference.
+- Post-hoc calling / recall: calling defining sites again from the CRAM with GATK
+  HaplotypeCaller, after the primary caller has run, to fill those off-target holes. Exome only.
+  "Post-hoc" because it supplements calls already made rather than replacing the primary caller.
+- `POSTHOC`: two related things. As an `INFO` field on a merged VCF record it names the caller
+  that supplied that record where the primary gVCF was silent (`POSTHOC=gatk-hc-4.6.2.0`). As a
+  QC flag name it marks a site the post-hoc caller supplied the record for. It is a provenance
+  flag, not a quality one, and it is joined to the site's severity with `+` rather than ranked
+  against it: a recovered site that passes the thresholds is `POSTHOC`, one that is also
+  sub-threshold is `LOWQ+POSTHOC`. The same caller string appears inside the flag's metrics as
+  `src=`.
+- DRAGEN masked reference: `Homo_sapiens_assembly38_masked.fasta`, the assembly our CRAMs were
+  aligned against (`references.broad.ref_fasta`). Required to decode a CRAM correctly — a
+  different assembly yields wrong bases rather than an error.
+- `--dragen-mode` / DRAGstr: GATK's DRAGEN-compatibility mode, and the per-sample STR model
+  DRAGEN normally pairs with it. We run the mode without the model, so post-hoc STR genotyping
+  is close to but not identical with DRAGEN's.
 - geno / pheno_numeric / pheno_alphanumeric: the three output TSVs.
 - `Metamist`: CPG's sample-metadata system.
 - `analysis-runner`: CPG's tool to launch workflows.

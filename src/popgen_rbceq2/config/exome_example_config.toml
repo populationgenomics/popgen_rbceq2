@@ -1,0 +1,32 @@
+# A complete exome run config: what config_template.toml asks for, filled in for a cohort
+# captured with Agilent SureSelect Clinical Research Exome v2. Replace the cohort ID and the
+# dataset, and pass it after popgen_rbceq2_default_config.toml so this wins:
+#
+#   analysis-runner --dataset <dataset> --access-level test --output-dir '' \
+#     --config src/popgen_rbceq2/config/popgen_rbceq2_default_config.toml \
+#     --config src/popgen_rbceq2/config/exome_example_config.toml \
+#     --description "rbceq2 post-hoc exome recall, <cohort>" \
+#     --image australia-southeast1-docker.pkg.dev/cpg-common/images/popgen_rbceq2:<tag> \
+#     --skip-repo-checkout \
+#     popgen_rbceq2
+#
+# --skip-repo-checkout is required, not a convenience: analysis-runner otherwise clones this
+# repo into the job, and a dataset only permits repos on its allowed list in the infrastructure
+# config. The image already holds the code at <tag>, which is what runs either way.
+#
+# Change input_cohorts and exome_design_bed together: the design must be the one that cohort's
+# gVCFs were called against, and the run fails if DRAGEN has reference blocks at defining sites
+# outside it. Every sequencing group in the cohort must be one design, and must have both a
+# CRAM and a gVCF the run can read for the recall to apply to it. The README section "An exome
+# run must name its capture design" lists the known designs' keys and how to find a cohort's
+# design in Metamist.
+
+[workflow]
+# Placeholder. Metamist cohort IDs look like COH12345.
+input_cohorts = ['COH000000']
+sequencing_type = 'exome'
+# Covered, the probe footprint, NOT Regions. Both exist for CREv2 and they differ: on the CREv2
+# validation cohort (docs/rbceq2_posthoc_exome/RESULTS.md), Regions would have left 309
+# site-resolutions with a DRAGEN record outside the design, failing the run, and would have
+# gated off 907 recoveries had it not.
+exome_design_bed = 'exome_probesets_hg38/agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed'
