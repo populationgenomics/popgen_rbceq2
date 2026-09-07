@@ -11,7 +11,7 @@ import pytest
 
 from popgen_rbceq2 import constants, stage_support
 from popgen_rbceq2.stages import pipeline
-from popgen_rbceq2.stages.blood_group_genotyping import off_design_sites, posthoc_genotype
+from popgen_rbceq2.stages.blood_group_genotyping import posthoc_genotype
 from tests.helpers import set_config
 
 pytestmark = pytest.mark.fast
@@ -56,14 +56,11 @@ def test_an_exome_run_writes_under_its_capture_design(exome_sequencing_group, mo
     design_key = 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'
     set_config(
         {
-            'references': {
-                'exome_probesets_hg38': {'twist_vcgs_custom_exome_covered_targets_bed': 'gs://ref/twist.bed'}
-            },
             'workflow': {
                 'name': 'popgen_rbceq2',
                 'version': 'v1',
                 'sequencing_type': 'exome',
-                stage_support.DESIGN_CONFIG_SECTION: {stage_support.EXOME_DESIGN_KEY: design_key},
+                stage_support.EXOME_DESIGN_KEY: design_key,
             },
         },
         shm_tmp_path / 'exome.toml',
@@ -79,14 +76,6 @@ def test_an_exome_run_writes_under_its_capture_design(exome_sequencing_group, mo
     cohort_output = outputs_of(pipeline.CombineRbceq2OutputsPerCohort(), mock_cohort)
     cohort_prefix = Path('gs://bucket') / 'popgen_rbceq2' / VERSION_SEGMENT / design / 'CombineRbceq2OutputsPerCohort'
     assert str(cohort_output['geno']) == str(cohort_prefix / 'test-cohort' / 'combined.test-cohort.geno.tsv')
-
-
-def test_the_design_key_is_read_from_the_subtraction_stages_config_section():
-    # stage_support spells the section out as a literal, because the release tree needs the
-    # design before any stage module is importable. This holds it to the class name the
-    # config_section convention would derive, so renaming the stage cannot strand the key.
-    derived = stage_support.camel_to_snake(off_design_sites.SelectOffDesignDefiningSites.__name__)
-    assert derived == stage_support.DESIGN_CONFIG_SECTION
 
 
 def test_posthoc_output_namespacing(exome_sequencing_group):

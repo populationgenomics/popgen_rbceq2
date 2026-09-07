@@ -21,8 +21,6 @@
 # Placeholder. Metamist cohort IDs look like COH12345.
 input_cohorts = ['COH000000']
 sequencing_type = 'exome'
-
-[workflow.select_off_design_defining_sites]
 # Covered, the probe footprint, NOT Regions. Both exist for CREv2 and they differ: on the CREv2
 # validation cohort (docs/rbceq2_posthoc_exome/RESULTS.md), Regions would have left 309
 # site-resolutions with a DRAGEN record outside the design, failing the run, and would have

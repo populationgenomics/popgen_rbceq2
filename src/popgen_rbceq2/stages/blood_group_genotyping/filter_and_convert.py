@@ -8,8 +8,8 @@ import cpg_utils.config
 import cpg_utils.hail_batch
 import hailtop.batch.resource
 
-from popgen_rbceq2 import constants, stage_support
-from popgen_rbceq2.stages.blood_group_genotyping import off_design_sites, posthoc_genotype
+from popgen_rbceq2 import constants, off_design, stage_support
+from popgen_rbceq2.stages.blood_group_genotyping import posthoc_genotype
 
 # Which sites of a BED fall inside no span of another BED, as a BED.
 #
@@ -22,9 +22,9 @@ from popgen_rbceq2.stages.blood_group_genotyping import off_design_sites, postho
 # flag NOCOV — and tests/test_posthoc_merge.py holds them together.
 #
 # It also served the capture-design subtraction once, over the same containment test. That half
-# is now `bedtools intersect -v` in SelectOffDesignDefiningSites, run once for the whole run
-# rather than per sequencing group, so the vendor BED's extra columns and `track` lines are no
-# longer this program's problem. What is left here reads only bcftools output, three columns.
+# is now `bedtools intersect -v` in scripts/gen_off_design_sites.py, run once per design and
+# committed under resources/, so the vendor BED's extra columns and `track` lines are no longer
+# this program's problem. What is left here reads only bcftools output, three columns.
 #
 # The spans file is named by `-v spans=`, and must be, rather than being detected with the
 # usual `NR == FNR`. That idiom reads "still in the first file" only while the first file has
@@ -173,8 +173,8 @@ def _merge_posthoc_commands(
     Args:
         posthoc_gvcf: Localised post-hoc gVCF from PosthocGenotypeOffTargetSites.
         sites_bed: The committed defining-sites BED.
-        off_design_bed: Localised off-design defining sites from SelectOffDesignDefiningSites,
-            the only sites a post-hoc record may fill.
+        off_design_bed: Localised off-design defining sites for the configured design, the
+            committed `off_design.resource_path`; the only sites a post-hoc record may fill.
         design_key: The `[references]` key the design came from, for the error message.
         cpu: Threads to give the BGZF steps.
 
@@ -226,8 +226,8 @@ def _merge_posthoc_commands(
 
         # Which of the off-design sites the DRAGEN gVCF has no record at. Only those are
         # filled. The off-design set itself is not computed here: it depends on the configured
-        # design and the committed sites and on nothing about this sample, so
-        # SelectOffDesignDefiningSites subtracts it once for the whole run.
+        # design and the committed sites and on nothing about this sample, so it is subtracted
+        # once per design and committed under resources/.
         awk -v spans=covered.bed '{_SITES_OUTSIDE_SPANS_AWK}' \\
             covered.bed {off_design_bed} > uncovered.bed
 
@@ -388,7 +388,7 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
     For an exome sequencing group this stage also merges in the post-hoc calls from
     PosthocGenotypeOffTargetSites, which fill the defining sites the capture-target BED
     stopped DRAGEN emitting at. Only sites outside the capture design are filled, and which
-    sites those are comes from SelectOffDesignDefiningSites, computed once for the run; see
+    sites those are is the committed subtraction for the configured design (`off_design`); see
     `_merge_posthoc_commands` for the rest of the fill rule. A genome sequencing group has no
     post-hoc input and never reads the design key, so nothing is merged for it and the merge is
     a plain rename.
@@ -477,15 +477,15 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
                     'g.vcf.gz.tbi': str(posthoc_paths['index']),
                 },
             )['g.vcf.gz']
-            # The design BED itself is not localised here. Only the 167-line subtraction of it
-            # is, from SelectOffDesignDefiningSites, which saves moving 5.5Mb of vendor
-            # intervals to every sequencing group to re-derive one cohort-constant answer.
-            design_key, _ = stage_support.exome_design_bed()
-            off_design = off_design_sites.off_design_bed(inputs)
+            # The design BED itself is never localised. Only the committed 167-line
+            # subtraction of it is, which saves moving 5.5Mb of vendor intervals to every
+            # sequencing group to re-derive one design-constant answer.
+            design_key = stage_support.exome_design_bed()
+            off_design_bed = b.read_input(off_design.resource_path(design_key))
             merge_posthoc = _merge_posthoc_commands(
                 str(posthoc_gvcf),
                 str(sites_bed),
-                str(off_design),
+                str(off_design_bed),
                 design_key,
                 cpu,
             )

@@ -39,10 +39,9 @@ To run part of the branch only, restrict the graph:
 only_stages = ["FilterAndConvertGvcfsForRbceq2", "GenotypeBloodGroupsWithRbceq2"]
 ```
 
-Sequencing groups without a gVCF are skipped, not failed. Exome runs get two extra stages,
-`PosthocGenotypeOffTargetSites` per sequencing group and `SelectOffDesignDefiningSites` once per
-run, and an exome `only_stages` list has to name both alongside the conversion stage; genome
-runs are unaffected by either.
+Sequencing groups without a gVCF are skipped, not failed. Exome runs get one extra stage,
+`PosthocGenotypeOffTargetSites` per sequencing group, and an exome `only_stages` list has to
+name it alongside the conversion stage; genome runs are unaffected.
 
 ### An exome run must name its capture design
 
@@ -53,19 +52,21 @@ that was. Set `exome_design_bed` to the BED the cohort's gVCFs were called again
 [workflow]
 input_cohorts = ['COH123']
 sequencing_type = 'exome'
-
-[workflow.select_off_design_defining_sites]
 exome_design_bed = 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'
 ```
 
 [`exome_example_config.toml`](src/popgen_rbceq2/config/exome_example_config.toml) is a complete
 example for a CREv2 cohort, with a placeholder cohort ID.
 
-The value is a key into the `[references]` config section, the same mechanism the pipeline uses
-for the reference fasta. It is deliberately not defaulted: every default is the wrong design for
-some cohort, and a wrong design does not fail, it just recovers the wrong set of sites. An exome
-run that omits the key fails while the stage graph is built, before any job starts. Genome runs
-never read it.
+The value is the design's key in the [references](https://github.com/populationgenomics/references)
+repo, but the pipeline never opens the design BED. It selects a committed resource instead: the
+defining sites outside that design, `resources/bg_off_design_sites.<key>.<genome>.bed`,
+subtracted once per design with `bedtools` by
+[`scripts/gen_off_design_sites.py`](src/popgen_rbceq2/scripts/gen_off_design_sites.py) (see
+[committed resources](#committed-resources)). The key is deliberately not defaulted: every default
+is the wrong design for some cohort, and a wrong design does not fail, it just recovers the wrong
+set of sites. An exome run that omits the key, or names a design with no committed subtraction,
+fails while the stage graph is built, before any job starts. Genome runs never read it.
 
 The design is also a segment of every exome output path, directly under the release:
 `.../rbceq2_<tool>_<release>/<design key>/<stage>/...`. cpg-flow reuses a stage whose outputs
@@ -82,9 +83,17 @@ The keys for the designs seen so far, so you do not have to open the
 | Twist Comprehensive Exome + VCGS custom content | `twist_vcgs_custom_exome_covered_targets_bed` | `Twist_VCGS_Exome_Covered_Targets_hg38.bed` |
 | Agilent SureSelect Clinical Research Exome v2 | `agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed` | `S30409818_Covered.bed` |
 
-These are the mackenzie designs, and the only two the recall has been run against end to end.
-Other vendor panels are in the same `exome_probesets_hg38` section of the references repo, under
-the same naming convention.
+These are the mackenzie designs, the only two the recall has been run against end to end, and
+the only two with a committed subtraction. Other vendor panels are in the same
+`exome_probesets_hg38` section of the references repo, under the same naming convention; for a
+cohort on one of them, run the generator with its key and the BED's `gs://` path and commit the
+two files it writes:
+
+```commandline
+uv run python -m popgen_rbceq2.scripts.gen_off_design_sites \
+    exome_probesets_hg38/<design>_bed gs://cpg-common-main/references/exome-probesets/hg38/<file>.bed \
+    GRCh38 src/popgen_rbceq2/resources
+```
 
 **Where a vendor ships both, take `Covered`, not `Regions`.** They are different files: `Regions`
 is the intervals the design aims at, `Covered` is the footprint the probes actually reach, and
@@ -195,13 +204,6 @@ The output gVCF goes to tmp and registers no Metamist Analysis. It is an interme
 conversion stage consumes through the cpg-flow graph, and what a reader needs — that a call
 rests on a recovered site — reaches Metamist as a `POSTHOC` flag on the QC TSV instead.
 
-### `SelectOffDesignDefiningSites` (once per run, exomes only)
-
-Subtract the configured capture design's intervals from the committed defining sites with
-`bedtools intersect -v`, giving the sites the post-hoc calls may fill. Both the merge in the
-conversion stage and the QC read this one BED; the section on merging below says why the
-subtraction lives here and not in the per-sample job.
-
 ### `FilterAndConvertGvcfsForRbceq2` (per sequencing group)
 
 Convert a gVCF into a VCF rbceq2 can read, using `bcftools`. This is the only stage that reads
@@ -230,8 +232,8 @@ tests pass:
 1. **The DRAGEN gVCF has no record covering the site.** Judged per sample from the gVCF itself,
    never from capture metadata, so a design BED that misdescribes a sample's real footprint
    cannot overwrite a DRAGEN call or hide a hole. DRAGEN wins wherever both speak.
-2. **The site lies outside the cohort's capture design**, subtracted once per run by
-   `SelectOffDesignDefiningSites` from the design named by `exome_design_bed`. See
+2. **The site lies outside the cohort's capture design**, read from the committed subtraction
+   for the design named by `exome_design_bed`. See
    [naming the capture design](#an-exome-run-must-name-its-capture-design) for the key, the
    values, and why a wrong one fails the job rather than quietly under-filling.
 
@@ -244,12 +246,12 @@ can reach an in-design hole beside it: the merge drops a post-hoc *variant* that
 QC, handed the same off-design BED, disregards a post-hoc *reference block* there.
 
 The two tests are two subtractions, and they run in different places for a reason. Taking the
-design's intervals out of the defining sites depends on nothing about any sample, so
-`SelectOffDesignDefiningSites` does it **once per run**, in `bedtools intersect -v`: a standard
-tool built for exactly this operation, which is easier to read and maintain than the
-hand-written awk containment loop it replaced. Taking the DRAGEN records' spans out of what is
-left is per sample by nature, so it stays in awk inside the conversion job, whose image has
-no bedtools.
+design's intervals out of the defining sites depends on nothing about any sample, or any run:
+only on two fixed files. So it is done **once per design**, by `scripts/gen_off_design_sites.py`
+in `bedtools intersect -v`, a standard tool built for exactly this operation, and the result is
+committed under `resources/` beside the sites it was subtracted from. Taking the DRAGEN records'
+spans out of what is left is per sample by nature, so it stays in awk inside the conversion job,
+whose image has no bedtools.
 
 The sites the first subtraction keeps and the second drops are the off-design sites DRAGEN
 *did* cover. Where the covering record is a reference block the job fails, because blocks stop
@@ -546,6 +548,8 @@ runtime, so a run is reproducible against a known database version:
 | `bg_defining_sites.<genome>.bed` | the allele-defining coordinates |
 | `bg_defining_sites_padded.<genome>.bed` | merged ±250bp around those, the post-hoc caller's intervals |
 | `bg_site_systems.<genome>.tsv` | `chrom/pos/ref/alt/kind/system` rows |
+| `bg_off_design_sites.<design>.<genome>.bed` | the defining sites outside one exome capture design, one file per design |
+| `bg_off_design_sites.manifest.tsv` | what each off-design BED was built from: the design's path and MD5, the sites BED's MD5, the counts, the bedtools version |
 
 When you bump the rbceq2 image, bump `RBCEQ2_VERSION` in
 [`constants.py`](src/popgen_rbceq2/constants.py) and regenerate all four with
@@ -553,6 +557,14 @@ When you bump the rbceq2 image, bump `RBCEQ2_VERSION` in
 `db.tsv` from that same version. One parse writes all four, so they always cover the same
 sites. A build with no committed resources for the configured reference fails at graph
 construction rather than per sequencing group.
+
+The off-design BEDs are derived from the defining sites in turn, by
+[`scripts/gen_off_design_sites.py`](src/popgen_rbceq2/scripts/gen_off_design_sites.py), one run
+per design (the command is under [naming the capture design](#an-exome-run-must-name-its-capture-design)).
+Whenever the defining sites are regenerated, re-run it for every design in the manifest: the
+manifest records the MD5 of the sites BED each subtraction came from, and both the test suite
+and the graph build refuse a subtraction whose sites are not the shipped ones, so a stale file
+is a red suite, never a wrong fill.
 
 The padded BED is built from the same non-SV sites the QC assesses, so a site the QC checks is
 always one the post-hoc caller could reach. Its ±250bp comes from the exome coverage analysis:

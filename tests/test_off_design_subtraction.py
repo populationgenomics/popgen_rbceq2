@@ -1,8 +1,8 @@
-"""bedtools' interval semantics, where SelectOffDesignDefiningSites depends on them.
+"""bedtools' interval semantics, where the committed off-design sites depend on them.
 
-The stage is one `bedtools intersect -v` over a vendor capture BED, so what has to hold is not
-our arithmetic but bedtools' agreement with the BED convention the committed defining sites are
-written in. Three properties carry the stage:
+`scripts/gen_off_design_sites.py` is one `bedtools intersect -v` over a vendor capture BED, so
+what has to hold is not our arithmetic but bedtools' agreement with the BED convention the
+committed defining sites are written in. Three properties carry the resources it writes:
 
 - **half-open intervals.** A design row `chr1 999 1100` targets 1-based bases 1000 to 1100. A
   site one base outside either end is off-design and eligible to be filled; the two ends are
@@ -15,10 +15,11 @@ written in. Three properties carry the stage:
 These were the awk's properties before the subtraction moved, and they are re-asserted here
 against the tool that replaced it rather than assumed to carry over.
 
-Skipped where bedtools is not installed, which includes CI: the pinned image carries it and the
-driver image does not. Every case here was also run against the pinned
-`cpg-common/images/bedtools:2.30.0-1` and passes there, and its subtraction of the real Twist
-design was diffed identical to the awk's over all 1,625 committed sites.
+Skipped where bedtools is not installed; CI installs it. Every case here was also run against
+`cpg-common/images/bedtools:2.30.0-1` and passes there, and the subtraction of the real Twist
+design was diffed identical to the awk's over all 1,625 committed sites. The committed
+resources themselves, and the manifest that ties them to the sites BED, are covered in
+test_off_design_resources.
 """
 
 import shutil
@@ -27,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from popgen_rbceq2.stages.blood_group_genotyping.off_design_sites import _subtraction_commands
+from popgen_rbceq2.off_design import subtraction_commands
 
 pytestmark = [
     pytest.mark.fast,
@@ -41,12 +42,12 @@ def _sites_bed(sites: list[tuple[str, int]]) -> str:
 
 
 def _subtract(tmp_path: Path, design: str, sites: list[tuple[str, int]]) -> subprocess.CompletedProcess[str]:
-    """Run the stage's own subtraction command, verbatim, under real bedtools."""
+    """Run the generator's own subtraction command, verbatim, under real bedtools."""
     design_bed = tmp_path / 'design.bed'
     design_bed.write_text(design)
     sites_bed = tmp_path / 'sites.bed'
     sites_bed.write_text(_sites_bed(sites))
-    script = 'set -euo pipefail\n' + _subtraction_commands(
+    script = 'set -euo pipefail\n' + subtraction_commands(
         str(sites_bed),
         str(design_bed),
         str(tmp_path / 'off_design.bed'),
@@ -57,7 +58,7 @@ def _subtract(tmp_path: Path, design: str, sites: list[tuple[str, int]]) -> subp
 
 
 def _off_design(tmp_path: Path, design: str, sites: list[tuple[str, int]]) -> list[tuple[str, int]]:
-    """Run the stage's subtraction and return the sites it reports as off-design."""
+    """Run the subtraction and return the sites it reports as off-design."""
     result = _subtract(tmp_path, design, sites)
     assert result.returncode == 0, result.stderr
     lines = (tmp_path / 'off_design.bed').read_text().splitlines()
@@ -123,7 +124,7 @@ def test_a_design_row_with_end_not_greater_than_start_fails_the_subtraction(tmp_
     # BED is half-open, so such a row describes no bases, but bedtools treats it as covering
     # the base at its coordinate and the one before: probed here, the zero-length row at 1005
     # would otherwise make the site at 1005 in-design and leave its hole NOCOV. The awk this
-    # stage replaced ignored such rows. Neither real design has one, so the stage refuses the
+    # replaced ignored such rows. Neither real design has one, so the generator refuses the
     # file rather than choosing a meaning for a malformed row.
     design = 'chr1\t999\t1100\nchr1\t1004\t1004\nchr1\t3000\t2990\n'
 

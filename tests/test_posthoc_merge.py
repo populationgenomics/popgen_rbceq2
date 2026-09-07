@@ -9,8 +9,8 @@ post-hoc record over a site DRAGEN had called, or leave a real hole unfilled.
 The program is run twice per sample, over the same covered-spans BED both times: once against
 the off-design defining sites, to find which of them may be filled, and once against every
 defining site, to count the holes. It no longer sees a vendor capture BED — subtracting the
-capture design is `SelectOffDesignDefiningSites`' job, once per run, in bedtools; see
-test_off_design_subtraction.
+capture design is `scripts/gen_off_design_sites.py`'s job, once per design, in bedtools, and
+the result is committed under resources/; see test_off_design_subtraction.
 
 No bcftools here, so nothing in this file needs an image or a cloud: the covered-spans BED is
 rendered from `GvcfRecord`s using the same `%CHROM/%POS0/%END` fields bcftools would write.

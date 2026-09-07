@@ -170,11 +170,13 @@ def _package_file(subdirectory: str, name: str, missing_hint: str) -> Traversabl
     return resource
 
 
-def blood_group_resource(name: str) -> str:
+def blood_group_resource(name: str, missing_hint: str | None = None) -> str:
     """Resolve a committed blood-group site resource to a path.
 
     Args:
         name: Resource filename, e.g. `bg_regions.GRCh38.bed`.
+        missing_hint: What the error should tell the reader to do if the file is not shipped.
+            Defaults to regenerating the `bg_*.<genome>.*` set from the rbceq2 database.
 
     Returns:
         The absolute path to the shipped resource.
@@ -187,8 +189,11 @@ def blood_group_resource(name: str) -> str:
         _package_file(
             'resources',
             name,
-            'Generate it with scripts/gen_bg_resources.py against the db.tsv from the pinned '
-            'rbceq2 image, and commit it under resources/.',
+            missing_hint
+            or (
+                'Generate it with scripts/gen_bg_resources.py against the db.tsv from the pinned '
+                'rbceq2 image, and commit it under resources/.'
+            ),
         ),
     )
 
@@ -210,42 +215,40 @@ def job_script(name: str) -> str:
     return str(_package_file('jobs', name, 'Stages may only run a script committed to jobs/.'))
 
 
-# The stage config key naming the capture design an exome cohort was called against, as a key
-# into the `[references]` section, e.g.
+# The `[workflow]` key naming the capture design an exome cohort was called against, spelled as
+# the design's key in the references repo, e.g.
 # `exome_probesets_hg38/agilent_sureselect_clinical_research_exome_v2_covered_by_probes_bed`.
-# Required for an exome run; a genome run never reads it.
+# Required for an exome run; a genome run never reads it. The pipeline does not resolve it to
+# the vendor BED: it selects the committed subtraction of that BED from the defining sites
+# (`off_design.resource_path`), and is a segment of every exome output path (`_release_tree`).
 EXOME_DESIGN_KEY = 'exome_design_bed'
-# The config section the key is read from: SelectOffDesignDefiningSites' section, since that
-# stage is the one that turns the design into the sites the fill may reach. Spelled out here
-# rather than derived from the class, because the release tree below needs the design before
-# any stage module is importable; test_output_namespacing holds the two together.
-DESIGN_CONFIG_SECTION = 'select_off_design_defining_sites'
 # The fully-qualified path, for the error messages that have to name it.
-DESIGN_CONFIG_PATH = f'workflow.{DESIGN_CONFIG_SECTION}.{EXOME_DESIGN_KEY}'
+DESIGN_CONFIG_PATH = f'workflow.{EXOME_DESIGN_KEY}'
 
 
-def exome_design_bed() -> tuple[str, str]:
-    """The reference key and path of the capture design BED an exome run fills holes outside of.
+def exome_design_bed() -> str:
+    """The key of the capture design an exome run fills holes outside of.
 
     Read at graph-build time, so a run missing it fails before a job starts rather than on the
-    first exome sequencing group's merge.
+    first exome sequencing group's merge. Whether a subtraction is committed for the key is
+    checked where it is read, in `off_design.resource_path`.
 
     Returns:
-        The `[references]` key as configured, and the path it resolves to.
+        The design key as configured.
 
     Raises:
-        cpg_utils.config.ConfigError: The key is not set, or names no reference.
+        cpg_utils.config.ConfigError: The key is not set.
     """
     try:
-        key = cpg_utils.config.config_retrieve(['workflow', DESIGN_CONFIG_SECTION, EXOME_DESIGN_KEY])
+        return cpg_utils.config.config_retrieve(['workflow', EXOME_DESIGN_KEY])
     except cpg_utils.config.ConfigError as e:
         raise cpg_utils.config.ConfigError(
-            f'An exome run needs {DESIGN_CONFIG_PATH}: the [references] key of the capture design '
+            f'An exome run needs {DESIGN_CONFIG_PATH}: the references-repo key of the capture design '
             'BED the gVCFs were called against, e.g. '
             "'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'. Post-hoc calls "
-            'fill defining sites only outside that design.'
+            'fill defining sites only outside that design, and the sites outside each known design '
+            'are committed under resources/.'
         ) from e
-    return key, cpg_utils.config.reference_path(key)
 
 
 def design_segment(design_key: str) -> str:
@@ -278,16 +281,16 @@ def _release_tree(stage_name: str) -> str:
     genotypes rbceq2 calls from it, the QC flags and the cohort tables. None of those stages
     reads the design itself, so none could put it in its own path, and the release segment
     cannot see a config change. Repointing EXOME_DESIGN_KEY inside one release would otherwise
-    rebuild the run-level site subtraction and then reuse every sample's outputs from the old
-    design without a word in any log. With the design in the tree, repointing it starts a
-    fresh tree for the whole run. A genome run never reads the key, so its tree is unchanged.
+    select the other design's committed off-design sites and then reuse every sample's outputs
+    from the old design without a word in any log. With the design in the tree, repointing it
+    starts a fresh tree for the whole run. A genome run never reads the key, so its tree is
+    unchanged.
     """
     pinned = cpg_utils.config.config_retrieve(['workflow', 'output_versions', stage_name], None)
     release = pinned or cpg_utils.config.config_retrieve(['workflow', 'version'], 'v1')
     tree = f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_{release}'
     if cpg_utils.config.config_retrieve(['workflow', 'sequencing_type']) == constants.EXOME:
-        design_key, _ = exome_design_bed()
-        tree = f'{tree}/{design_segment(design_key)}'
+        tree = f'{tree}/{design_segment(exome_design_bed())}'
     return tree
 
 
@@ -309,31 +312,6 @@ def get_output_prefix(cohort: cpg_flow.targets.Cohort, stage_name: str, category
         / _release_tree(stage_name)
         / stage_name
         / cohort.id
-    )
-
-
-def get_multicohort_output_prefix(
-    multicohort: cpg_flow.targets.MultiCohort,
-    stage_name: str,
-    category: str | None = None,
-) -> cpg_utils.Path:
-    """Standardised output prefix for MultiCohortStage outputs.
-
-    Format: multicohort.analysis_dataset.prefix() / workflow.name / <release tree> / stage_name
-
-    No target segment, unlike the cohort and sequencing-group prefixes. A MultiCohortStage runs
-    once for the whole workflow run, and its target's name is either the analysis dataset or a
-    hash of the input cohorts — neither of which describes what the output depends on. A stage
-    whose output varies with something other than the release tree must put that in its own
-    filename.
-
-    See get_output_prefix and _release_tree for what the release tree's segments mean.
-    """
-    return (
-        multicohort.analysis_dataset.prefix(category=category)
-        / cpg_flow.workflow.get_workflow().name
-        / _release_tree(stage_name)
-        / stage_name
     )
 
 

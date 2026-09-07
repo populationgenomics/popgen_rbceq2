@@ -50,7 +50,7 @@ VCF, and the QC flags any call resting on a post-hoc record so it can never pass
 ```
 sequencing_group.cram ──> PosthocGenotypeOffTargetSites ──> <sg>.posthoc.g.vcf.gz
                                                                   │
-exome_design_bed ──> SelectOffDesignDefiningSites ──> off-design defining sites (once per run)
+exome_design_bed ──> resources/bg_off_design_sites.<design>.bed (committed, once per design)
                                                                   │
 sequencing_group.gvcf ──> FilterAndConvertGvcfsForRbceq2 <────────┘
                              (merge: DRAGEN wins; only off-design holes are filled;
@@ -122,18 +122,21 @@ kept for the hole it was selected for, and is then the only record at the in-des
 `FlagBloodGroupCallQc` reads the same off-design BED and counts a post-hoc record only at
 a site in it, so the QC reports that hole `NOCOV` (§5).
 
-The design is named by `exome_design_bed` in `SelectOffDesignDefiningSites`' config
-section, as a `[references]` key resolved through `reference_path`. It is deliberately not
-defaulted: every default is the wrong design for some cohort, and being wrong is silent
-rather than fatal, so an exome run that does not name one fails while the graph is built.
+The design is named by `workflow.exome_design_bed`, spelled as the design's key in the
+references repo. It is deliberately not defaulted: every default is the wrong design for some
+cohort, and being wrong is silent rather than fatal, so an exome run that does not name one
+fails while the graph is built.
 
-That subtraction is its own **run-level** stage, not a step in the conversion job, because
-its answer depends only on the configured design and the committed sites. It is done in
+The pipeline never opens the design. Its subtraction from the defining sites depends only on
+two fixed files, so it is a **committed resource**, `resources/bg_off_design_sites.<design>.
+<genome>.bed`, written once per design by `scripts/gen_off_design_sites.py` in
 `bedtools intersect -v`, a standard tool for exactly this operation, rather than the
-hand-written awk containment loop it replaced (§10). The design key is a segment of every
-exome output path, directly under the release (§7): the release segment cannot see a config
-change, and every output from the conversion onward is built from the holes the design
-leaves, so a repointed key must not reuse any of them, not only the BED.
+hand-written awk containment loop it replaced (§10). `off_design.resource_path` resolves the
+file for the configured key at graph build, and refuses a key with no committed file, or a
+file whose manifest row was built from other defining sites than the shipped ones (§9.5). The
+design key is also a segment of every exome output path, directly under the release (§7): the
+release segment cannot see a config change, and every output from the conversion onward is
+built from the holes the design leaves, so a repointed key must not reuse any of them.
 
 **The configured design is checked against the gVCF.** DRAGEN emits reference blocks over
 exactly the target BED with no padding, so a DRAGEN reference block reaching a defining
@@ -157,7 +160,7 @@ Mechanically, as implemented:
    asks whether the *variant* overlaps and drops a deletion anchored on the site itself,
    which would make a covered site look like a hole.
 3. Subtract the covered spans from the run's off-design sites to get what may be filled.
-   The off-design set arrives from `SelectOffDesignDefiningSites` and is not recomputed
+   The off-design set is the committed resource for the design and is not recomputed
    here; this subtraction is the awk one, over a few hundred spans (see §10). Separately,
    the off-design sites inside a DRAGEN *reference block*
    (`bcftools query -T <off_design.bed> --targets-overlap 1 -i 'INFO/END!="."'`) must be
@@ -286,16 +289,13 @@ moot — new tree, no stale files).
 PosthocGenotypeOffTargetSites = stage_support.wire(
     posthoc_genotype.PosthocGenotypeOffTargetSites,
 )  # reads sequencing_group.cram directly; no requires, no Metamist Analysis
-SelectOffDesignDefiningSites = stage_support.wire(
-    off_design_sites.SelectOffDesignDefiningSites,
-)  # run-level; the defining sites outside the configured design
 FilterAndConvertGvcfsForRbceq2 = stage_support.wire(
     filter_and_convert.FilterAndConvertGvcfsForRbceq2,
-    requires=[PosthocGenotypeOffTargetSites, SelectOffDesignDefiningSites],
-)
+    requires=[PosthocGenotypeOffTargetSites],
+)  # also reads the committed off-design BED for the configured design (off_design.resource_path)
 FlagBloodGroupCallQc = stage_support.wire(
     call_qc.FlagBloodGroupCallQc,
-    requires=[FilterAndConvertGvcfsForRbceq2, GenotypeBloodGroupsWithRbceq2, SelectOffDesignDefiningSites],
+    requires=[FilterAndConvertGvcfsForRbceq2, GenotypeBloodGroupsWithRbceq2],
     ...
 )  # the QC reads the same off-design BED the merge filled from (§5)
 ```
@@ -319,9 +319,13 @@ New config sections, following the class-name convention:
 cpu = 2
 memory = "standard"   # or "highmem"; lowmem is refused, the JVM heap is sized from the tier
 storage = "20Gi"      # streams the CRAM; disk is for the ~3Gb reference and a tiny gVCF
+```
 
-[workflow.select_off_design_defining_sites]
-exome_design_bed = 'exome_probesets_hg38/<design>'   # [references] key; required for an exome, no default
+And one `[workflow]` key, required for an exome run and never read by a genome one:
+
+```toml
+[workflow]
+exome_design_bed = 'exome_probesets_hg38/<design>'   # references-repo key; selects the committed subtraction
 ```
 
 ## 7. Versioning
@@ -347,8 +351,8 @@ genotype tables used no recovered allele.
 An exome run's tree has one more segment than a genome run's, the configured design:
 `rbceq2_<tool>_<release>/<design key>/<stage>/...`. cpg_flow reuses a stage whose expected
 outputs exist and asks nothing about how they were made, and the release segment cannot see a
-config change. The first draft put the design only in the run-level subtraction's own path,
-which let a repointed key rebuild that BED and then reuse every sample's conversion, genotypes
+config change. The first draft put the design only in the output path of the subtraction,
+then a stage, which let a repointed key rebuild that BED and then reuse every sample's conversion, genotypes
 and QC from the old design, silently. Putting it under the release moves the whole run
 instead. A genome run never reads the key and its tree is unchanged, so genome outputs stay
 where v4 put them; the v4 CREv2 re-run in RESULTS.md predates the design segment and sits
@@ -365,20 +369,22 @@ directly under `rbceq2_2_4_3_v4`.
 | `scripts/gen_bg_resources.py` + `scripts/bg_db.py` | write `bg_defining_sites_padded.<genome>.bed` |
 | `resources/` | the new committed BED: 199 intervals, 135,579 bases |
 | `config/popgen_rbceq2_default_config.toml` | new stage section; `version = 'v4'` |
-| `stages/blood_group_genotyping/off_design_sites.py` | new stage: the run-level design subtraction |
+| `off_design.py` + `scripts/gen_off_design_sites.py` | the design subtraction as a committed resource: the generator, the manifest, and the graph-build resolver |
+| `resources/` | `bg_off_design_sites.<design>.<genome>.bed` for Twist and CREv2, and `bg_off_design_sites.manifest.tsv` |
 | `config/config_template.toml` | the required `exome_design_bed` key, with how to pick it |
 | `constants.py` | `GATK_VERSION`, `GATK_IMAGE_TAG`, `POSTHOC_CALLER` |
-| `stage_support.py` | the design key, its config section and `exome_design_bed()`; an exome run's release tree gains the design as a segment |
+| `stage_support.py` | the design key and `exome_design_bed()`; an exome run's release tree gains the design as a segment |
 | README / PRODUCT.md / GLOSSARY.md | document `POSTHOC`, the stage, and the fill rule |
 | `tests/test_posthoc_merge.py` | new: runs the real awk against `GvcfRecord.covers` |
 | `tests/test_exome_design_gate.py` | new: the design key is required, resolved and enforced |
+| `tests/test_off_design_subtraction.py` + `tests/test_off_design_resources.py` | new: bedtools' interval semantics under the generator's shell; the committed resources match their manifest and the shipped sites |
 | `tests/test_posthoc_trespass.py` | new: runs the real merge shell under real bcftools |
 | `tests/test_posthoc_heap.py` | new: the JVM heap tracks the configured memory tier |
 | tests | QC flag logic, severity, extract parsing, exome gating, resource generation |
 
 The reference *fasta* needed no new key — see §9.1. The capture design does: an exome run
-sets `workflow.select_off_design_defining_sites.exome_design_bed` to a `[references]`
-key, which is resolved with `reference_path` like every other reference.
+sets `workflow.exome_design_bed` to the design's references-repo key, which selects the
+committed subtraction for that design rather than being resolved to the vendor BED.
 
 ## 9. Resolved questions
 
@@ -395,25 +401,28 @@ key, which is resolved with `reference_path` like every other reference.
    stop at. Noted in PRODUCT.md as resting on an untested assumption: that a genome
    `NOCOV` site is unmappable rather than merely uncalled.
 
-5. **`SelectOffDesignDefiningSites` is a MultiCohortStage, not a CohortStage.** cpg_flow
-   builds one `MultiCohort` object on every run from the `input_cohorts` list in config and
-   drives every stage from it: a CohortStage runs once per cohort inside it, a
-   SequencingGroupStage once per sequencing group inside it, and a MultiCohortStage once for
-   the object itself. With one cohort listed, all three run once. The difference is how the
-   consumer reads the result back. A stage's output is filed under the id of the target it
-   ran for, and a consumer has to name that target to read it. The consumer here,
-   `FilterAndConvertGvcfsForRbceq2`, runs for one sequencing group at a time. To read a
-   MultiCohortStage's output it calls `cpg_flow.inputs.get_multicohort()`, which always
-   returns the run's one `MultiCohort`. To read a CohortStage's output it would need the
-   cohort's id, and a `SequencingGroup` has no link to its cohort (cpg_flow leaves that out
-   because one sequencing group can be in several cohorts). The only route is to fetch the
-   `MultiCohort` anyway, list its cohorts, and pick one, which is correct only if the run has
-   exactly one cohort. Enforcing that would work, but it adds a restriction and an extra
-   lookup to reach the same one file per run that a MultiCohortStage gives for free. One
-   file per run also matches the config: `exome_design_bed` is one value for the whole run.
-   If designs ever need to differ within a run, the config key has to become per-cohort or
-   per-sequencing-group first, and the consumer would then need a way to find its cohort
-   that it does not have today.
+5. **The design subtraction is a committed resource, not a stage.** It was first a
+   MultiCohortStage, `SelectOffDesignDefiningSites`, running `bedtools intersect -v` once per
+   run. MultiCohort rather than Cohort because of how a per-sequencing-group consumer reads a
+   stage's output back: it has to name the target the output was filed under, and
+   `cpg_flow.inputs.get_multicohort()` always returns the run's one `MultiCohort`, whereas a
+   `SequencingGroup` carries no link to its cohort (one can be in several), so a CohortStage's
+   output could only be found by listing the MultiCohort's cohorts and assuming there was
+   one. Both shapes were wrong for the question. The answer depends on nothing about the run,
+   only on the configured design and the committed defining sites, so recomputing it per run
+   bought nothing and cost a stage, a bedtools image in the pipeline, and a lookup question
+   whose honest answer was "the run has one cohort". It is now
+   `resources/bg_off_design_sites.<design>.<genome>.bed`, written once per design by
+   `scripts/gen_off_design_sites.py` and resolved at graph build by `off_design.resource_path`,
+   the way the defining sites it is a subset of already were. The generator keeps the three
+   input checks the stage made (empty design, mismatched contig names, zero-length rows), and
+   both committed files are byte-identical to what the stage wrote for the validation runs.
+   The cost is that derived data in the repo can go stale, which the manifest's `sites_md5`
+   guards: the resolver and the test suite both refuse a subtraction of defining sites that
+   are not the shipped ones, so regenerating the sites without the subtractions is a red suite
+   and a failed graph build, never a wrong fill. A cohort on a design with no committed file
+   fails at graph build naming the generator. `exome_design_bed` moved from the stage's
+   config section to `[workflow]`, there being no stage to own it.
 
 ## 10. What testing changed about the design
 
@@ -459,19 +468,20 @@ Environment facts worth keeping:
 - **The design subtraction moved from a hand-written awk loop to bedtools.** It first ran
   inside every conversion job as an awk containment loop over the vendor BED. `bedtools
   intersect -v` is the standard tool for exactly that operation, so it is easier to read and
-  maintain, and the answer is the same for every sample, so it now runs once per run in its
-  own stage (§4). Three behaviours had to match the awk for the swap to be safe, and all
-  three were checked against the pinned image on both vendor designs in use: half-open
-  interval semantics, skipping `track`/`browser` lines, and ignoring columns past the third.
-  Its output diffed identical to the awk's. One behaviour does not match and is refused
-  instead: a row with end not greater than start, which the awk ignored and bedtools counts as
-  covering a base. Neither design has one, so the stage fails on such a row rather than choose
-  a meaning for it.
+  maintain, and the answer is the same for every sample, so it ran once per run in its own
+  stage, and now runs once per design in `scripts/gen_off_design_sites.py`, committed (§9.5).
+  Three behaviours had to match the awk for the swap to be safe, and all three were checked
+  against `bedtools:2.30.0-1` on both vendor designs in use: half-open interval semantics,
+  skipping `track`/`browser` lines, and ignoring columns past the third. Its output diffed
+  identical to the awk's. One behaviour does not match and is refused instead: a row with end
+  not greater than start, which the awk ignored and bedtools counts as covering a base. Neither
+  design has one, so the generator fails on such a row rather than choose a meaning for it.
 - **bedtools is not in the bcftools image** (`debian:bookworm-slim` plus bcftools binaries
   only), and its awk is **mawk**, not gawk; the remaining awk program was re-run under mawk in
-  that exact image. There *is* a `cpg-common/images/bedtools` at `2.30.0-1`, which is what the
-  run-level stage uses. The per-sample hole-finding stays in awk inside the conversion job
-  (§4) because it is derived from that job's gVCF and the image has no bedtools.
+  that exact image. There *is* a `cpg-common/images/bedtools` at `2.30.0-1`, which the stage
+  used while the subtraction was one; the pipeline pulls no bedtools image now. The per-sample
+  hole-finding stays in awk inside the conversion job (§4) because it is derived from that
+  job's gVCF and the image has no bedtools.
 - **GATK 4.6.2.0 rejects CRAM 3.1** (`CRAM version 3.1 is not supported`). CPG CRAMs are
   3.0, so this is a future trap, not a current one.
 - **The masked reference is safe for these CRAMs.** They were aligned to unmasked hg38;
@@ -489,14 +499,14 @@ together. Moving that half to bedtools would not remove the duplication, only re
 bedtools is a third implementation of containment whose semantics still have to be pinned
 against `covers` by a test, and the covered spans are derived from the gVCF inside a job
 whose image has no bedtools. So the awk stays for hole-finding, and the one subtraction that
-is sample-independent is bedtools' in its own stage (§4).
+is sample-independent is bedtools', run by the generator and committed (§4).
 
 One awk program served both subtractions at first. Containment in a set of `[start, end)`
 spans is the same test whether the spans come from `%POS0\t%END` on DRAGEN records or from a
 vendor capture BED, so `_SITES_OUTSIDE_SPANS_AWK` was run twice rather than written twice.
-That is no longer true of the design half: it is `bedtools intersect -v` in its own
-run-level stage, and the vendor BED's extra columns and `track` header line are bedtools'
-problem now. Both were re-checked against the pinned `bedtools:2.30.0-1` rather than assumed
+That is no longer true of the design half: it is `bedtools intersect -v` in the generator,
+committed once per design, and the vendor BED's extra columns and `track` header line are
+bedtools' problem now. Both were re-checked against `bedtools:2.30.0-1` rather than assumed
 to carry over, and its subtraction of the real Twist design diffed identical to the awk's
 over all 1,625 committed sites. The awk keeps the per-sample half, where its spans always
 come from `bcftools query` and so are three plain columns.

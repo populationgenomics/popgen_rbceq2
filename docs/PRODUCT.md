@@ -62,9 +62,10 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
   per run, not defaulted, and the job fails if a DRAGEN reference block reaches a defining site
   outside it, which only a wrong file can produce; a DRAGEN deletion running off a capture edge
   is a carrier, and the site under it is covered and left unfilled. Which sites the
-  design missed is subtracted once for the whole run, in bedtools, because that answer depends
-  on no individual sample; judging each sample's silence stays per sample, in the conversion
-  job, because it cannot be anything else.
+  design missed is subtracted once per design, in bedtools, and committed with the code,
+  because that answer depends on no sample and no run, only on the design and the committed
+  sites; judging each sample's silence stays per sample, in the conversion job, because it
+  cannot be anything else.
 - **The primary caller wins wherever both speak, and the design bound holds at every site a
   post-hoc record merely reaches.** A record kept for covering a hole is kept whole, so one
   anchored in a hole can extend over a neighbouring defining site it may not fill: one DRAGEN

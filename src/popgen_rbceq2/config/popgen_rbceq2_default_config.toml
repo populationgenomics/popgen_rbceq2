@@ -34,6 +34,19 @@ status_reporter = 'metamist'
 # driver_image =
 # sequencing_type = 'genome'
 # input_cohorts = []
+#
+# An exome run must set `exome_design_bed`: the references-repo key of the capture design BED
+# its gVCFs were called against, e.g.
+# 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'. Post-hoc calls fill only
+# the defining sites that design never targeted; a hole inside it reaches the QC as NOCOV. The
+# sites outside each known design are committed under resources/bg_off_design_sites.*, and the
+# key selects one of them; a key with no committed file fails while the graph is built
+# (scripts/gen_off_design_sites.py adds one).
+#
+# Deliberately not defaulted. Every default is the wrong design for some cohort, and being
+# wrong here is silent: it does not fail, it just fills the wrong set of sites. A run that
+# does not name a design fails while the graph is built. Genome runs never read the key.
+# exome_design_bed =
 
 [references]
 # Build the gVCFs were called against. Selects the committed resources/bg_*.<genome>.* and is
@@ -49,26 +62,6 @@ genome_build = 'GRCh38'
 cpu = 2
 memory = "standard"
 storage = "20Gi"
-
-[workflow.select_off_design_defining_sites]
-# Exome sequencing groups only, and one job for the whole run rather than one per sequencing
-# group: it subtracts the capture design's intervals from the committed defining sites, and
-# that answer depends on nothing about any individual sample.
-#
-# An exome run must set `exome_design_bed` here: the [references] key of the capture design BED
-# its gVCFs were called against, e.g.
-# 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'. Post-hoc calls fill only
-# the defining sites that design never targeted; a hole inside it reaches the QC as NOCOV.
-#
-# Deliberately not defaulted. Every default is the wrong design for some cohort, and being
-# wrong here is silent: it does not fail, it just fills the wrong set of sites. A run that
-# does not name a design fails while the graph is built. Genome runs never read the key.
-#
-# One core is enough: bedtools intersect over a vendor design's ~230k intervals is about 0.1s,
-# and the storage is for the design BED itself, a few Mb.
-cpu = 1
-memory = "lowmem"
-storage = "10Gi"
 
 [workflow.filter_and_convert_gvcfs_for_rbceq2]
 # Sized higher than the other stages: this is the only one that localises the raw gVCF

@@ -29,7 +29,6 @@ def _posthoc_config(shm_tmp_path: Path, stage_section: dict[str, object]) -> Non
             'references': {
                 'genome_build': 'GRCh38',
                 'broad': {'ref_fasta': 'gs://bucket/ref.fasta'},
-                'exome_probesets_hg38': {'twist_vcgs_custom_exome_covered_targets_bed': 'gs://bucket/twist.bed'},
             },
             'workflow': {
                 'name': 'popgen_rbceq2',
@@ -38,10 +37,8 @@ def _posthoc_config(shm_tmp_path: Path, stage_section: dict[str, object]) -> Non
                 'driver_image': 'stub-driver:1.0',
                 'posthoc_genotype_off_target_sites': stage_section,
                 # An exome run's output tree is keyed on its design, so naming where this
-                # stage writes needs one even though the stage never reads the BED itself.
-                stage_support.DESIGN_CONFIG_SECTION: {
-                    stage_support.EXOME_DESIGN_KEY: 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed',
-                },
+                # stage writes needs one even though the stage never reads the design itself.
+                stage_support.EXOME_DESIGN_KEY: 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed',
             },
         },
         shm_tmp_path / 'posthoc-compute.toml',

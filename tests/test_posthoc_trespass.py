@@ -53,9 +53,9 @@ pytestmark = [
 IN_DESIGN = 2005
 OFF_DESIGN = 2000
 SITES_BED = f'chr1\t{OFF_DESIGN - 1}\t{OFF_DESIGN}\nchr1\t{IN_DESIGN - 1}\t{IN_DESIGN}\n'
-# What SelectOffDesignDefiningSites hands this job: the defining sites the design never
+# What the committed off-design resource hands this job: the defining sites the design never
 # targeted, which here is the second one and not the first. The subtraction itself is tested in
-# test_exome_design_gate; this file starts from its result.
+# test_off_design_subtraction; this file starts from its result.
 OFF_DESIGN_BED = f'chr1\t{OFF_DESIGN - 1}\t{OFF_DESIGN}\n'
 # A third site the design did target and DRAGEN still has no record at: the in-design hole the
 # fill must leave alone. Tests that need it pass this in place of SITES_BED; the off-design set

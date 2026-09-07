@@ -20,7 +20,6 @@ from popgen_rbceq2.stages.blood_group_genotyping import (
     combine,
     filter_and_convert,
     genotype,
-    off_design_sites,
     posthoc_genotype,
 )
 from popgen_rbceq2.stages.blood_group_qc import call_qc
@@ -43,18 +42,13 @@ from popgen_rbceq2.stages.blood_group_qc import call_qc
 PosthocGenotypeOffTargetSites: cpg_flow.stage.StageDecorator = stage_support.wire(
     posthoc_genotype.PosthocGenotypeOffTargetSites,
 )
-# Exome only, and runs once for the whole workflow run rather than per sequencing group: the
-# defining sites outside the capture design depend only on the configured design and the
-# committed sites, so every sequencing group's conversion reads the one BED this writes.
-SelectOffDesignDefiningSites: cpg_flow.stage.StageDecorator = stage_support.wire(
-    off_design_sites.SelectOffDesignDefiningSites,
-)
 # Requires the post-hoc stage so an exome's conversion can merge its calls in where the DRAGEN
-# gVCF is silent at a defining site, and the design subtraction that says which sites it may
-# fill. cpg_flow runs the run-level stage before any sequencing group's conversion.
+# gVCF is silent at a defining site. Which sites it may fill, the defining sites outside the
+# configured capture design, is a committed resource selected by the design key
+# (off_design.resource_path), not a stage output.
 FilterAndConvertGvcfsForRbceq2: cpg_flow.stage.StageDecorator = stage_support.wire(
     filter_and_convert.FilterAndConvertGvcfsForRbceq2,
-    requires=[PosthocGenotypeOffTargetSites, SelectOffDesignDefiningSites],
+    requires=[PosthocGenotypeOffTargetSites],
 )
 # Per-SG calls Analysis, output = the geno TSV.
 GenotypeBloodGroupsWithRbceq2: cpg_flow.stage.StageDecorator = stage_support.wire(
@@ -64,13 +58,13 @@ GenotypeBloodGroupsWithRbceq2: cpg_flow.stage.StageDecorator = stage_support.wir
     analysis_keys=['geno'],
     update_analysis_meta=analysis_meta.blood_group_calls,
 )
-# Requires the conversion stage for the DP/GQ extract, the genotyping stage for the columns
-# the QC TSV has to match, and the design subtraction so an exome's QC knows which sites the
-# merge was allowed to fill and disregards a post-hoc record anywhere else. Registers its own
+# Requires the conversion stage for the DP/GQ extract and the genotyping stage for the columns
+# the QC TSV has to match. An exome's QC also reads the same committed off-design sites the
+# merge filled from, so it disregards a post-hoc record anywhere else. Registers its own
 # Analysis, separate from the calls above.
 FlagBloodGroupCallQc: cpg_flow.stage.StageDecorator = stage_support.wire(
     call_qc.FlagBloodGroupCallQc,
-    requires=[FilterAndConvertGvcfsForRbceq2, GenotypeBloodGroupsWithRbceq2, SelectOffDesignDefiningSites],
+    requires=[FilterAndConvertGvcfsForRbceq2, GenotypeBloodGroupsWithRbceq2],
     analysis_type='blood_group_qc',
     analysis_keys=['qc'],
     update_analysis_meta=analysis_meta.call_qc,

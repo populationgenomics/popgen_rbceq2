@@ -1,6 +1,7 @@
 """Concatenates a cohort's per-sequencing-group TSVs into combined cohort TSVs."""
 
 import json
+import logging
 
 import cpg_flow.stage
 import cpg_flow.targets
@@ -9,8 +10,10 @@ import cpg_utils.hail_batch
 import hailtop.batch.job
 
 from popgen_rbceq2 import constants, stage_support
-from popgen_rbceq2.stages.blood_group_genotyping import genotype
+from popgen_rbceq2.stages.blood_group_genotyping import genotype, posthoc_genotype
 from popgen_rbceq2.stages.blood_group_qc import call_qc
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):
@@ -40,6 +43,7 @@ class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):
         cohort: cpg_flow.targets.Cohort,
         inputs: cpg_flow.stage.StageInput,
     ) -> cpg_flow.stage.StageOutput | None:
+        _log_who_gets_the_recall(cohort)
         outputs = self.expected_outputs(cohort)
 
         # Per-SG TSVs from the upstream SequencingGroupStages, restricted to this cohort.
@@ -93,3 +97,39 @@ class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):
         j.command(stage_support.build_python_command('rbceq2_gather_job.py', args))
 
         return self.make_outputs(cohort, data=outputs, jobs=[j])
+
+
+def _log_who_gets_the_recall(cohort: cpg_flow.targets.Cohort) -> None:
+    """Say at graph build which of the cohort's sequencing groups post-hoc calling runs for.
+
+    The recall is gated per sequencing group on having both a CRAM and a gVCF, and a
+    sequencing group that fails the gate is skipped, not failed: its conversion is a plain
+    rename and every off-design site reaches its QC as NOCOV, exactly as before the recall
+    existed. That is the honest per-sample answer, but with nothing said a cohort in which no
+    exome sequencing group had a CRAM registered would go green with the recall silently off,
+    indistinguishable in its logs from one where it ran. So the count is logged once per
+    cohort, and the skipped exome sequencing groups are named.
+
+    Logged from this stage because it is the one that runs once per cohort, rather than from
+    the post-hoc stage's expected_outputs, which cpg_flow calls more than once per sequencing
+    group.
+
+    Args:
+        cohort: The cohort being combined.
+    """
+    sequencing_groups = cohort.get_sequencing_groups(only_active=True)
+    exomes = [sg for sg in sequencing_groups if sg.sequencing_type == constants.EXOME]
+    skipped = [sg.id for sg in exomes if not posthoc_genotype.applies_to(sg)]
+    _LOGGER.info(
+        'post-hoc calling applies to %d of %d sequencing group(s) in cohort %s',
+        len(exomes) - len(skipped),
+        len(sequencing_groups),
+        cohort.id,
+    )
+    if skipped:
+        _LOGGER.warning(
+            'post-hoc calling skipped for %d exome sequencing group(s) with no CRAM or no gVCF registered; '
+            'every off-design defining site will reach their QC as NOCOV: %s',
+            len(skipped),
+            ', '.join(skipped),
+        )
