@@ -201,49 +201,90 @@ Three deterministic edits:
    optional — see §2.3 (`"DEL" == "CNV"` is False; the ALT fallback only fires when
    `SVTYPE` is absent). On sex chromosomes, prefer deriving direction from `CN` relative to
    the sample's **expected ploidy** (§5.6) rather than trusting a diploid-assumed ALT.
-3. **`cnvLength` (<10 kb) policy — resolved (Q1).** Keep a `cnvLength` deletion or
-   duplication only when **no reciprocal Manta record** exists for it (§5.5 rule 1) **and** it has
-   **at least 3 bins** (`BC ≥ 3`); rewrite that record's `FILTER` to `PASS` here, and tag it
-   `INFO/SVSRC=CNV_LOWRES` so the QC (§11) can flag the allele it produces. Drop every other
-   sub-10 kb CNV record. The rewrite is per record, never `--no_filter`, which is global. The
-   evidence: Manta missed one of the two Gerbich 3.6 kb carriers in 100 genomes, and the CNV
-   caller found it on 3 bins (study §11); 1–2-bin records have Manta support in only 45% of cases
-   versus 75–79% for 3–4 bins (study §10).
+3. **`cnvLength` (<10 kb) policy — resolved (Q1).** Sub-10 kb CNV records are not dropped as a
+   class. They go through §5.5's triage like every other record: kept if database-relevant and
+   ≥ 3 bins, yielding to a Manta record describing the same event, FILTER rewritten per record
+   and the original preserved in `INFO/SVFILTER`. Never `--no_filter`. Evidence: Manta missed
+   one of the two Gerbich 3.6 kb deletions in 100 genomes and the CNV caller found it on 3 bins
+   (study §11); 1–2-bin records have Manta support in 45% of cases against 75–79% for 3–4 bins
+   (study §10).
 4. **Karyotype gate on chrX/chrY (§5.6).** Drop, or pass through tagged `SVSRC=CNV_KARYOTYPE`,
    every chrX/chrY CNV record from a sample whose DRAGEN ploidy estimate is not `XX` or `XY`.
 
 `CnvRewriteStats` in the skeleton is the intended QC counter shape (ref-blocks dropped,
 rewritten DEL/DUP, dropped sub-threshold, unresolved).
 
-### 5.5 Merge, with deduplication (Q2 resolved)
+### 5.5 Merge: triage to the database, then one record per event (Q2 resolved)
 `bcftools concat` the three normalised VCFs → sort → bgzip → tabix, into
 `<sg>.rbceq2_input.vcf.gz`. All three must share the same sample column name and `chr`-prefixed
 hg38 contigs (RBCeq2 strips `chr` internally).
 
-**The same deletion must reach rbceq2 once.** rbceq2 keeps one db definition per *record*, not
-per locus, so a deletion present as both a Manta and a CNV record, offset by the CNV caller's
-bin snapping, is matched to two different alleles (GE\*01.-02.01 from the Manta record and
-GE\*01.-03.03 from the CNV copy in the study's synthetic test). 2.4.4's
-`ambiguous_equal_best_sv_evidence` error is the other failure mode; it needs identical
-coordinates plus a GT or FILTER difference, which the two callers never produce together (0 of
-89 shared events in 100 genomes had identical breakpoints), but a record concatenated with a
-copy of itself would trip it. Deduplicate by size band, in this order, before concat:
+**Why the merge has to arbitrate.** rbceq2 keeps one db definition per *record*, not per locus,
+so a deletion present as both a Manta and a CNV record, offset by the CNV caller's bin snapping,
+is matched to two different alleles and the sample is then read as carrying two null alleles.
+The study's synthetic test, drawn:
 
-1. **Under 10 kb: Manta owns it.** Keep every Manta DEL/DUP/INS. Drop a CNV record under 10 kb
-   when a same-direction Manta DEL/DUP overlaps it reciprocally ≥ 0.5. Keep it, PASS-rewritten
-   and tagged, only under §5.4.3's no-partner-and-≥3-bins condition.
-2. **10 kb and over: the CNV caller owns it.** Keep every PASS CNV DEL/DUP. Drop a Manta DEL/DUP
-   of 10 kb or more when a same-direction PASS CNV record overlaps it reciprocally ≥ 0.5; keep it
-   otherwise (5–6 per 50 genomes, none on a target).
-3. **Drop Manta DEL/DUP over 200 kb.** They are whole-arm `DUP:TANDEM` artefacts at recurrent
-   loci (chr3 75–130 Mb in half the cohort); the length gate would reject them, but they are noise.
-4. **Assert no two surviving records share CHROM, POS, END and SVTYPE.** Fail the sample if they do.
+```
+one heterozygous 3.6 kb Gerbich deletion in the sample
+                 |------------------------------|            truth: one event, one allele
 
-Why 10 kb: it is DRAGEN's own `cnvLength` boundary, the CNV caller emits nothing that passes
-below it, and in 100 genomes every event both callers reported fell in 10–50 kb. Why Manta wins
-below it: its breakpoints are exact to `CIPOS` (0–50 bp) where the CNV caller's are bin-snapped by
-0.2–4.6 kb, and the sub-10 kb targets (the seven GE alleles, three A4GALT, the GYP cluster) are
-distinguished from each other only by breakpoint.
+db, seven GE alleles differing only by breakpoint (each 3.6 kb):
+GE*01.-02.04  |------------------------------|
+GE*01.-02.02    |------------------------------|
+GE*01.-02.03          |------------------------------|
+GE*01.-02.01                |------------------------------|
+GE*01.-03.03                  |------------------------------|
+GE*01.-03.02                          |------------------------------|
+GE*01.-03.01                              |------------------------------|
+
+records reaching rbceq2 for that one event:
+Manta   POS exact (CIPOS 0-50)   |------------------------------|   -> best db token: GE*01.-02.01
+CNV     POS bin-snapped +300 bp     |------------------------------| -> best db token: GE*01.-03.03
+
+select_best_per_vcf: "best db definition for THIS RECORD"      x 2 records
+                                                                 = GE*01.-02.01 / GE*01.-03.03
+                                                                 = compound heterozygote, Ge:-2,-3
+one record (either caller) -> one allele -> GE*01.-02.01 / GE*01 heterozygote, correct
+```
+
+The tie error would need the two records to have identical coordinates; they never do. 2.4.4's `ambiguous_equal_best_sv_evidence` error does not catch this: it fires only on
+identical coordinates with conflicting GT or FILTER, which the two callers never produce
+together (0 of 89 shared events in 100 genomes had identical breakpoints). That is a gap in
+rbceq2 worth raising upstream, and until it is closed the merge must guarantee one record per
+event. Empirical basis in `research/sv_cnv_overlap_50_samples.md`.
+
+**Triage, not caller ownership.** The first draft of this resolution gave Manta the sub-10 kb
+band and the CNV caller the rest. The study's read-level check (§11 there) showed Manta missing
+a real 3.6 kb Gerbich deletion that the CNV caller found on 3 bins, so neither caller can own a
+band. Instead:
+
+1. **Restrict both structural VCFs to database-relevant records.** Keep a Manta or CNV record
+   only if it (a) overlaps a db SV definition within rbceq2's own positional and length
+   tolerance (`SvMatcher` defaults; use the same code), or (b) is a **PASS deletion under 1 Mb**
+   spanning any defining SNV/indel site in `bg_site_systems.<genome>.tsv`. Everything else is
+   discarded here, which also removes the whole-arm Manta `DUP:TANDEM` artefacts and, for (b),
+   the megabase karyotype events (§5.6 handles those) and a 126 Mb `MaxDepth` Manta record seen
+   once over AUG and RHAG.
+2. **Keep every surviving record from either caller**, whatever its FILTER, with two edits:
+   a `cnvLength` CNV record is dropped if it has fewer than **3 bins** (`BC < 3`; Manta
+   corroborates 45% of 1–2-bin deletions against 75–79% of 3–4-bin ones), and a surviving
+   non-PASS record has its FILTER rewritten to PASS and the original recorded in
+   `INFO/SVFILTER`. `--no_filter` is never used; it is global.
+3. **Where two surviving records describe one event** (same direction, reciprocal overlap
+   ≥ 0.5), **keep the Manta record.** Its breakpoints are exact to `CIPOS` (0–50 bp) where the
+   CNV caller's are bin-snapped by 0.2–4.6 kb, and the sub-10 kb targets (seven GE alleles,
+   three A4GALT, the GYP cluster) differ from each other only by breakpoint. Record the dropped
+   partner's ID in `INFO/SVPARTNER` so the QC can report that both callers agreed.
+4. **Tag every kept record** with `INFO/SVSRC` (`MANTA`, `CNV`, or `CNV_LOWRES` for a CNV-only
+   record under 10 kb) so the QC (§11) can grade the allele it produces.
+5. **Assert no two surviving records share CHROM, POS, END and SVTYPE.** Fail the sample.
+
+In 150 genomes rule 1(a) kept 0 to 2 records per genome (3 in total: the two Gerbich records
+and the Gerbich CNV-only record) and rule 1(b) another 0 to 3, so the merged file carries a
+handful of structural records, not hundreds. Rule 3 fired only on the Gerbich case, and the only
+allele actually called was the Gerbich deletion. Rule 1(b) is where a new observation sits: a
+recurrent 9–13 kb deletion at chr19:48.69 Mb spanning a FUT2 defining site, in 5 of 150 genomes,
+seen by both callers, matching no db allele. rbceq2 ignores it (§11); the QC must not.
 
 > **Haploid GT beyond SNVs.** The SPEC previously proposed moving `+fixploidy` to the merged VCF.
 > Two facts have changed: haploid GT appeared on 1–2 chrX CNV records per 50 genomes, and 2.4.4
@@ -319,8 +360,8 @@ CNV records' `FILTER`→`PASS` in preprocessing instead (§5.4.3). Leave
   8 kb XK deletion** (non-paralog locus, squarely in Manta's range → the SV VCF supplies it).
   (Recommendation: SV VCF for <10 kb, keep CNV PASS-only; the `cnvLength`→`PASS` rewrite is
   only needed if XK\*N.05 proves weak in the SV VCF — check in concordance, §9.)
-- **Q2 — SV∩CNV overlap → RESOLVED 2026-09-18, reversed.** Deduplicate at merge time by the
-  size-band rules in §5.5. The original recommendation (defer to `select_best_per_vcf`) was
+- **Q2 — SV∩CNV overlap → RESOLVED 2026-09-18, reversed.** Triage both files to database-relevant
+  records and keep one record per event, Manta's where both callers describe it (§5.5). The original recommendation (defer to `select_best_per_vcf`) was
   wrong on two counts: that function keeps one db definition per record, so a duplicated event
   yields two alleles, and 2.4.4 raises on exact-coordinate ties. Empirical basis in
   `research/sv_cnv_overlap_50_samples.md` §§2–5, replicated in §10.
@@ -349,12 +390,12 @@ CNV records' `FILTER`→`PASS` in preprocessing instead (§5.4.3). Leave
   `+fixploidy` to the merged VCF.
 
 **Change list, 2026-09-18 revision** (design PR; the factual refresh of 2026-09-17 was PR #15):
-- §5.4.3 Q1 resolved: keep `cnvLength` records only with no Manta partner and ≥3 bins, PASS-rewritten and tagged.
+- §5.4.3 Q1 resolved: `cnvLength` records are triaged like any other, not dropped as a class; 3-bin floor; per-record FILTER rewrite with the original kept.
 - §5.4.4 and §5.6: karyotype gate on chrX/chrY CNV records for non-XX/XY samples.
-- §5.5 Q2 resolved and reversed: deduplicate by size band at 10 kb before concat; drop Manta >200 kb; assert uniqueness.
+- §5.5 Q2 resolved and reversed: triage both structural VCFs to database-relevant records, keep one record per event with Manta's breakpoints where both callers agree, 3-bin floor for CNV records, assert uniqueness. Raise the per-record-not-per-locus matching upstream.
 - §5.5: no second `+fixploidy`; decide once on the 2.4.4 pin bump.
 - §9: synthetic fixtures shaped like the study's observations; 100-genome concordance scripts. No cohort genome is a fixture.
-- §11 new: QC for structural calls, with `SVNOCOV`, `SVLOWRES`, `SVUNASSESSED`, `KARYOTYPE` flags and thresholds in Analysis meta.
+- §11 new: QC for structural calls, with `SVNOCOV`, `SVLOWRES`, `SVUNASSESSED`, `SVDEL`, `KARYOTYPE` flags and thresholds in Analysis meta; rbceq2 ignores a deletion it cannot match, so the QC must report deletions over defining SNV sites itself.
 
 ---
 
@@ -397,8 +438,8 @@ Based on a small extract from one of OurDNA's five 1000 Genomes (1KG) control re
   (cf. PR #124's SNV divergence table).
 - **Sub-10 kb path, synthetic fixtures shaped like the study's observations (no cohort data in
   the repo):** (a) a Manta DEL record of exactly 3609 bp at the GE\*01.-02.01 coordinates plus a
-  4961 bp `cnvLength` CN=1 CNV record over it → the merge emits the Manta record only and rbceq2
-  calls one GE allele, never two; (b) the CNV record alone, 3 bins → kept, PASS-rewritten, tagged,
+  4961 bp `cnvLength` CN=1 CNV record over it → the merge keeps the Manta record and records the CNV
+  partner, and rbceq2 calls one GE allele, never two; (b) the CNV record alone, 3 bins → kept, PASS-rewritten, tagged,
   and the QC flags the GE call `SVLOWRES`; (c) the same with 2 bins → dropped, GE unassessed.
   The study (§§3, 10, 11) observed both (a) and (b) in real genomes; the fixtures are constructed
   records, not extracts.
@@ -448,10 +489,18 @@ Design:
    - `SVUNASSESSED:<system>`: a sub-10 kb target with no event from either caller. States that
      absence was not assessable, the honest answer until a CRAM-derived depth/MAPQ0 metric exists.
    - `KARYOTYPE:<estimate>`: X-linked systems in a non-XX/XY sample (§5.6).
+   - `SVDEL:<system>(<site>,del=<chrom:pos-end>,src=<caller>,GT=<gt>)`: a kept deletion, matched
+     to a db allele or not, spans a defining SNV/indel site of the system. **rbceq2 does nothing
+     with an unmatched deletion**: a structural record enters its variant pool only under the db
+     token it matched, and the zygosity adjustment that turns a homozygous call inside a
+     deletion into hemizygous (`modify_variant_pool_if_large_indel`) only sees pool entries. So a
+     gVCF `A/A` under a heterozygous deletion that matches no db SV is reported homozygous, the
+     same silent-wrong-call class as absent-means-reference. The QC has to say so, as it already
+     does for a small deletion that removed the base (`DEL`).
    - A structural call that passes everything is not listed, so `PASS` keeps meaning "nothing to
      report".
 3. **Thresholds in Analysis meta**, as `min_depth`/`min_gq` are today: `sv_min_bins = 3`,
-   `sv_recip_overlap = 0.5`, `sv_band_split_bp = 10000`, `sv_manta_max_bp = 200000`.
+   `sv_recip_overlap = 0.5`, `sv_lowres_max_bp = 10000` (the size below which a CNV-only record is graded `CNV_LOWRES`).
 4. **Out of scope for the first cut:** a CRAM-derived assessability metric for sub-10 kb
    targets. The study's read-level check (§11) is the shape it would take (mean depth and
    discordant-pair count over the target), and it costs a CRAM read per sample.
