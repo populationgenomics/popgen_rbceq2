@@ -113,7 +113,7 @@ restrict both structural VCFs to records that overlap a db SV definition or span
 SNV site, keep every survivor with at least 3 bins, and where two records describe one event
 keep Manta's for its exact breakpoints. The observations that drove it: the callers' size bands
 barely overlap (§1–2), the double-matching hazard (§4), a real sub-10 kb deletion only the CNV
-caller reported (§11), and rbceq2's silence on deletions it cannot match to the db (SPEC §11).
+caller reported (§11), and rbceq2's silence on deletions it cannot match to the db (SPEC §6).
 
 ## 6. Sex chromosomes: the concern in §5.6 of the SPEC is confirmed
 
@@ -295,6 +295,6 @@ chr19:48.69 Mb spanning a FUT2 defining site**, in 5 of 150 genomes, reported by
 (Manta 9.3–10.1 kb PASS, CNV 8.5–12.8 kb PASS or `cnvLength`). It matches no db allele. A
 heterozygous whole-FUT2 deletion leaves one FUT2 copy; whatever the gVCF reports at the
 secretor-defining sites is then a single-copy call read as homozygous. rbceq2 does nothing with
-an unmatched deletion, so this is exactly the case the `SVDEL` flag in SPEC §11 exists for. The
+an unmatched deletion, so this is exactly the case the `SVDEL` flag in SPEC §6 exists for. The
 remaining rule-1(b) records were the X0 genome's megabase events (handled by the karyotype gate)
 and one 126 Mb `MaxDepth` Manta record, which is why rule 1(b) is PASS-only and capped at 1 Mb.
