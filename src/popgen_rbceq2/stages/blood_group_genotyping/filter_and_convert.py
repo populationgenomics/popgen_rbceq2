@@ -156,6 +156,35 @@ def _sample_check_commands(posthoc_gvcf: str, gvcf: str) -> str:
     """
 
 
+def _convert_commands(out_vcf: str, cpu: int) -> str:
+    """Shell turning `merged.vcf.gz` into the VCF rbceq2 reads, and indexing it.
+
+    Two things happen and no more. `<NON_REF>` records are dropped, because the symbolic
+    allele breaks rbceq2 and 2.4.4 still lists native gVCFs as unsupported input; and the
+    ALT alleles left unused by the earlier split are trimmed. Genotypes are passed through
+    exactly as DRAGEN called them.
+
+    That last part is the whole point of this helper being separate and tested. A haploid
+    genotype on non-PAR chrX or chrY has to reach rbceq2 as the single token DRAGEN wrote:
+    2.4.4 reads it as one chromosome copy, and rewriting it to a pseudo-diploid `1|1` is
+    what made a hemizygous male null print as a homozygote. See the haploid-encoding section
+    of the README for why the `bcftools +fixploidy` that used to end this pipe is gone, and
+    why a rewrite that reaches only some records is worse than either extreme.
+
+    Args:
+        out_vcf: Path to write the bgzipped converted VCF to. Its `.tbi` goes beside it.
+        cpu: Thread count for the BGZF deflation and for reading it back to index.
+
+    Returns:
+        Shell, indented to sit inside the stage's command block.
+    """
+    return f"""
+            bcftools view \\
+                    -e 'ALT="<NON_REF>"' \\
+                    --trim-alt-alleles --threads {cpu} -Oz -o {out_vcf} merged.vcf.gz
+            bcftools index -t --threads {cpu} {out_vcf}"""
+
+
 def _merge_posthoc_commands(
     posthoc_gvcf: str,
     sites_bed: str,
@@ -419,11 +448,26 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
     delete every variant in the file. After the split only the symbolic-only record
     matches and the real variant survives.
 
-    `bcftools +fixploidy` normalises DRAGEN's true haploid calls (GT="1"/"0") in
-    non-PAR chrX/Y for male samples into pseudo-diploid (GT="1|1" or "0|0"). rbceq2
-    assumes diploid GTs everywhere and crashes on haploid calls at the XK/GATA1/ATP11C
-    blood-group loci (get_ref asserts len(GT) == 3); fixploidy only touches haploid
-    genotypes, leaving already-diploid calls and their phasing untouched.
+    DRAGEN's true haploid calls (GT="1"/"0") on non-PAR chrX/chrY in male samples are
+    passed through as they were called. Up to rbceq2 2.4.3 they could not be: `get_ref`
+    asserted the GT string was three characters long, so a bare "1" crashed the run at the
+    XK/GATA1/ATP11C blood-group loci, and a parameter-free `bcftools +fixploidy` ended this
+    pipe to rewrite them as pseudo-diploid ("1" -> "1|1"). rbceq2 2.4.4, whose release is
+    titled Haploid Encoding, reads a one-token GT directly and scores it as one copy
+    (Zygosity.HEM) wherever it has established that the region has one chromosome copy.
+
+    Dropping `+fixploidy` is a correctness change, not just the removal of dead scaffolding.
+    A hemizygous call diploidised to "1|1" is reported in the genotype TSV as
+    `XK*N.16/XK*N.16`, which no consumer can tell apart from a female homozygote; read
+    natively it is `XK*N.16/-`, which says what was actually observed. The phenotype was
+    unaffected either way, so nothing already released is wrong, only less informative.
+
+    What this stage must not do is diploidise *some* non-PAR chrX/chrY calls and not others.
+    rbceq2 2.4.4 derives one chromosome-copy count per blood group and then refuses any
+    record claiming more copies than that, dropping the whole system to Undetermined with an
+    empty genotype and phenotype rather than mis-rendering it. Passing DRAGEN's calls through
+    untouched is self-consistent by construction; a partial fix-up is the state that silently
+    nulls XK, GATA1 and ATP11C. See the haploid-encoding section of the README.
     """
 
     def expected_outputs(
@@ -515,9 +559,10 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
         #
         # --threads only ever parallelises BGZF (de)compression, so it belongs on the steps
         # that do some: norm decompresses the bgzipped gVCF (the shared pool is attached to
-        # input readers as well as the output, synced_bcf_reader.c bcf_sr_add_hreader),
-        # +fixploidy deflates the -Oz output, and index reads that back. The middle view has
-        # an uncompressed BCF stream on both sides, so a thread count there does nothing.
+        # input readers as well as the output, synced_bcf_reader.c bcf_sr_add_hreader), the
+        # final view deflates the -Oz output, and index reads that back. That view took no
+        # thread count while it wrote an uncompressed BCF stream into `+fixploidy`; now that
+        # it produces the converted VCF itself, it is the step doing the deflation.
         #
         # --targets-overlap 2 is what makes the extract see a reference block that starts
         # before a defining site and spans it. Streamed targets default to `pos`, which
@@ -548,11 +593,7 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
             bcftools query -T {sites_bed} --targets-overlap 2 \\
                 -f '{_EXTRACT_FORMAT}' \\
                 merged.vcf.gz > {j.sites}
-            bcftools view \\
-                    -e 'ALT="<NON_REF>"' \\
-                    --trim-alt-alleles -Ou merged.vcf.gz \\
-                | bcftools +fixploidy --threads {cpu} -Oz -o {out['vcf.gz']} -
-            bcftools index -t --threads {cpu} {out['vcf.gz']}
+{_convert_commands(str(out['vcf.gz']), cpu)}
             """,
         )
         # write_output base drops the suffix; the resource group re-adds .vcf.gz / .vcf.gz.tbi.

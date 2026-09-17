@@ -344,8 +344,49 @@ weaken the check for every cohort: this is the only place the pipeline compares 
 it was handed, and from here a real swap and a stale header look the same. Confirm identity
 with somalier, then fix the input.
 
-Two things to preserve when changing this stage:
+#### Haploid genotypes on the sex chromosomes
 
+DRAGEN calls non-PAR chrX and chrY in a male sample at their real ploidy, writing a one-token
+genotype (`GT=1`, `GT=0`) rather than the pseudo-diploid `1/1` some callers emit. Three
+blood-group loci sit in that territory: XK, GATA1 and ATP11C.
+
+Until rbceq2 2.4.3 those calls could not be passed through. `get_ref` asserted the genotype
+string was three characters long, so a bare `1` crashed the run outright. This pipe therefore
+ended in a parameter-free `bcftools +fixploidy`, which rewrote every haploid genotype as
+`1|1` or `0|0` and left diploid calls alone. It was invoked with no `-s` or `-p` arguments on
+purpose: on chr-prefixed hg38 the plugin's built-in ploidy table, which names unprefixed `X`
+and `Y`, never matches, and the fallback duplicates the allele. A table that did match would
+have kept the call haploid and re-crashed rbceq2.
+
+**rbceq2 2.4.4 reads haploid genotypes natively, and `+fixploidy` is gone.** The release is
+titled Haploid Encoding. A one-token genotype is now scored as one copy wherever rbceq2 has
+established that the region has one chromosome copy, and it establishes that from the calls
+themselves: a sample qualifies as single-copy on a contig only if it emitted at least one
+haploid genotype at a non-PAR coordinate on it, and a bare `.` no-call is explicitly not
+counted as evidence.
+
+Removing the workaround changes what the genotype TSV says. A hemizygous XK null diploidised
+to `1|1` was reported as `XK*N.16/XK*N.16`, which no consumer can distinguish from a female
+homozygote; read natively it is `XK*N.16/-`. **The phenotype is unchanged either way** — both
+encodings resolve to the same allele pair and the same numeric and alphanumeric call — so
+calls already released are not wrong, only less informative than they could have been.
+
+**The one state to avoid is a partial fix-up.** rbceq2 2.4.4 derives a single chromosome-copy
+count per blood group and then refuses any record claiming more copies than that, dropping the
+whole system to Undetermined with an empty genotype *and* an empty phenotype rather than
+mis-rendering it. Passing DRAGEN's calls through untouched is self-consistent by construction.
+Reintroducing a ploidy rewrite that reaches some non-PAR records and not others — a sex file
+that misses samples, a contig-name table that matches only half the time — is what silently
+nulls XK, GATA1 and ATP11C.
+
+PAR is handled by rbceq2 and needs nothing here. XG and CD99 sit inside PAR1, where a male
+sample is genuinely diploid, and rbceq2 declines to treat a PAR coordinate as evidence of a
+single chromosome copy.
+
+Three things to preserve when changing this stage:
+
+- **Do not reintroduce a ploidy rewrite.** See above: from 2.4.4 it buys nothing, and a rewrite
+  that is not exhaustive across non-PAR chrX and chrY converts a correct call into an empty one.
 - **Region restriction is unconditional**, using `resources/bg_regions.<genome>.bed`. This is
   what allows the single pass, and it beats reading the whole genome — minutes rather than the
   best part of an hour. It needs the gVCF `.tbi`, because `bcftools -R` jumps by index. Keep
