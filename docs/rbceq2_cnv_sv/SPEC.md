@@ -2,7 +2,7 @@
 
 **Status:** draft, awaiting design approval; do not implement.
 **Revision:** 17 September 2026. **Author:** Joshua Schmidt. **Reviewers:** (fill in).
-**Reader:** a pipeline engineer who has not worked on the rbceq2 stages.
+**Reader:** everyone!
 **Decision asked of reviewers:** approve the triage rule and karyotype gate in §5 and the thresholds in §8, or say which to change and why.
 **Area:** rbceq2 blood-group genotyping pipeline (`FilterAndConvertGvcfsForRbceq2` to `GenotypeBloodGroupsWithRbceq2` to `CombineRbceq2OutputsPerCohort`), in `popgen_rbceq2`. rbceq2 is pinned at 2.4.3 (`constants.py`); database figures below are from the 2.4.4 release of 2026-09-16, which the pin bump (a separate PR) will adopt.
 **Pull-request references:** the stages were ported from `ourdna_genomic_atlas` in August 2026 and both repos number PRs from 1, so every PR below is written `ourdna_genomic_atlas#n` or `popgen_rbceq2#n`.
@@ -16,7 +16,9 @@
 
 ## 1. Summary
 
-RBCeq2's 2.4.4 database defines 67 non-RH alleles across 20 systems by a single large structural event, and today the pipeline can call none of them, because it feeds RBCeq2 only the SNV gVCF (`research/resolvability_by_input_class.md`). DRAGEN already produces the two structural files needed, a Manta SV VCF and a bin-based CNV VCF, but RBCeq2 reads a single VCF. The design is therefore a per-sequencing-group (SG) preprocessing stage that merges the three files into one. The maintainer's advice with the 2.4.4 release says the same: combine the VCFs so every variant is in one file, and leave `--RH` off because DRAGEN SV/CNV does not reliably detect the RH hybrids.
+RBCeq2's 2.4.4 database defines 67 non-RH alleles across 20 systems by a single large structural event, and today our pipeline does not call any of them, because it feeds RBCeq2 only the SNV gVCF (`research/resolvability_by_input_class.md`). DRAGEN already produces the two structural files needed, a Manta SV VCF and a bin-based CNV VCF, but RBCeq2 reads a single VCF.
+
+The design is therefore a per-sequencing-group (SG) preprocessing stage that merges the three files into one. The maintainer's advice with the 2.4.4 release also suggests to leave `--RH` off because DRAGEN SV/CNV does not reliably detect the RH hybrids.
 
 The merge does three things beyond concatenation. It rewrites DRAGEN's `SVTYPE=CNV` to `DEL` or `DUP`, without which no large deletion matches a database allele. It triages both structural files to records that could match a database allele or that span a defining SNV site, and keeps one record per event, because RBCeq2 matches per record and a deletion seen by both callers would otherwise yield two alleles. It drops or tags chrX and chrY CNV records for samples whose DRAGEN karyotype estimate is not XX or XY.
 
