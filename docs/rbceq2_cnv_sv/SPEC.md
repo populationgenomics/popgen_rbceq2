@@ -1,19 +1,22 @@
 # Design spec: structural-variant support for RBCeq2 blood-group calling
 
 **Status:** draft, awaiting design approval; do not implement.
-**Revision:** 18 September 2026. **Author:** Joshua Schmidt. **Reviewers:** (fill in).
+**Revision:** 17 September 2026. **Author:** Joshua Schmidt. **Reviewers:** (fill in).
 **Reader:** a pipeline engineer who has not worked on the rbceq2 stages.
 **Decision asked of reviewers:** approve the triage rule and karyotype gate in §5 and the thresholds in §8, or say which to change and why.
-**Area:** rbceq2 blood-group genotyping pipeline (`FilterAndConvertGvcfsForRbceq2` to `GenotypeBloodGroupsWithRbceq2` to `CombineRbceq2OutputsPerCohort`), in `popgen_rbceq2`.
+**Area:** rbceq2 blood-group genotyping pipeline (`FilterAndConvertGvcfsForRbceq2` to `GenotypeBloodGroupsWithRbceq2` to `CombineRbceq2OutputsPerCohort`), in `popgen_rbceq2`. rbceq2 is pinned at 2.4.3 (`constants.py`); database figures below are from the 2.4.4 release of 2026-09-16, which the pin bump (a separate PR) will adopt.
+**Pull-request references:** the stages were ported from `ourdna_genomic_atlas` in August 2026 and both repos number PRs from 1, so every PR below is written `ourdna_genomic_atlas#n` or `popgen_rbceq2#n`.
 **Companion docs (same directory):**
 - [`dragen_three_source_merge.md`](./research/dragen_three_source_merge.md): the visual overview and mermaid diagram, read this first for the shape.
-- [`implement_cnv_rbceq2_research.md`](./research/implement_cnv_rbceq2_research.md): the underlying RBCeq2 source analysis this spec rests on.
+- [`implement_cnv_rbceq2_research.md`](./research/implement_cnv_rbceq2_research.md): the underlying RBCeq2 source analysis this spec rests on, read against v2.4.2; where 2.4.4 moved a fact, this spec says so.
+- [`resolvability_by_input_class.md`](./research/resolvability_by_input_class.md): per-system estimate of what the gVCF resolves today and what the merge adds, from the 2.4.4 database.
+- [`sv_cnv_overlap_50_samples.md`](./research/sv_cnv_overlap_50_samples.md): the 150-genome Manta-versus-DRAGEN-CNV study the triage rule and karyotype gate rest on.
 
 ---
 
 ## 1. Summary
 
-RBCeq2 defines about 100 blood-group alleles by structural variants, and today the pipeline sends it none, because it feeds only the SNV gVCF. DRAGEN already produces the two structural files needed, a Manta SV VCF and a bin-based CNV VCF, but RBCeq2 reads a single VCF. The design is therefore a per-sequencing-group (SG) preprocessing stage that merges the three files into one.
+RBCeq2's 2.4.4 database defines 67 non-RH alleles across 20 systems by a single large structural event, and today the pipeline can call none of them, because it feeds RBCeq2 only the SNV gVCF (`research/resolvability_by_input_class.md`). DRAGEN already produces the two structural files needed, a Manta SV VCF and a bin-based CNV VCF, but RBCeq2 reads a single VCF. The design is therefore a per-sequencing-group (SG) preprocessing stage that merges the three files into one. The maintainer's advice with the 2.4.4 release says the same: combine the VCFs so every variant is in one file, and leave `--RH` off because DRAGEN SV/CNV does not reliably detect the RH hybrids.
 
 The merge does three things beyond concatenation. It rewrites DRAGEN's `SVTYPE=CNV` to `DEL` or `DUP`, without which no large deletion matches a database allele. It triages both structural files to records that could match a database allele or that span a defining SNV site, and keeps one record per event, because RBCeq2 matches per record and a deletion seen by both callers would otherwise yield two alleles. It drops or tags chrX and chrY CNV records for samples whose DRAGEN karyotype estimate is not XX or XY.
 
@@ -21,7 +24,7 @@ A new QC design (§6) reports whether the callers assessed each structural targe
 
 The evidence is a 150-genome OurDNA study (`research/sv_cnv_overlap_50_samples.md`). Across those genomes the design calls one structural allele, a Gerbich deletion. The value is correctness on rare alleles and honest QC, not call volume; §10 states the expected outcome and success criteria in those terms.
 
-RBCeq2 is not modified. RH and GYP hybrid alleles stay out of scope on short-read data.
+RBCeq2 is not modified. RH and GYP hybrid alleles stay out of scope on short-read data, and so do exome sequencing groups, which have no DRAGEN structural calls to merge.
 
 ---
 
@@ -33,11 +36,11 @@ RBCeq2 is not modified. RH and GYP hybrid alleles stay out of scope on short-rea
 
 ### 2.2 What the DB encodes
 
-Structural alleles live in the `GRCh37`/`GRCh38` columns of `db.tsv` as word-form tokens `<pos>_<type>_<len>` (for example `143914828_del_110kb`). Token-type totals in the GRCh38 column: 132 DEL, 41 INS, 1 DUP, no `INV`, no `BND`, no literal `<CNV>`. Practical buckets: about 40 true large CNVs (whole-gene or multi-exon del/dup), about 22 hybrid or complex SVs (paired DEL+INS, RH and GYP), about 38 large indels (under about 1 kb). Hybrids are stored as paired tokens, not a single hybrid type. Full annotated list in `implement_cnv_rbceq2_research.md` §3.
+Structural alleles live in the `GRCh37`/`GRCh38` columns of `db.tsv` as word-form tokens `<pos>_<type>_<len>` (for example `143914828_del_110kb`), or as explicit sequences `<pos>_<REFseq>_<ALTseq>` that `parse_db_token` reads as a DEL or INS of `|len(ALT)-len(REF)|`. In the 2.4.4 GRCh38 column there are 74 DEL, 22 INS and 1 DUP word-form tokens, plus 33 DEL and 8 INS sequence-form tokens of 50 bp or more; no `INV`, `BND` or literal `<CNV>`. The RH tokens are bare base counts (`_DEL_59419`) and the GE, PIGG and MAM deletions are spelled as sequences, so the v2.4.2 counts in `implement_cnv_rbceq2_research.md` §3 no longer match. Per allele across the non-RH database: 67 single large events of 1 kb or more, 16 mid indels of 50 bp to 1 kb, 4 GYP hybrids (`resolvability_by_input_class.md`). Hybrids are stored as paired tokens, not a single hybrid type.
 
 ### 2.3 Matching is fuzzy in position and length, but strict on type
 
-`SvMatcher` (`large_variants.py:159-367`) uses adaptive positional and length tolerance and reciprocal-overlap gates, so imprecise breakpoints still match, but `require_same_type=True` by default, so the DB token type must equal the event `SVTYPE`. The symbolic-ALT fallback (`<DEL>`/`<DUP>`) in `SvReader` fires only when `SVTYPE` is absent (`large_variants.py:739`). This single fact is what forces the CNV rewrite in §5.4. RBCeq2 also pre-filters records to within 500 kb of a DB position (`vcf.py:497`).
+`SvMatcher` (`large_variants.py:159-367`) uses adaptive positional and length tolerance and reciprocal-overlap gates, so imprecise breakpoints still match, but `require_same_type=True` by default, so the DB token type must equal the event `SVTYPE`. The symbolic-ALT fallback (`<DEL>`/`<DUP>`) in `SvReader` fires only when `SVTYPE` is absent (`large_variants.py:739` in 2.4.2, `:755-767` in 2.4.4; `SvMatcher.compatible` is unchanged between them). This single fact is what forces the CNV rewrite in §5.4. RBCeq2 also pre-filters records to within 500 kb of a DB position (`vcf.py:497`).
 
 ---
 
@@ -91,12 +94,13 @@ In scope
 - A preprocessing step that (a) produces an SNV sites VCF, (b) normalises the SV VCF, (c) fixes the CNV VCF (drop REF records, rewrite `SVTYPE=CNV` to `DEL`/`DUP`), and (d) merges all three into one sorted, bgzipped, tabixed VCF per SG.
 - Feed the merged VCF into `GenotypeBloodGroupsWithRbceq2` in place of the SNV-only VCF.
 - Per-SG sex and ploidy, read from the DRAGEN ploidy files rather than the header, for CNV direction on chrX/chrY, the karyotype gate (§5.4, §5.6), and the `KARYOTYPE` QC flag (§6).
-- A cross-replicate concordance check over the five OurDNA 1KG control SGs.
+- A cross-replicate concordance check over the OurDNA 1KG control SGs (§10).
 
 Non-goals (explicit)
 
 - No changes to RBCeq2: not `SvReader`, `SvMatcher`, `db.tsv`, or the region filter. If an option here appears to need a RBCeq2 change, it is rejected.
-- RH and GYP hybrid alleles are out of scope on short-read data. RHD/RHCE and GYPA/B/E are near-identical paralogs, so mapping quality drops to zero and short-read SV and CNV calls are noisy or absent; `--RH` is documented as long-read only. This is revisited when the volume and timing of long-read data are known.
+- RH and GYP hybrid alleles are out of scope on short-read data. RHD/RHCE and GYPA/B/E are near-identical paralogs, so mapping quality drops to zero and short-read SV and CNV calls are noisy or absent; `--RH` is documented as long-read only, and the maintainer's own comparison of DRAGEN SV/CNV against matched long reads for the 2.4.4 release found deletions useful but hybrids not reliably detected. This is revisited when the volume and timing of long-read data are known.
+- Exome sequencing groups are out of scope. The merge stage runs for genome SGs only; an exome SG keeps today's path, the conversion stage's output (with its post-hoc records, `popgen_rbceq2#14`) straight into `GenotypeBloodGroupsWithRbceq2`.
 - No change to the blood-group science or allele definitions.
 - No re-run or backfill orchestration (tracked separately).
 
@@ -104,7 +108,7 @@ Non-goals (explicit)
 
 ## 5. Design
 
-New per-SG stage (working name `PreprocessDragenForRbceq2`) inserted between input resolution and `GenotypeBloodGroupsWithRbceq2`. It emits one merged VCF per SG; the existing rbceq2 stage is repointed at it. Execution is bcftools-based, the same image family as the current filter stage. See the mermaid diagram in `dragen_three_source_merge.md`.
+New per-SG stage (working name `PreprocessDragenForRbceq2`) inserted between `FilterAndConvertGvcfsForRbceq2` and `GenotypeBloodGroupsWithRbceq2`, for genome SGs only (§4). It emits one merged VCF per SG; the existing rbceq2 stage is repointed at it for those SGs and keeps reading the conversion output for exomes. Execution is bcftools-based, the same image family as the current filter stage. See the mermaid diagram in `dragen_three_source_merge.md`.
 
 ### 5.1 Resolve the two new inputs and register in metamist
 
@@ -112,11 +116,13 @@ The SV and CNV VCFs are not currently referenced by the pipeline. The SNV gVCF i
 
 ### 5.2 SNV gVCF to sites VCF
 
-A single-sample gVCF already contains the per-sample genotypes, GT at variant sites plus `<NON_REF>` reference blocks. Producing the sites VCF RBCeq2 needs is therefore pure preprocessing: split multiallelics, drop the `<NON_REF>` symbolic allele and the reference-only blocks, region-restrict. This is not a genotyping step; GATK `GenotypeGVCFs` is joint genotyping across samples and has no role here.
+The SNV branch is the `vcf` output of the existing conversion stage, `FilterAndConvertGvcfsForRbceq2` (`stages/blood_group_genotyping/filter_and_convert.py`), taken as it is. This spec adds nothing to that stage and re-decides nothing about it; the merge stage (§5.5) consumes its output as one of three inputs.
 
-This is already implemented by `FilterAndConvertGvcfsForRbceq2` (`stages/blood_group_genotyping/filter_and_convert.py`): `bcftools norm -m -any` plus region-restrict to `src/popgen_rbceq2/resources/bg_regions.GRCh38.bed`, dropping `<NON_REF>` (bcftools only, no reference FASTA needed). Reuse it, with one addition, now landed in [PR #128](https://github.com/populationgenomics/ourdna_genomic_atlas/pull/128): a final `bcftools +fixploidy` in the same pipe diploid-ises DRAGEN's haploid GTs, or RBCeq2 crashes (§13, Q4). Invoke it with no `-s`/`-p` arguments. On our `chr`-prefixed hg38 the built-in ploidy table (unprefixed X/Y) never matches, so every haploid GT is expanded by allele duplication (`1` to `1|1`, `0` to `0|0`, `.` to `./.`) while already-diploid autosome and pseudoautosomal region (PAR) calls are left untouched, verified empirically. The parameter-free default is therefore both sufficient and necessary: PAR stays diploid in males because it is already diploid, not because of a mask, so no sex file and no PAR mask are needed here, and a biologically correct male/non-PAR-X-is-ploidy-1 config would instead keep the call haploid and re-crash RBCeq2. The §5.6 sex/PAR machinery is therefore not used by this SNV step; it is only for CNV direction (§5.4).
+What that output is today. The stage reads the gVCF once, restricted to `resources/bg_regions.<genome>.bed` (the restriction is unconditional, so the gVCF `.tbi` is required), and `bcftools norm -m -any` splits multiallelics. From that intermediate it writes two things: the defining-sites extract the QC stage reads, and the rbceq2 input, which drops every `<NON_REF>` record (the reference blocks and the split-off symbolic twin of each variant), trims now-unused ALT alleles, and ends in a parameter-free `bcftools +fixploidy` that expands DRAGEN's haploid non-PAR chrX/chrY genotypes to diploid (`1` to `1|1`), because the pinned rbceq2 asserts a three-character GT and crashes otherwise (§13, Q4). No reference FASTA is involved, and no genotyping: a single-sample gVCF already carries GT at every variant site, and GATK `GenotypeGVCFs` has no role here.
 
-The current filter also hard-drops genotypes below `DP≥20`/`GQ≥30`, which PR #124 shows manufactures false wild-type calls. Whatever PR #124 lands as the conversion behaviour is what this spec's SNV branch inherits; this spec does not re-decide it, but the merged VCF must use the post-#124 SNV VCF.
+The stage filters nothing on `FORMAT/DP` or `FORMAT/GQ`. rbceq2 reads a defining site that is absent from its input as confident homozygous reference, so dropping a borderline genotype manufactures a wild-type call rather than a no-call. Since `ourdna_genomic_atlas#136` borderline genotypes stay in, rbceq2's own PASS-only rule handles DRAGEN's hard-filter names, and `FlagBloodGroupCallQc` reports DP and GQ per system instead (`ourdna_genomic_atlas#138`, `#140`). The merged VCF inherits exactly this posture; §6 extends the same QC to structural calls.
+
+For an exome SG the same stage also merges in post-hoc calls at defining sites outside the capture design (`popgen_rbceq2#14`). That path is unaffected by this design, because exome SGs do not enter the merge stage (§4).
 
 ### 5.3 SV VCF to normalised
 
@@ -131,7 +137,7 @@ Four deterministic edits:
 3. `cnvLength` (under 10 kb) policy, resolved (§13, Q1). Sub-10 kb CNV records are not dropped as a class. They go through §5.5's triage like every other record: kept if database-relevant and at least 3 bins, yielding to a Manta record describing the same event, FILTER rewritten per record and the original preserved in `INFO/SVFILTER`. Never `--no_filter`. Evidence: Manta missed one of the two Gerbich 3.6 kb deletions in 150 genomes and the CNV caller found it on 3 bins (`sv_cnv_overlap_50_samples.md` §11); 1–2-bin records have Manta support in 45% of cases against 75–79% for 3–4 bins (same note, §10).
 4. Karyotype gate on chrX/chrY. Drop, or pass through tagged `SVSRC=CNV_KARYOTYPE`, every chrX/chrY CNV record from a sample whose DRAGEN ploidy estimate is not `XX` or `XY` (open decision, Q5).
 
-`CnvRewriteStats` in the skeleton is the intended QC counter shape: ref-blocks dropped, rewritten DEL/DUP, dropped sub-threshold, unresolved.
+The job should count what it did, per SG: ref-blocks dropped, rewritten DEL and DUP, dropped sub-threshold, unresolved. `CnvRewriteStats` is the proposed name for that record; no code for it exists yet, in this repo or the old one.
 
 ### 5.5 Merge: triage to the database, then one record per event
 
@@ -174,13 +180,13 @@ Triage, not caller ownership. The study's read-level check (`sv_cnv_overlap_50_s
 
 In 150 genomes rule 1(a) kept 0 to 2 records per genome, 3 in total across the whole study: the two Gerbich records and the Gerbich CNV-only record, and rule 1(b) another 0 to 3, so the merged file carries a handful of structural records, not hundreds. Rule 3 fired only on the Gerbich case, and the only allele actually called was the Gerbich deletion. Rule 1(b) is where a new observation sits: a recurrent 9–13 kb deletion at chr19:48.69 Mb spanning a FUT2 defining site, in 5 of 150 genomes, seen by both callers, matching no db allele. rbceq2 ignores it; the QC must not (§6).
 
-Haploid GT can also appear on non-PAR chrX/chrY Manta and CNV records once the merge exists, at a similar low rate to the one seen on chrX CNV records in the study. The merge does not add a second `bcftools +fixploidy` invocation for this. That question is decided once, on the 2.4.4 pin bump, for SNV and structural records together (§13, Q4 and the 2026-09-18 entry).
+Haploid GT can also appear on non-PAR chrX/chrY Manta and CNV records once the merge exists, at a similar low rate to the one seen on chrX CNV records in the study. The merge does not add a second `bcftools +fixploidy` invocation for this. That question is decided once, on the 2.4.4 pin bump, for SNV and structural records together, because 2.4.4 claims native haploid support that may make the invocation redundant everywhere (§13, Q4 and the 2026-09-18 entry).
 
 ### 5.6 Sex and ploidy
 
-For X-linked systems (XK/Kx, XG, CD99), expected copy number depends on the sample's sex and the region, PAR versus non-PAR, and RBCeq2 infers zygosity from GT without knowing it. Read per-SG sex from `ploidy_estimation_metrics.csv` and `.ploidy.vcf.gz` (X/Y coverage ratios). Do not use the `##referenceSexKaryotype` header; it is a reference/config constant reading `XXYY` for every sample, verified 102/102 across the cohort. Feed resolved ploidy into CNV direction (§5.4), the karyotype gate (§5.4), and the `KARYOTYPE` QC flag (§6): those are its three consumers. The SNV GT diploid-isation (§5.2, §13 Q4) does not need it: parameter-free `bcftools +fixploidy` handles haploid GT with no sex or PAR input (PR #128).
+For X-linked systems (XK/Kx, XG, CD99), expected copy number depends on the sample's sex and the region, PAR versus non-PAR, and RBCeq2 infers zygosity from GT without knowing it. Read per-SG sex from `ploidy_estimation_metrics.csv` and `.ploidy.vcf.gz` (X/Y coverage ratios). Do not use the `##referenceSexKaryotype` header; it is a reference/config constant reading `XXYY` for every sample, verified 102/102 across the cohort. Feed resolved ploidy into CNV direction (§5.4), the karyotype gate (§5.4), and the `KARYOTYPE` QC flag (§6): those are its three consumers. The SNV GT diploid-isation in the conversion stage (§5.2) is not a fourth; it needs no sex or PAR input (§13, Q4).
 
-Expected CN is region times sex, not a blanket 'chrX = 1 in males' rule. Of the seven chrX structural alleles, four are in PAR1: CD99\*01N.01/02 (about 2.71 Mb) and XG\*01N.02/03 (about 2.78 Mb, on the PAR1 boundary), which is diploid in males (baseline CN=2). Only XK (37.7 Mb) and ATP11C (139.7 Mb) are genuinely hemizygous (CN=1 in males). A naive haploid-X rule would expect CN=1 in PAR and miscall the normal CD99/XG state as a deletion. So both the CNV direction (§5.4) and the SNV fix-up (§5.2) must be PAR-mask aware: diploid in PAR1/PAR2, hemizygous only in non-PAR X/Y for males (chrY: 1 in males, 0 in females).
+Expected CN is region times sex, not a blanket 'chrX = 1 in males' rule. Of the seven chrX structural alleles, four are in PAR1: CD99\*01N.01/02 (about 2.71 Mb) and XG\*01N.02/03 (about 2.78 Mb, on the PAR1 boundary), which is diploid in males (baseline CN=2). Only XK (37.7 Mb) and ATP11C (139.7 Mb) are genuinely hemizygous (CN=1 in males). A naive haploid-X rule would expect CN=1 in PAR and miscall the normal CD99/XG state as a deletion. So the CNV direction (§5.4) must be PAR-mask aware: diploid in PAR1/PAR2, hemizygous only in non-PAR X/Y for males (chrY: 1 in males, 0 in females).
 
 Across the 150 genomes, the 62 XY samples produced no large chrX CNV event, so DRAGEN's caller handles a normal male. The one sample estimated X0 carried PASS heterozygous CN=1 deletions of 1.4–10.6 Mb across XK, CD99, XG and ATP11C, and the one XYY genome a PASS CN=3 duplication across PAR1 (CD99, XG). Both escaped a false allele only because the length gate rejected megabase events against 11–219 kb tokens; a shorter segment would not be rejected. So the merge reads `Ploidy estimation` from `ploidy_estimation_metrics.csv` and, for any value other than `XX` or `XY`, drops or tags the sample's chrX/chrY CNV records (§5.4, open decision Q5) and the QC reports the X-linked systems as `KARYOTYPE:<estimate>` rather than assessing them.
 
@@ -224,7 +230,8 @@ Design:
 | The `##referenceSexKaryotype` header as the sex source | It is a constant `XXYY` in 102 of 102 samples, not a per-sample estimate | §5.6 |
 | Deferring dedup to `select_best_per_vcf` | It keeps one db definition per record, not per locus, so two records for one deletion yield two alleles | §5.5, `sv_cnv_overlap_50_samples.md` §4 |
 | Manta alone, no CNV VCF | The study's `sv_only` policy found the same single allele, but the CNV-only Gerbich deletion shows a real event Manta misses | `sv_cnv_overlap_50_samples.md` §3, §11 |
-| A sex-aware `+fixploidy` config (male non-PAR X set to ploidy 1) | Leaves the call haploid and RBCeq2 crashes; verified empirically | §5.2, §13 (Q4) |
+| A sex-aware `+fixploidy` config (male non-PAR X set to ploidy 1) | Leaves the call haploid and the pinned RBCeq2 crashes; verified empirically | §13 (Q4) |
+| Checked-in extracts of a cohort genome's DRAGEN outputs as unit fixtures | No individual-level data in the repo; the study's observations are reproduced as constructed records instead | §10 |
 
 ---
 
@@ -247,10 +254,10 @@ Each threshold is recorded in the Analysis meta of the stage that applies it, as
 
 | File / symbol | Change |
 |---|---|
-| `src/popgen_rbceq2/stages/blood_group_genotyping/filter_and_convert.py` (`FilterAndConvertGvcfsForRbceq2`) | Already applies `bcftools +fixploidy` at line 554; the SNV branch (§5.2) reuses this, feeding the merge from the post-#124 output |
-| `src/popgen_rbceq2/stages/blood_group_genotyping/` | New `PreprocessDragenForRbceq2` per-SG stage; repoint `GenotypeBloodGroupsWithRbceq2`'s required stages and `--vcf` at its output |
-| `src/popgen_rbceq2/jobs/` | New job module implementing the merge skeleton (`fix_dragen_cnv_vcf`, `normalize_sv`, `merge_variant_vcfs`, `validate_for_rbceq2`) |
-| SV/CNV input resolution | The SNV gVCF is resolved from `sequencing_group.gvcf`; the SV and CNV VCFs need an equivalent metamist-backed resolution. Mechanism left open (Q6) |
+| `src/popgen_rbceq2/stages/blood_group_genotyping/filter_and_convert.py` (`FilterAndConvertGvcfsForRbceq2`) | Unchanged. Its `vcf` output is the SNV branch (§5.2); the merge stage lists it as a required stage |
+| `src/popgen_rbceq2/stages/blood_group_genotyping/` | New `PreprocessDragenForRbceq2` per-SG stage, genome SGs only; repoint `GenotypeBloodGroupsWithRbceq2`'s required stages and `--vcf` (`genotype.py`) at its output for those SGs |
+| `src/popgen_rbceq2/jobs/` | New job module. Proposed function names, no code yet: `fix_dragen_cnv_vcf`, `normalize_sv`, `merge_variant_vcfs`, `validate_for_rbceq2` |
+| SV/CNV input resolution | The SNV gVCF is resolved from `sequencing_group.gvcf`; the SV and CNV VCFs need an equivalent metamist-backed resolution. Mechanism left open (Q6); whether `dragen_align` registers them today is unverified |
 | `src/popgen_rbceq2/config/popgen_rbceq2_default_config.toml`, `[workflow.preprocess_dragen_for_rbceq2]` (new) | `cnv_svtype_from`, `min_size`, resources, and the merge thresholds from §8: `sv_min_bins`, `sv_recip_overlap`, `sv_lowres_max_bp`, `sv_del_max_bp` |
 | `src/popgen_rbceq2/resources/bg_regions.GRCh38.bed` | Reused unchanged for region-restrict |
 | `src/popgen_rbceq2/resources/bg_site_systems.GRCh38.tsv` | Gains SV definition rows (§6) |
@@ -258,19 +265,17 @@ Each threshold is recorded in the Analysis meta of the stage that applies it, as
 | `src/popgen_rbceq2/scripts/gen_bg_resources.py` | Emits the sub-10 kb target BED (§6) from the same db parse |
 | `src/popgen_rbceq2/stages/blood_group_qc/call_qc.py` (`FlagBloodGroupCallQc`), `src/popgen_rbceq2/jobs/rbceq2_call_qc_job.py` | Today raises `ValueError` if the site-system map carries any `kind == 'sv'` row; gains the §6 QC design once that map has SV rows |
 | `[workflow.flag_blood_group_call_qc]` in the same config file | Holds `min_depth = 10`, `min_gq = 20` today; gains the QC thresholds from §8: `sv_depth_ratio`, `sv_depth_flank_bp` |
-| `src/popgen_rbceq2/constants.py` (`RBCEQ2_VERSION`, `RBCEQ2_IMAGE_TAG`) | Pinned at `2.4.3` / `2.4.3-1`; bump to 2.4.4 (out of scope for this PR, see the PR description) |
+| `src/popgen_rbceq2/constants.py` (`RBCEQ2_VERSION`, `RBCEQ2_IMAGE_TAG`) | Pinned at `2.4.3` / `2.4.3-1`. The bump to 2.4.4 is its own PR: image, regenerated resources, and the `+fixploidy` re-test (§13, Q4) |
 
 ---
 
 ## 10. Testing plan, expected outcome and success criteria
 
-Based on a small extract from one of OurDNA's five 1000 Genomes (1KG) control replicates: independent sequencings of `NA12878`, a public 1000 Genomes control. `NA12878` is XX, so these fixtures cannot exercise the haploid male chrX/chrY GT path (§13, Q4); that needs a separate male sample.
+Two kinds of check. Unit tests run in CI on constructed records committed under `tests/`, shaped like the records in §3 and the study's observations: no extract of any cohort genome enters the repo, and CI cannot read `gs://cpg-ourdna-main/…`, so no unit test may resolve a live GCS path. Concordance checks run by hand against the real files of the OurDNA 1000 Genomes (1KG) control replicates, independent sequencings of one public control individual (`NA12878`, XX): five SGs when this spec was first drafted, nine by the time of `ourdna_genomic_atlas#136`. Being XX, the replicates cannot exercise the haploid male chrX/chrY paths; that needs a male genome.
 
-Unit tests run against small checked-in extracts of one replicate's DRAGEN outputs, a handful of records per source (CNV: a `DRAGEN:REF:` block plus `<DEL>`/`<DUP>` events; SV: a DEL/INS; gVCF: a few called sites plus one `<NON_REF>` block; plus a chrX record for the ploidy path), committed as fixtures under `tests/`. CI cannot read `gs://cpg-ourdna-main/…`, so no unit test may resolve a live GCS path. The five-replicate concordance run below does need the real files, so it is a manual/analysis check, not CI.
-
-- Unit: `fix_dragen_cnv_vcf` on the replicate's CNV extract, asserting REF records dropped, every surviving `SVTYPE` in {DEL,DUP}, counts match `CnvRewriteStats`; `<DEL>` to DEL, `<DUP>` to DUP.
-- Unit: `merge_variant_vcfs` output is sorted, single-sample, tabix-indexed, `chr`-prefixed.
-- Integration (concordance, manual, needs GCS): run the full preprocess-plus-rbceq2 on all five replicates; structural calls must be identical across all five (same individual). Any divergence is a bug or a QC signal (compare PR #124's SNV divergence table).
+- Unit: `fix_dragen_cnv_vcf` on a constructed CNV VCF holding a `DRAGEN:REF:` block and `<DEL>`/`<DUP>` events, asserting REF records dropped, every surviving `SVTYPE` in {DEL,DUP}, counts match `CnvRewriteStats`.
+- Unit: `merge_variant_vcfs` on a constructed SNV VCF, SV VCF and CNV VCF with a chrX record for the ploidy path; output is sorted, single-sample, tabix-indexed, `chr`-prefixed.
+- Integration (concordance, manual, needs GCS): run the full preprocess-plus-rbceq2 on every replicate; structural calls must be identical across all of them (same individual). Any divergence is a bug or a QC signal (compare the SNV divergence table in `ourdna_genomic_atlas#124`).
 - Sub-10 kb path, synthetic fixtures shaped like the study's observations, no cohort data in the repo: (a) a Manta DEL record of exactly 3609 bp at the GE\*01.-02.01 coordinates plus a 4961 bp `cnvLength` CN=1 CNV record over it, where the merge keeps the Manta record and records the CNV partner, and rbceq2 calls one GE allele, never two; (b) the CNV record alone, 3 bins, kept, PASS-rewritten, tagged, and the QC flags the GE call `SVLOWRES`; (c) the same with 2 bins, dropped, GE unassessed. The study observed both (a) and (b) in real genomes; the fixtures are constructed records, not extracts.
 - Karyotype gate, synthetic: a CNV record set with megabase CN=1 deletions across XK, CD99/XG and ATP11C paired with a ploidy metrics file reading `X0`, and a PAR1 CN=3 duplication paired with `XYY`; no X-linked allele is called and the QC reports `KARYOTYPE:<estimate>`.
 - Concordance across 150 genomes: the study's scripts, once committed, are the check that a code change to the merge does not alter the per-band record counts or the single GE hit under the `pass` policy. They read live GCS paths, so this is a manual check, not CI.
@@ -292,11 +297,11 @@ Success criteria
 
 ## 11. Risks
 
-- Short-read paralog loci. Beyond the RH/GYP hybrids already excluded, any blood-group gene with a close paralog risks mismapped or absent CNV calls. Concordance across the five 1KG replicates is a necessary check for QC.
+- Short-read paralog loci. Beyond the RH/GYP hybrids already excluded, any blood-group gene with a close paralog risks mismapped or absent CNV calls. Concordance across the 1KG replicates is a necessary check for QC.
 - Sub-10 kb CNV-only records. A kept CNV-only sub-10 kb record is lower-grade evidence than a Manta-confirmed one; the QC grades it `SVLOWRES` rather than treating it as equivalent, and a 1–2-bin record is dropped rather than kept.
-- Positive controls. The five 1KG replicate control samples showed no blood-group CNVs at GYP/XK/RHD in the earlier data look, good for a concordance/regression baseline, but the study's Gerbich carrier partly answers this for one 3.6 kb sub-10 kb allele. A 10 kb or larger true positive is still wanted to exercise the CNV-VCF path directly (§10).
+- Positive controls. The 1KG replicate control samples showed no blood-group CNVs at GYP/XK/RHD in the earlier data look, good for a concordance/regression baseline, but the study's Gerbich carrier partly answers this for one 3.6 kb sub-10 kb allele. A 10 kb or larger true positive is still wanted to exercise the CNV-VCF path directly (§10).
 - Merge correctness. Contig or sample-name mismatches, or unsorted concat, will silently break RBCeq2's region fetch; `validate_for_rbceq2` must assert sorted, single-sample, `chr`-prefixed, indexed.
-- Residual haploid-GT dosage. Diploid-ising a true haploid call (`1` to `1|1`) reads as HOM (dosage 2, `core_logic/alleles.py:284`), overstating dosage for a truly hemizygous call. Fine for detection, but relevant to any future zygosity-dependent filter (§13, Q4).
+- Residual haploid-GT dosage. Diploid-ising a true haploid call (`1` to `1|1`) reads as HOM (dosage 2, `core_logic/alleles.py:284`), overstating dosage for a truly hemizygous call. Fine for detection, but relevant to any future zygosity-dependent filter, and 2.4.4 may read hemizygosity correctly from the haploid GT that `+fixploidy` currently erases (§13, Q4).
 
 ---
 
@@ -320,11 +325,13 @@ To raise upstream with the RBCeq2 maintainers, feature requests rather than thin
 
 **2026-09-18, QC design added.** Decision: add the §6 QC design, six flags for structural calls, reading structural records from the merged VCF or rbceq2's debug log (source still open, Q7), plus a second BED for sub-10 kb target depth. Alternatives rejected: none tested; this is a first design. Consequences: `bg_db.py` stops excluding `kind == 'sv'` rows; `gen_bg_resources.py` gains a second BED; thresholds recorded in §8.
 
-**2026-09-18, `+fixploidy` deferred to the pin bump (supersedes an earlier position).** Decision: keep the single `bcftools +fixploidy` invocation in the SNV conversion pipe from PR #128, and do not add a second invocation when the merge lands; whether it moves onto the merged VCF is decided once, on the 2.4.4 pin bump, for SNV and structural records together. Alternatives rejected (superseded position): move the single `+fixploidy` invocation onto the merged VCF once the SV/CNV merge exists, on the reasoning that Manta and CNV records can also carry haploid GT on non-PAR chrX/chrY in males. Consequences: §5.2 and §5.5 now state one position; the pin-bump decision is out of scope for this PR.
+**2026-09-18, `+fixploidy` deferred to the pin bump (supersedes an earlier position).** Decision: keep the single `bcftools +fixploidy` invocation in the SNV conversion pipe from `ourdna_genomic_atlas#128`, and do not add a second invocation when the merge lands; whether it moves onto the merged VCF, or goes altogether, is decided once, on the 2.4.4 pin bump, for SNV and structural records together. The 2.4.4 release is described as "focused on supporting haploid encoding in VCF", motivated by DRAGEN and array data, and as keeping "chromosome-copy counts ... distinct", so the crash the invocation works around may be gone, and `1` to `1|1` may then overstate dosage where 2.4.4 would read hemizygosity correctly. The bump PR tests a male genome with and without `+fixploidy` before deciding. Alternatives rejected (superseded position): move the single `+fixploidy` invocation onto the merged VCF once the SV/CNV merge exists, on the reasoning that Manta and CNV records can also carry haploid GT on non-PAR chrX/chrY in males. Consequences: §5.2 and §5.5 state one position; the pin-bump decision is out of scope for this PR.
 
-**2026-09-17, factual refresh (PR #15).** Decision: refreshed touch points and figures against the then-current repository state. Alternatives rejected: none; this was a factual correction pass. Consequences: the figures and paths it fixed were revised again on 2026-09-18 (§9).
+**2026-09-17, §5.2 restated against the conversion stage as it is.** Decision: the SNV branch is the conversion stage's `vcf` output as it exists, and the spec describes that output rather than proposing changes to it. The passage it replaces was written in July 2026 against the stage of that time and had been overtaken four times: `ourdna_genomic_atlas#124` (design only, 2026-07-16) showed that the then hard filter at DP 20 and GQ 30 manufactured false wild-type calls across five replicate SGs of one control; `ourdna_genomic_atlas#128` (2026-07-19) appended `+fixploidy`; `ourdna_genomic_atlas#136` (2026-07-29) removed the DP/GQ filter, taking the replicate cohort's discordant systems from eight to zero; `ourdna_genomic_atlas#138` and `#140` (2026-08-03) rewrote the stage as a single pass with a mandatory region restrict and a defining-sites extract, added `FlagBloodGroupCallQc`, and registered its output. The stages were then ported here (`popgen_rbceq2#5`, 2026-08-10) and the stage gained the exome post-hoc merge (`popgen_rbceq2#14`, 2026-09-07). Alternatives rejected: none; the old text described a filter that no longer exists and an addition that had already landed. Consequences: §5.2 rewritten; exome SGs declared out of scope (§4, §5); §9's conversion-stage row reads "unchanged"; every PR reference in the document is repo-qualified.
 
-**Q4 resolved in [PR #128](https://github.com/populationgenomics/ourdna_genomic_atlas/pull/128).** DRAGEN writes haploid `GT` (`1`) on non-PAR chrX/chrY for male samples; rbceq2 assumes diploid GT and hard-crashes on haploid input. Confirmed in source (v2.4.2): the zygosity determiner `get_ref` does `assert len(GT) == 3` (`core_logic/data_procesing.py:878`) and runs for every defining variant via `make_variant_pool` (`data_procesing.py:454`), so a haploid `"1"` (length 1) raises `AssertionError`. Corroborating diploid assumptions: `remove_home_ref` and `get_variants` drop only `"0/0"`, not haploid `"0"` (`IO/vcf.py:120,261`), and `split_vcf_to_dfs` asserts a `/` or `|` separator at index 1 (`IO/vcf.py:299`). Fix: a final `bcftools +fixploidy` in the conversion pipe, with no `-s`/`-p` arguments. On `chr`-prefixed hg38 the built-in, unprefixed, ploidy table never matches, so every haploid GT is expanded to diploid (`1` to `1|1`, `0` to `0|0`, `.` to `./.`) while diploid autosome and PAR calls stay untouched. Alternatives rejected: a sex-aware config (male non-PAR X set to ploidy 1) leaves the call haploid and re-crashes rbceq2, verified empirically; the §5.6 sex/PAR machinery is therefore not used for this fix, only for CNV direction. Consequences: necessary and sufficient for the SNV branch. Caveat: `1` to `1|1` reads as HOM (dosage 2, `core_logic/alleles.py:284`), overstating a truly hemizygous call; fine for detection, but relevant to any zygosity-dependent filter, since rbceq2's native HEM status is deletion-derived, not from GT. Missed by the XX 1KG fixtures (§10).
+**2026-09-17, factual refresh (`popgen_rbceq2#15`), and this branch rebased onto it.** Decision: refreshed the database figures for 2.4.4 (§2.2, §2.3), added `resolvability_by_input_class.md`, recorded the maintainer's advice against `--RH` and for a single combined VCF (§1, §4), rewrote the touch points for this repo's paths and the QC stage that did not exist in July, and noted that 2.4.4's native haploid support makes `+fixploidy` a re-test item. `popgen_rbceq2#16` was first opened from `main` in parallel and its restructure of this file dropped those changes; it now sits on top of `#15` with the refresh folded back into the restructured body. Alternatives rejected: merging both branches to `main` independently, which would have conflicted in this file. Consequences: one SPEC, the figures from `#15`, the design from `#16`.
+
+**Q4 resolved in `ourdna_genomic_atlas#128` (2026-07-19), at rbceq2 2.4.2.** DRAGEN writes haploid `GT` (`1`) on non-PAR chrX/chrY for male samples; rbceq2 2.4.2 assumes diploid GT and hard-crashes on haploid input. Confirmed in source: the zygosity determiner `get_ref` does `assert len(GT) == 3` (`core_logic/data_procesing.py:878`) and runs for every defining variant via `make_variant_pool` (`data_procesing.py:454`), so a haploid `"1"` (length 1) raises `AssertionError`. Corroborating diploid assumptions: `remove_home_ref` and `get_variants` drop only `"0/0"`, not haploid `"0"` (`IO/vcf.py:120,261`), and `split_vcf_to_dfs` asserts a `/` or `|` separator at index 1 (`IO/vcf.py:299`). Fix: a final `bcftools +fixploidy` in the conversion pipe, with no `-s`/`-p` arguments. On `chr`-prefixed hg38 the built-in, unprefixed, ploidy table never matches, so every haploid GT is expanded to diploid (`1` to `1|1`, `0` to `0|0`, `.` to `./.`) while diploid autosome and PAR calls stay untouched, verified empirically. The parameter-free default is both sufficient and necessary: PAR stays diploid in males because DRAGEN already writes it diploid, not because of a mask, so no sex file and no PAR mask are needed. Alternatives rejected: a sex-aware config (male non-PAR X set to ploidy 1) leaves the call haploid and re-crashes rbceq2, verified empirically; the §5.6 sex/PAR machinery is therefore not used for this fix, only for CNV direction. Consequences: necessary and sufficient for the SNV branch at the pinned 2.4.3. Caveat: `1` to `1|1` reads as HOM (dosage 2, `core_logic/alleles.py:284`), overstating a truly hemizygous call; fine for detection, but relevant to any zygosity-dependent filter, since rbceq2's native HEM status is deletion-derived, not from GT. Missed by the XX 1KG fixtures (§10). Re-opened for the 2.4.4 bump by the 2026-09-18 entry above.
 
 **Q3 endorsed in review, resolved.** Decision: CNV direction is taken from the ALT symbol on autosomes, and from `CN` versus region-by-sex ploidy on chrX/chrY, PAR-aware: CD99 and XG sit in PAR1 and are diploid in males, only XK and ATP11C are hemizygous. Alternatives rejected: trusting the ALT symbol everywhere, including sex chromosomes. Consequences: implemented in §5.4 and §5.6.
 
