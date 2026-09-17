@@ -108,22 +108,12 @@ So:
 
 ## 5. Recommended Q2 resolution
 
-Deduplicate in the merge stage, by size band, before rbceq2 sees the file:
-
-1. **Manta supplies every DEL/DUP under 10 kb and every INS.** A CNV record under 10 kb is
-   dropped when a reciprocal Manta DEL/DUP exists. *(Amended by §11:)* one with **no** Manta
-   partner and **at least 3 bins** is kept with FILTER rewritten to PASS and flagged by the QC
-   as low-resolution evidence; fewer than 3 bins is dropped.
-2. **The CNV caller supplies every DEL/DUP of 10 kb or more.** Manta DEL/DUP records of 10 kb
-   or more are dropped when a same-direction PASS CNV record overlaps them reciprocally ≥0.5;
-   the 2 in 50 samples that have no CNV partner are kept.
-3. **Drop Manta records over 200 kb** unconditionally; they are whole-arm `DUP:TANDEM`
-   artefacts and the length gate would reject them anyway.
-4. Never emit two records with identical CHROM/POS/END/SVTYPE.
-
-Rule 2 costs nothing observed: no 10 kb+ target allele had a Manta-only hit in 100 samples.
-Rule 1 is what makes the GE call unambiguous where both callers see it, and what keeps the
-one Manta missed (§11). All four are decidable from the two files alone.
+Superseded by SPEC §5.5 (2026-09-18), which frames this as triage rather than caller ownership:
+restrict both structural VCFs to records that overlap a db SV definition or span a defining
+SNV site, keep every survivor with at least 3 bins, and where two records describe one event
+keep Manta's for its exact breakpoints. The observations that drove it: the callers' size bands
+barely overlap (§1–2), the double-matching hazard (§4), a real sub-10 kb deletion only the CNV
+caller reported (§11), and rbceq2's silence on deletions it cannot match to the db (SPEC §11).
 
 ## 6. Sex chromosomes: the concern in §5.6 of the SPEC is confirmed
 
@@ -273,3 +263,38 @@ split support together, emitted nothing. The CNV caller found it on 3 bins and f
 3. A minimum bin count of 3 keeps the true positive here and drops the noisiest tier. It is a
    threshold set from two carriers; it should be recorded in the Analysis meta like `min_depth`
    and revisited when more carriers or a long-read truth set exist.
+
+## 12. Third disjoint 50 (seed 20260919) and the triage simulation
+
+Same pipeline, 50 further genomes disjoint from both earlier sets. Sex mix 24 XX, 26 XY.
+
+| Measure | First 50 | Second 50 | Third 50 |
+|---|---|---|---|
+| CNV PASS records under 10 kb | 0 | 0 | 0 |
+| CNV PASS records 10 kb+ | 169 | 160 | 161 |
+| Manta 10–200 kb with / without a CNV partner | 46 / 5 | 43 / 6 | 42 / 1 |
+| Shared events with identical breakpoints | 0 | 0 | 0 |
+| Shared events, median POS / length delta | 515 bp / 3.8 kb | 415 bp / 6.5 kb | 493 bp / 6.0 kb |
+| Samples raising the 2.4.4 tie error, any policy | 0 | 0 | 0 |
+| Manta PASS DUP ≥200 kb, same recurrent loci | 28 | 28 | 28 |
+| Large PASS CNV events on chrX | 5 (X0, XYY) | 0 | 0 (all XX or XY) |
+| Haploid GT on chrX SV/CNV records | 1 | 2 | 2 |
+| 10 kb+ targets tiled by CNV records in ≥48/50 | all | all | all |
+| `cnvLength` 3–4-bin deletions with Manta support | 75% | 79% | 76% |
+| db matches, `pass` policy | 1 (GE) | 0 | 0 |
+
+Every claim in §§1–7 and §10 held for a third time. The GYP 117 kb PASS duplication (§8)
+recurred in one genome of this set too, so it is a polymorphism the CNV caller sees at the
+paralog locus, still matching no db allele.
+
+**Triage simulation (SPEC §5.5 rule 1) over all 150 genomes.** Records within `SvMatcher`
+tolerance of any db SV definition: 3 in total, all Gerbich (two Manta-visible, one CNV-only);
+0 to 2 per genome. PASS deletions under 1 Mb spanning a defining SNV/indel site but matching
+no db SV: 0 to 3 per genome, and almost all one thing: a recurrent **9–13 kb deletion at
+chr19:48.69 Mb spanning a FUT2 defining site**, in 5 of 150 genomes, reported by both callers
+(Manta 9.3–10.1 kb PASS, CNV 8.5–12.8 kb PASS or `cnvLength`). It matches no db allele. A
+heterozygous whole-FUT2 deletion leaves one FUT2 copy; whatever the gVCF reports at the
+secretor-defining sites is then a single-copy call read as homozygous. rbceq2 does nothing with
+an unmatched deletion, so this is exactly the case the `SVDEL` flag in SPEC §11 exists for. The
+remaining rule-1(b) records were the X0 genome's megabase events (handled by the karyotype gate)
+and one 126 Mb `MaxDepth` Manta record, which is why rule 1(b) is PASS-only and capped at 1 Mb.
