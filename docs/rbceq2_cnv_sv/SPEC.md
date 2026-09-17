@@ -397,6 +397,24 @@ CNV records' `FILTER`→`PASS` in preprocessing instead (§5.4.3). Leave
 - §9: synthetic fixtures shaped like the study's observations; 100-genome concordance scripts. No cohort genome is a fixture.
 - §11 new: QC for structural calls, with `SVNOCOV`, `SVLOWRES`, `SVUNASSESSED`, `SVDEL`, `KARYOTYPE` flags and thresholds in Analysis meta; rbceq2 ignores a deletion it cannot match, so the QC must report deletions over defining SNV sites itself.
 
+**To raise upstream with the RBCeq2 maintainers** (feature requests, not things this design works
+around beyond reporting):
+
+1. **Matching is per record, not per locus.** Two records for one event yield two alleles (§5.5
+   figure). Our merge guarantees one record per event; a per-locus selection in
+   `select_best_per_vcf`, or a warning when two records match overlapping tokens of one system,
+   would make that unnecessary.
+2. **Unmatched deletions are ignored.** A deletion that matches no db token never enters the
+   variant pool, so the hemizygosity adjustment for SNVs inside it never runs and a single-copy
+   genotype is read as homozygous. Our QC reports it (`SVDEL`, §11); rbceq2 could apply the same
+   adjustment it already applies to matched deletions.
+3. **Undefined null alleles.** A deletion removing coding sequence of a blood-group gene is a null
+   whether or not the db names it. The study found a recurrent 9–13 kb deletion over a FUT2
+   defining site in 5 of 150 genomes, matching no token. Two asks: consider it as a candidate
+   allele for the db, and consider a generic "coding deletion in system X, unnamed" call. We do
+   not build gene-model resources for this here; it stays an observation to bear in mind, and a
+   reason the `SVDEL` flag names the system.
+
 ---
 
 ## 8. Risks & considerations
