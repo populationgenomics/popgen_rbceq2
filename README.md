@@ -372,16 +372,62 @@ encodings resolve to the same allele pair and the same numeric and alphanumeric 
 calls already released are not wrong, only less informative than they could have been.
 
 **The one state to avoid is a partial fix-up.** rbceq2 2.4.4 derives a single chromosome-copy
-count per blood group and then refuses any record claiming more copies than that, dropping the
-whole system to Undetermined with an empty genotype *and* an empty phenotype rather than
-mis-rendering it. Passing DRAGEN's calls through untouched is self-consistent by construction.
-Reintroducing a ploidy rewrite that reaches some non-PAR records and not others — a sex file
-that misses samples, a contig-name table that matches only half the time — is what silently
-nulls XK, GATA1 and ATP11C.
+count per blood group and refuses any record claiming more copies than that. The affected
+system reports `Undetermined/Undetermined` in the geno TSV and an empty field in both pheno
+TSVs; the rest of the sample is unaffected. Observed by running 2.4.4 over a converted VCF
+carrying `GT=1` at one XK defining site and `GT=1|1` at another:
+
+```
+WARNING | rbceq2.core_logic.data_procesing:record_unreadable - XK could not be read and is
+reported as Undetermined. The rest of the sample is unaffected. A variant claims more copies
+than the sample has chromosomes there. ... | Context: BG: XK, variant: X:37686115_C_T,
+zygosity: Homozygous (2 copies), chrom_copies: 1
+```
+
+So this fails loudly, not silently, and `--debug` being unconditional means that line is in the
+run log this pipeline already keeps. It is still worth avoiding: nothing downstream of the TSVs
+reads the log, and `Undetermined` in a blood-group table is a result-shaped absence of a result.
+
+Passing DRAGEN's calls through untouched is self-consistent by construction. Reintroducing a
+ploidy rewrite that reaches some non-PAR records and not others — a sex file that misses
+samples, a contig-name table that matches only half the time — is what puts XK, GATA1 and
+ATP11C into that state.
 
 PAR is handled by rbceq2 and needs nothing here. XG and CD99 sit inside PAR1, where a male
 sample is genuinely diploid, and rbceq2 declines to treat a PAR coordinate as evidence of a
 single chromosome copy.
+
+#### Checking a ploidy change without a cohort
+
+This repo ships no test data and cannot: a real DRAGEN gVCF is 12-15Gb and names a real
+individual. `scripts/gen_synthetic_gvcf.py` writes a small one instead, reading its
+coordinates out of the committed `bg_site_systems.<genome>.tsv` so a fixture cannot call a
+site the pipeline no longer ships. Three encodings of the same sample:
+
+```
+python src/popgen_rbceq2/scripts/gen_synthetic_gvcf.py GRCh38 native.g.vcf
+python src/popgen_rbceq2/scripts/gen_synthetic_gvcf.py GRCh38 diploidised.g.vcf --diploidise
+python src/popgen_rbceq2/scripts/gen_synthetic_gvcf.py GRCh38 mixed.g.vcf --mixed
+```
+
+`--diploidise` is what `+fixploidy` used to leave behind and `--mixed` is the half-rewritten
+state. `bgzip` and index each, run the conversion, then run rbceq2 over the result and diff
+the TSVs. Comparing the first two on rbceq2 2.4.4 gives:
+
+| Output | Difference |
+| --- | --- |
+| `geno.tsv` | three fields, all non-PAR chrX |
+| `pheno_numeric.tsv` | none |
+| `pheno_alphanumeric.tsv` | none |
+
+The three are XK, GATA1 and **ATP11C**, which is worth noting: ATP11C has no variant call in
+the fixture at all. Every non-PAR chrX system picks up the one-slot form, because the copy
+count is derived per contig and then applied to that system's reference call too. So a pin
+bump changes more genotype strings than it changes called alleles.
+
+This is **not** a substitute for a male genome from a real cohort. It fixes the encoding
+under test rather than discovering what DRAGEN actually emitted, which is the thing that
+decides whether the mixed case can arise at all.
 
 Three things to preserve when changing this stage:
 

@@ -463,11 +463,12 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
     unaffected either way, so nothing already released is wrong, only less informative.
 
     What this stage must not do is diploidise *some* non-PAR chrX/chrY calls and not others.
-    rbceq2 2.4.4 derives one chromosome-copy count per blood group and then refuses any
-    record claiming more copies than that, dropping the whole system to Undetermined with an
-    empty genotype and phenotype rather than mis-rendering it. Passing DRAGEN's calls through
-    untouched is self-consistent by construction; a partial fix-up is the state that silently
-    nulls XK, GATA1 and ATP11C. See the haploid-encoding section of the README.
+    rbceq2 2.4.4 derives one chromosome-copy count per blood group and then refuses any record
+    claiming more copies than that: the system reports `Undetermined/Undetermined` in the geno
+    TSV and an empty field in both pheno TSVs, with a named WARNING in the run log, and the
+    rest of the sample is unaffected. Passing DRAGEN's calls through untouched is
+    self-consistent by construction; a partial fix-up is the state that puts XK, GATA1 and
+    ATP11C there. See the haploid-encoding section of the README, which quotes the warning.
     """
 
     def expected_outputs(
