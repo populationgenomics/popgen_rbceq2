@@ -108,42 +108,68 @@ Non-goals (explicit)
 
 ## 5. Design
 
-New per-SG stage (working name `PreprocessDragenForRbceq2`) inserted between `FilterAndConvertGvcfsForRbceq2` and `GenotypeBloodGroupsWithRbceq2`, for genome SGs only (§4). It emits one merged VCF per SG; the existing rbceq2 stage is repointed at it for those SGs and keeps reading the conversion output for exomes. Execution is bcftools-based, the same image family as the current filter stage. See the mermaid diagram in `dragen_three_source_merge.md`.
+New per-SG stage (working name `PreprocessDragenForRbceq2`) inserted between `FilterAndConvertGvcfsForRbceq2` and `GenotypeBloodGroupsWithRbceq2`, for genome SGs only (§4). It emits one merged VCF per SG.
+
+The existing rbceq2 stage is repointed at it for those SGs and keeps reading the conversion output for exomes. Execution is bcftools-based, the same image family as the current filter stage. See the mermaid diagram in `dragen_three_source_merge.md`.
 
 ### 5.1 Resolve the two new inputs and register in metamist
 
-The SV and CNV VCFs are not currently referenced by the pipeline. The SNV gVCF is resolved from the sequencing group's registered gVCF (`sequencing_group.gvcf`); the SV and CNV VCFs need an equivalent metamist-backed resolution, with the mechanism left open (Q6). Both files are bgzipped and tabixed in the bucket (`.tbi` present). Missing-file handling should mirror the current gVCF guard. They must be registered as metamist analyses under the new SV and CNV analysis types, ideally emitted upstream by `dragen_align`; failing that, this work adds a small stage to define the analysis types and register the existing outputs.
+This step resolves the SV and CNV VCF paths per SG, the two new inputs the merge needs alongside the SNV gVCF.
+
+The SNV gVCF is already resolved from the sequencing group's registered gVCF (`sequencing_group.gvcf`). The SV and CNV VCFs need an equivalent metamist-backed resolution; the mechanism is left open (Q6). Both files are bgzipped and tabixed in the bucket (`.tbi` present), and missing-file handling should mirror the current gVCF guard.
+
+They must be registered as metamist analyses under new SV and CNV analysis types. Ideally `dragen_align` emits them upstream; failing that, this work adds a small stage to define the analysis types and register the existing outputs.
 
 ### 5.2 SNV gVCF to sites VCF
 
-The SNV branch is the `vcf` output of the existing conversion stage, `FilterAndConvertGvcfsForRbceq2` (`stages/blood_group_genotyping/filter_and_convert.py`), taken as it is. This spec adds nothing to that stage and re-decides nothing about it; the merge stage (§5.5) consumes its output as one of three inputs.
+This stage converts the SNV gVCF into a sites VCF; the merge (§5.5) takes its output as one of three inputs, unchanged.
 
-What that output is today. The stage reads the gVCF once, restricted to `resources/bg_regions.<genome>.bed` (the restriction is unconditional, so the gVCF `.tbi` is required), and `bcftools norm -m -any` splits multiallelics. From that intermediate it writes two things: the defining-sites extract the QC stage reads, and the rbceq2 input, which drops every `<NON_REF>` record (the reference blocks and the split-off symbolic twin of each variant), trims now-unused ALT alleles, and ends in a parameter-free `bcftools +fixploidy` that expands DRAGEN's haploid non-PAR chrX/chrY genotypes to diploid (`1` to `1|1`), because the pinned rbceq2 asserts a three-character GT and crashes otherwise (§13, Q4). No reference FASTA is involved, and no genotyping: a single-sample gVCF already carries GT at every variant site, and GATK `GenotypeGVCFs` has no role here.
+The SNV branch is the `vcf` output of the existing conversion stage, `FilterAndConvertGvcfsForRbceq2` (`stages/blood_group_genotyping/filter_and_convert.py`). This spec adds nothing to that stage and re-decides nothing about it.
 
-The stage filters nothing on `FORMAT/DP` or `FORMAT/GQ`. rbceq2 reads a defining site that is absent from its input as confident homozygous reference, so dropping a borderline genotype manufactures a wild-type call rather than a no-call. Since `ourdna_genomic_atlas#136` borderline genotypes stay in, rbceq2's own PASS-only rule handles DRAGEN's hard-filter names, and `FlagBloodGroupCallQc` reports DP and GQ per system instead (`ourdna_genomic_atlas#138`, `#140`). The merged VCF inherits exactly this posture; §6 extends the same QC to structural calls.
+The stage reads the gVCF once, restricted to `resources/bg_regions.<genome>.bed` (the restriction is unconditional, so the gVCF `.tbi` is required). `bcftools norm -m -any` then splits multiallelics.
+
+From that intermediate the stage writes two things: the defining-sites extract the QC stage reads, and the rbceq2 input. The rbceq2 input drops every `<NON_REF>` record (the reference blocks and the split-off symbolic twin of each variant) and trims now-unused ALT alleles.
+
+It then ends in a parameter-free `bcftools +fixploidy`, which expands DRAGEN's haploid non-PAR chrX/chrY genotypes to diploid (`1` to `1|1`), because the pinned rbceq2 asserts a three-character GT and crashes otherwise. The full rationale, including why this parameter-free default is sufficient and necessary and why a sex-aware config re-crashes rbceq2, is in §13 (Q4) and the §7 table.
+
+No reference FASTA is involved, and no genotyping happens here. A single-sample gVCF already carries GT at every variant site, and GATK `GenotypeGVCFs` has no role here.
+
+The stage filters nothing on `FORMAT/DP` or `FORMAT/GQ`. rbceq2 reads a defining site that is absent from its input as confident homozygous reference, so dropping a borderline genotype manufactures a wild-type call rather than a no-call.
+
+Since `ourdna_genomic_atlas#136`, borderline genotypes stay in. rbceq2's own PASS-only rule handles DRAGEN's hard-filter names, and `FlagBloodGroupCallQc` reports DP and GQ per system instead (`ourdna_genomic_atlas#138`, `#140`). The merged VCF inherits exactly this posture; §6 extends the same QC to structural calls.
 
 For an exome SG the same stage also merges in post-hoc calls at defining sites outside the capture design (`popgen_rbceq2#14`). That path is unaffected by this design, because exome SGs do not enter the merge stage (§4).
 
 ### 5.3 SV VCF to normalised
 
-No type change needed; Manta already writes `SVTYPE=DEL/DUP/INS/BND`. Housekeeping only: region-restrict to the bg regions (an optimisation, RBCeq2 also filters internally), ensure the sample column name matches the merged VCF, keep `CIPOS`/`CIEND`/`SVLEN`/`END`, sort, bgzip, tabix. `DUP:TANDEM` reported as `<INS>` is correct, it matches DB INS/dup tokens.
+This step normalises the Manta SV VCF so it can be concatenated with the other two branches; no type change is needed.
+
+Manta already writes `SVTYPE=DEL/DUP/INS/BND`, so this is housekeeping only: region-restrict to the bg regions (an optimisation, RBCeq2 also filters internally), ensure the sample column name matches the merged VCF, and keep `CIPOS`/`CIEND`/`SVLEN`/`END`. Sort, bgzip and tabix the result.
+
+`DUP:TANDEM` reported as `<INS>` is correct; it matches DB INS/dup tokens.
 
 ### 5.4 CNV VCF to fixed (the one real transform)
 
-Four deterministic edits:
+This step fixes the DRAGEN CNV VCF so RBCeq2 can match its records; it depends on the sex and ploidy read in §5.6. It makes four deterministic edits and counts what it did per SG.
 
 1. Drop `DRAGEN:REF:` records (ALT `.`, no `SVTYPE`); these are non-events.
-2. Rewrite `SVTYPE=CNV` to `DEL`/`DUP`. Primary strategy: take the direction from the symbolic ALT (`<DEL>` to `DEL`, `<DUP>` to `DUP`). This is why the fix is required, not optional; see §2.3, since `"DEL" == "CNV"` is false and the ALT fallback only fires when `SVTYPE` is absent. On sex chromosomes, prefer deriving direction from `CN` relative to the sample's expected ploidy (§5.6) rather than trusting a diploid-assumed ALT.
-3. `cnvLength` (under 10 kb) policy, resolved (§13, Q1). Sub-10 kb CNV records are not dropped as a class. They go through §5.5's triage like every other record: kept if database-relevant and at least 3 bins, yielding to a Manta record describing the same event, FILTER rewritten per record and the original preserved in `INFO/SVFILTER`. Never `--no_filter`. Evidence: Manta missed one of the two Gerbich 3.6 kb deletions in 150 genomes and the CNV caller found it on 3 bins (`sv_cnv_overlap_50_samples.md` §11); 1–2-bin records have Manta support in 45% of cases against 75–79% for 3–4 bins (same note, §10).
-4. Karyotype gate on chrX/chrY. Drop, or pass through tagged `SVSRC=CNV_KARYOTYPE`, every chrX/chrY CNV record from a sample whose DRAGEN ploidy estimate is not `XX` or `XY` (open decision, Q5).
+2. Rewrite `SVTYPE=CNV` to `DEL` or `DUP`. On autosomes take the direction from the symbolic ALT (`<DEL>` to `DEL`, `<DUP>` to `DUP`); on sex chromosomes derive direction from `CN` relative to the sample's expected ploidy (§5.6) instead.
+3. Keep sub-10 kb `cnvLength` records rather than dropping them as a class; triage them like every other record in §5.5, keeping those with at least 3 bins, rewriting FILTER per record with the original preserved in `INFO/SVFILTER` (§13, Q1 resolved).
+4. Apply the karyotype gate: drop, or pass through tagged `SVSRC=CNV_KARYOTYPE`, every chrX/chrY CNV record from a sample whose DRAGEN ploidy estimate is not `XX` or `XY` (open decision, Q5).
+
+Edit 2 is required, not optional: `SvMatcher` runs with `require_same_type=True`, so the DB token type must equal the event `SVTYPE`, `"DEL" == "CNV"` is false, and the ALT fallback only fires when `SVTYPE` is absent (§2.3).
+
+The evidence for edit 3: Manta missed one of the two Gerbich 3.6 kb deletions in 150 genomes that the CNV caller found on 3 bins (`sv_cnv_overlap_50_samples.md` §11); 1–2-bin records have Manta support in 45% of cases against 75–79% for 3–4 bins (same note, §10). `--no_filter` is never used for this.
 
 The job should count what it did, per SG: ref-blocks dropped, rewritten DEL and DUP, dropped sub-threshold, unresolved. `CnvRewriteStats` is the proposed name for that record; no code for it exists yet, in this repo or the old one.
 
 ### 5.5 Merge: triage to the database, then one record per event
 
-`bcftools concat` the three normalised VCFs, sort, bgzip, tabix, into `<sg>.rbceq2_input.vcf.gz`. All three must share the same sample column name and `chr`-prefixed hg38 contigs (RBCeq2 strips `chr` internally).
+The merge concatenates the three normalised VCFs into one, then triages the structural records so RBCeq2 sees one record per event. The QC in §6 grades what survives, and the thresholds it uses live in §8.
 
-The merge has to arbitrate because rbceq2 keeps one db definition per record, not per locus. A deletion present as both a Manta and a CNV record, offset by the CNV caller's bin snapping, is matched to two different alleles, and the sample is then read as carrying two null alleles. The study's synthetic test, drawn:
+`bcftools concat` the three normalised VCFs, sort, bgzip and tabix into `<sg>.rbceq2_input.vcf.gz`. All three must share the same sample column name and `chr`-prefixed hg38 contigs, since RBCeq2 strips `chr` internally.
+
+The merge has to arbitrate because rbceq2 keeps one db definition per record, not per locus. A deletion present as both a Manta and a CNV record, offset by the CNV caller's bin snapping, is matched to two different alleles, and the sample is then read as carrying two null alleles.
 
 ```
 one heterozygous 3.6 kb Gerbich deletion in the sample
@@ -168,42 +194,102 @@ select_best_per_vcf: "best db definition for THIS RECORD"      x 2 records
 one record (either caller) -> one allele -> GE*01.-02.01 / GE*01 heterozygote, correct
 ```
 
-The tie error would need the two records to have identical coordinates; they never do. 2.4.4's `ambiguous_equal_best_sv_evidence` error does not catch this: it fires only on identical coordinates with conflicting GT or FILTER, which the two callers never produce together (0 of 131 shared events in 150 genomes had identical breakpoints). That is a gap in rbceq2 worth raising upstream (§12), and until it is closed the merge must guarantee one record per event. Empirical basis in `sv_cnv_overlap_50_samples.md`.
+The tie error would need the two records to have identical coordinates; they never do. 2.4.4's `ambiguous_equal_best_sv_evidence` error does not catch this: it fires only on identical coordinates with conflicting GT or FILTER, which the two callers never produce together (0 of 131 shared events in 150 genomes had identical breakpoints).
 
-Triage, not caller ownership. The study's read-level check (`sv_cnv_overlap_50_samples.md` §11) showed Manta missing a real 3.6 kb Gerbich deletion that the CNV caller found on 3 bins, so neither caller can own a band by size alone. Instead:
+That is a gap in rbceq2 worth raising upstream (§12), and until it is closed the merge must guarantee one record per event. Empirical basis in `sv_cnv_overlap_50_samples.md`.
 
-1. Restrict both structural VCFs to database-relevant records. Keep a Manta or CNV record only if it (a) overlaps a db SV definition within rbceq2's own positional and length tolerance (`SvMatcher` defaults; use the same code), or (b) is a PASS deletion under 1 Mb (`sv_del_max_bp`, §8) spanning any defining SNV/indel site in `bg_site_systems.<genome>.tsv`. Everything else is discarded here, which also removes the whole-arm Manta `DUP:TANDEM` artefacts and, for (b), the megabase karyotype events (§5.6 handles those) and a 126 Mb `MaxDepth` Manta record seen once over AUG and RHAG.
-2. Keep every surviving record from either caller, whatever its FILTER, with two edits: a `cnvLength` CNV record is dropped if it has fewer than 3 bins (`BC < sv_min_bins`; Manta corroborates 45% of 1–2-bin deletions against 75–79% of 3–4-bin ones), and a surviving non-PASS record has its FILTER rewritten to PASS and the original recorded in `INFO/SVFILTER`. `--no_filter` is never used; it is global.
-3. Where two surviving records describe one event (same direction, reciprocal overlap ≥ `sv_recip_overlap`), keep the Manta record. Its breakpoints are exact to `CIPOS` (0–50 bp here) where the CNV caller's are bin-snapped by 0.2–4.6 kb, and the sub-10 kb targets (seven GE alleles, three A4GALT, the GYP cluster) differ from each other only by breakpoint. Record the dropped partner's ID in `INFO/SVPARTNER` so the QC can report that both callers agreed.
-4. Tag every kept record with `INFO/SVSRC` (`MANTA`, `CNV`, or `CNV_LOWRES` for a CNV-only record under 10 kb) so the QC (§6) can grade the allele it produces.
-5. Assert no two surviving records share CHROM, POS, END and SVTYPE. Fail the sample.
+Triage, not caller ownership, decides what survives. The study's read-level check showed Manta missing a real 3.6 kb Gerbich deletion that the CNV caller found on 3 bins, so neither caller can own a band by size alone (`sv_cnv_overlap_50_samples.md` §11).
 
-In 150 genomes rule 1(a) kept 0 to 2 records per genome, 3 in total across the whole study: the two Gerbich records and the Gerbich CNV-only record, and rule 1(b) another 0 to 3, so the merged file carries a handful of structural records, not hundreds. Rule 3 fired only on the Gerbich case, and the only allele actually called was the Gerbich deletion. Rule 1(b) is where a new observation sits: a recurrent 9–13 kb deletion at chr19:48.69 Mb spanning a FUT2 defining site, in 5 of 150 genomes, seen by both callers, matching no db allele. rbceq2 ignores it; the QC must not (§6).
+#### Triage rules
 
-Haploid GT can also appear on non-PAR chrX/chrY Manta and CNV records once the merge exists, at a similar low rate to the one seen on chrX CNV records in the study. The merge does not add a second `bcftools +fixploidy` invocation for this. That question is decided once, on the 2.4.4 pin bump, for SNV and structural records together, because 2.4.4 claims native haploid support that may make the invocation redundant everywhere (§13, Q4 and the 2026-09-18 entry).
+| Rule | What is kept or done | Why |
+|---|---|---|
+| 1. Restrict both structural VCFs to db-relevant records | Keep a Manta or CNV record only if it (a) overlaps a db SV definition within `SvMatcher`'s own positional and length tolerance (its defaults; use the same code), or (b) is a PASS deletion under `sv_del_max_bp` (1 Mb) spanning a defining SNV/indel site in `bg_site_systems.<genome>.tsv`. Discard everything else. | Removes whole-arm `DUP:TANDEM` artefacts and megabase karyotype events, which §5.6 handles instead. |
+| 2. Keep every surviving record from either caller, whatever its FILTER | A `cnvLength` CNV record is dropped if `BC < sv_min_bins`; a surviving non-PASS record has its FILTER rewritten to PASS with the original recorded in `INFO/SVFILTER`. | Corroboration from Manta is far more likely at higher bin counts, so a low-bin CNV-only record is dropped rather than trusted; `--no_filter` is never used, since it is global. |
+| 3. Where two surviving records describe one event, keep the Manta record | Triggered by reciprocal overlap of at least `sv_recip_overlap` in the same direction; the dropped partner's ID is recorded in `INFO/SVPARTNER`. | Manta's breakpoints are exact; the CNV caller's are bin-snapped, and several sub-10 kb targets differ from each other only by breakpoint. |
+| 4. Tag every kept record with `INFO/SVSRC` | `MANTA`, `CNV`, or `CNV_LOWRES` for a CNV-only record under 10 kb. | Lets the QC (§6) grade the allele it produces. |
+| 5. Assert no two surviving records share CHROM, POS, END and SVTYPE | Fail the sample if they do. | Guarantees the one-record-per-event property the merge exists to provide. |
+
+#### What the study showed
+
+- Rule 1(a) kept 0 to 2 records per genome, 3 in total across 150 genomes: the two Gerbich records and the Gerbich CNV-only record.
+- Rule 1(b) kept another 0 to 3 records per genome, including a recurrent 9–13 kb deletion at chr19:48.69 Mb spanning a FUT2 defining site in 5 of 150 genomes, matching no db allele; rbceq2 ignores it, but the QC must not (§6).
+- Rule 1 also removed a 126 Mb `MaxDepth` Manta record seen once over AUG and RHAG.
+- Rule 2's 3-bin floor (`sv_min_bins`) reflects that Manta corroborates 45% of 1–2-bin deletions against 75–79% of 3–4-bin ones.
+- Rule 3 fired only on the Gerbich case: Manta's breakpoints were exact to `CIPOS` (0–50 bp) where the CNV caller's were bin-snapped by 0.2–4.6 kb, and the sub-10 kb targets (seven GE alleles, three A4GALT, the GYP cluster) differ from each other only by breakpoint.
+- The only allele actually called across the study was the Gerbich deletion.
+
+Haploid GT can also appear on non-PAR chrX/chrY Manta and CNV records once the merge exists, at a similarly low rate to the one seen on chrX CNV records in the study. The merge does not add a second `bcftools +fixploidy` invocation for this.
+
+That question is decided once, on the 2.4.4 pin bump, for SNV and structural records together, because 2.4.4 claims native haploid support that may make the invocation redundant everywhere (§13, Q4 and the 2026-09-18 entry).
 
 ### 5.6 Sex and ploidy
 
-For X-linked systems (XK/Kx, XG, CD99), expected copy number depends on the sample's sex and the region, PAR versus non-PAR, and RBCeq2 infers zygosity from GT without knowing it. Read per-SG sex from `ploidy_estimation_metrics.csv` and `.ploidy.vcf.gz` (X/Y coverage ratios). Do not use the `##referenceSexKaryotype` header; it is a reference/config constant reading `XXYY` for every sample, verified 102/102 across the cohort. Feed resolved ploidy into CNV direction (§5.4), the karyotype gate (§5.4), and the `KARYOTYPE` QC flag (§6): those are its three consumers. The SNV GT diploid-isation in the conversion stage (§5.2) is not a fourth; it needs no sex or PAR input (§13, Q4).
+This step derives each sample's sex and ploidy from DRAGEN's own estimate, for use by CNV direction (§5.4), the karyotype gate (§5.4), and the `KARYOTYPE` QC flag (§6).
 
-Expected CN is region times sex, not a blanket 'chrX = 1 in males' rule. Of the seven chrX structural alleles, four are in PAR1: CD99\*01N.01/02 (about 2.71 Mb) and XG\*01N.02/03 (about 2.78 Mb, on the PAR1 boundary), which is diploid in males (baseline CN=2). Only XK (37.7 Mb) and ATP11C (139.7 Mb) are genuinely hemizygous (CN=1 in males). A naive haploid-X rule would expect CN=1 in PAR and miscall the normal CD99/XG state as a deletion. So the CNV direction (§5.4) must be PAR-mask aware: diploid in PAR1/PAR2, hemizygous only in non-PAR X/Y for males (chrY: 1 in males, 0 in females).
+For X-linked systems (XK/Kx, XG, CD99), expected copy number depends on the sample's sex and on region, PAR versus non-PAR. RBCeq2 infers zygosity from GT without knowing either.
 
-Across the 150 genomes, the 62 XY samples produced no large chrX CNV event, so DRAGEN's caller handles a normal male. The one sample estimated X0 carried PASS heterozygous CN=1 deletions of 1.4–10.6 Mb across XK, CD99, XG and ATP11C, and the one XYY genome a PASS CN=3 duplication across PAR1 (CD99, XG). Both escaped a false allele only because the length gate rejected megabase events against 11–219 kb tokens; a shorter segment would not be rejected. So the merge reads `Ploidy estimation` from `ploidy_estimation_metrics.csv` and, for any value other than `XX` or `XY`, drops or tags the sample's chrX/chrY CNV records (§5.4, open decision Q5) and the QC reports the X-linked systems as `KARYOTYPE:<estimate>` rather than assessing them.
+Read per-SG sex from `ploidy_estimation_metrics.csv` and `.ploidy.vcf.gz` (X/Y coverage ratios), not the `##referenceSexKaryotype` header, a constant reading `XXYY` for every sample, verified 102/102 (§7). The SNV GT diploid-isation in the conversion stage (§5.2) is not a fourth consumer; it needs no sex or PAR input (§13, Q4).
+
+Expected CN is region times sex, not a blanket 'chrX = 1 in males' rule. Of the seven chrX structural alleles, four sit in PAR1 and are diploid in males; only XK and ATP11C are genuinely hemizygous (CN=1 in males).
+
+#### Expected copy number by region and karyotype
+
+| Region | XX | XY |
+|---|---|---|
+| PAR1/PAR2 (CD99, XG) | 2 | 2 |
+| Non-PAR chrX (XK, ATP11C) | 2 | 1 |
+| chrY | 0 | 1 |
+
+- PAR1: CD99\*01N.01/02 (about 2.71 Mb), XG\*01N.02/03 (about 2.78 Mb, on the PAR1 boundary). Diploid in males (baseline CN=2).
+- Non-PAR chrX: XK (37.7 Mb), ATP11C (139.7 Mb). Hemizygous in males (CN=1).
+
+A naive haploid-X rule would expect CN=1 in PAR and miscall the normal CD99/XG state as a deletion. So the CNV direction (§5.4) must be PAR-mask aware: diploid in PAR1/PAR2, hemizygous only in non-PAR X/Y for males (chrY: 1 in males, 0 in females).
+
+#### Karyotype gate
+
+The gate reads `Ploidy estimation` from `ploidy_estimation_metrics.csv` per sample. For any value other than `XX` or `XY`, it drops or tags the sample's chrX/chrY CNV records (§5.4, open decision Q5), and the QC reports the X-linked systems as `KARYOTYPE:<estimate>` rather than assessing them.
+
+What the study observed, across the 150 genomes:
+
+- The 62 XY samples produced no large chrX CNV event, so DRAGEN's caller handles a normal male.
+- The one genome estimated X0 carried PASS heterozygous CN=1 deletions of 1.4–10.6 Mb across XK, CD99, XG and ATP11C.
+- The one XYY genome carried a PASS CN=3 duplication across PAR1 (CD99, XG).
+
+Both escaped a false allele only because the length gate rejected megabase events against 11–219 kb tokens; a shorter segment would not be rejected.
 
 ### 5.7 Wire into the caller stage
 
-`GenotypeBloodGroupsWithRbceq2` (`stages/blood_group_genotyping/genotype.py`) changes only its input: `--vcf` now points at `<sg>.rbceq2_input.vcf.gz`. Do not use `--no_filter` to admit sub-10 kb CNVs; it is global and would also let through non-PASS SNVs and SVs. Sub-10 kb CNV records that are kept have their FILTER rewritten to PASS in preprocessing instead (§5.4). Leave `--phased` off, never required for detection, and `--RH` off, out of scope (§4).
+This step repoints `GenotypeBloodGroupsWithRbceq2` at the merged VCF; it depends on the FILTER rewrite for sub-10 kb CNVs in §5.4.
+
+`GenotypeBloodGroupsWithRbceq2` (`stages/blood_group_genotyping/genotype.py`) changes only its input: `--vcf` now points at `<sg>.rbceq2_input.vcf.gz`.
+
+Do not use `--no_filter` to admit sub-10 kb CNVs; it is global and would also let through non-PASS SNVs and SVs. Sub-10 kb CNV records that are kept have their FILTER rewritten to PASS in preprocessing instead (§5.4).
+
+Leave `--phased` off, never required for detection, and `--RH` off, out of scope (§4).
 
 ---
 
 ## 6. QC for structural calls
 
-`FlagBloodGroupCallQc` asks, per defining SNV site, whether the caller looked and how well, using gVCF records and reference blocks. Structural alleles need the same two answers from different evidence, and the two sources answer differently:
+This section extends `FlagBloodGroupCallQc` to structural calls, emitting six new flags. For each defining SNV site the QC already asks whether the caller looked and how well; structural alleles need the same two answers from different evidence.
 
 | Question | CNV VCF (10 kb+ targets) | gVCF depth (sub-10 kb targets) |
 |---|---|---|
-| Did the caller assess the region? | Yes: `DRAGEN:REF:` records tile every 10 kb+ target in 98–100% of genomes with 16–195 bins. A gap, or a `cnvQual` event, is the analogue of `NOCOV`. | Not from the structural VCFs: Manta emits events only, and a sub-10 kb target holds 1–7 bins. But the gVCF already tiles the interval with reference blocks carrying `DP`/`MIN_DP`, and the conversion stage reads it once. Mean depth over the target against its flanks is the same signal the study's read-level check used: about half for a heterozygous deletion, near zero for homozygous, flat for none. |
-| How good is the call? | `QUAL`, `CN`, segment mean (`SM`), bin count (`BC`), FILTER. | Manta: `QUAL`, `PR`/`SR`, `CIPOS`. CNV-only: `BC`, `SM`, `QUAL`, and the fact that Manta saw nothing. |
+| Did the caller assess the region? | Yes, near-complete tiling | Not directly; inferred from depth |
+| How good is the call? | `QUAL`, `CN`, `SM`, `BC`, FILTER | `QUAL`, `PR`/`SR`, `CIPOS`, or bin evidence |
+
+#### Did the caller assess the region?
+
+`DRAGEN:REF:` records tile every 10 kb+ target in 98–100% of genomes, with 16–195 bins. A gap, or a `cnvQual` event, is the analogue of `NOCOV`.
+
+The structural VCFs give nothing directly for sub-10 kb targets: Manta emits events only, and such a target holds 1–7 bins. But the gVCF already tiles the interval with reference blocks carrying `DP`/`MIN_DP`, read once by the conversion stage.
+
+#### How good is the call?
+
+For 10 kb+ targets, quality comes from `QUAL`, `CN`, segment mean (`SM`), bin count (`BC`) and FILTER.
+
+For sub-10 kb targets, Manta gives `QUAL`, `PR`/`SR` and `CIPOS`; a CNV-only call gives `BC`, `SM`, `QUAL`, and the fact that Manta saw nothing. Mean depth over the target against its flanks is the same signal the study's read-level check used: about half for a heterozygous deletion, near zero for homozygous, flat for none.
 
 Design:
 
@@ -211,13 +297,21 @@ Design:
 2. New flags, joined with `+` to provenance like today's:
    - `SVNOCOV:<system>(<allele>,gap=<bp>)`: a 10 kb+ target not tiled by CNV records.
    - `SVLOWRES:<system>(<allele>,src=CNV,BC=<n>,SM=<x>,QUAL=<q>)`: an allele called from a §5.4 CNV-only sub-10 kb record. Provisional by construction.
-   - `SVDEPTH:<system>(<allele>,ratio=<x>,DP=<n>,flank=<n>)`: gVCF depth over a sub-10 kb target is below `sv_depth_ratio` of its flanking depth and no kept record explains it. The dosage-drop signal without a breakpoint call; what the missed Gerbich deletion would have raised had Manta and the CNV caller both been silent.
+   - `SVDEPTH:<system>(<allele>,ratio=<x>,DP=<n>,flank=<n>)`: gVCF depth over a sub-10 kb target falls below `sv_depth_ratio` of its flanking depth with no kept record to explain it. This is the dosage-drop signal without a breakpoint call.
    - `SVUNASSESSED:<system>`: a sub-10 kb target with no gVCF record over the interval at all, an exome hole or an unmapped region, so neither a call nor its absence can be judged.
    - `KARYOTYPE:<estimate>`: X-linked systems in a non-XX/XY sample (§5.6).
-   - `SVDEL:<system>(<site>,del=<chrom:pos-end>,src=<caller>,GT=<gt>)`: a kept deletion, matched to a db allele or not, spans a defining SNV/indel site of the system. rbceq2 does nothing with an unmatched deletion: a structural record enters its variant pool only under the db token it matched, and the zygosity adjustment that turns a homozygous call inside a deletion into hemizygous (`modify_variant_pool_if_large_indel`) only sees pool entries. So a gVCF `A/A` under a heterozygous deletion that matches no db SV is reported homozygous, the same silent-wrong-call class as absent-means-reference. The QC has to say so, as it already does for a small deletion that removed the base (`DEL`).
-   - A structural call that passes everything is not listed, so `PASS` keeps meaning 'nothing to report'.
+   - `SVDEL:<system>(<site>,del=<chrom:pos-end>,src=<caller>,GT=<gt>)`: a kept deletion, matched to a db allele or not, spans a defining SNV/indel site of the system.
+
+   A structural call that passes everything is not listed, so `PASS` keeps meaning 'nothing to report'.
+
 3. The defining-sites extract grows by the sub-10 kb target intervals. `gen_bg_resources.py` emits them as a second BED from the same db parse; `FilterAndConvertGvcfsForRbceq2` extracts `DP`/`MIN_DP`/`END` over them and over a flank each side in the same pass it already makes for the SNV sites.
 4. What gVCF depth does not give, accepted for the first cut: the mapping-quality-zero fraction and discordant-pair evidence a CRAM read would. DRAGEN's DP already excludes reads failing its mapping filters, so poor mappability appears as low depth rather than as its own signal, which a flag can live with. Breakpoint confirmation is the callers' job, not the QC's.
+
+#### Why `SVDEL` exists
+
+`SVDEL` exists because rbceq2 does nothing with an unmatched deletion. A structural record enters its variant pool only under the db token it matched, and the zygosity adjustment that turns a homozygous call inside a deletion into hemizygous (`modify_variant_pool_if_large_indel`) only sees pool entries.
+
+So a gVCF `A/A` under a heterozygous deletion that matches no db SV is reported homozygous, the same silent-wrong-call class as absent-means-reference. The QC has to say so, as it already does for a small deletion that removed the base (`DEL`).
 
 ---
 
