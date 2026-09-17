@@ -1,6 +1,6 @@
 # DRAGEN → RBCeq2: three data sources per sample, and how to combine them
 
-**Date:** 2026-07-16
+**Date:** 2026-07-16 · **Diagram revised 2026-09-18** to match SPEC §5.5 (triage, one record per event, karyotype gate, QC hand-off); the source tables below are unchanged from July.
 **Context:** ICA **DRAGEN 3.7.8** (`SW: 13.021.604.3.7.8f`, hg38, `chr`-prefixed) emits
 **three** variant files per sample. RBCeq2 (v2.4.x) consumes **one VCF per sample**, and
 reads SNVs, indels *and* structural variants out of that single file — there is no
@@ -122,26 +122,38 @@ Header ALTs `<CNV>`/`<DEL>`/`<DUP>`; `FORMAT` has `CN` (estimated copy number).
 flowchart TD
     subgraph DRAGEN["DRAGEN 3.7.8 output (per sample)"]
         GVCF["1 · SNV gVCF<br/>recal_gvcf/&lt;sg&gt;.hard-filtered.recal.gvcf.gz<br/><i>&lt;NON_REF&gt; ref-blocks</i>"]
-        SV["2 · SV VCF (Manta)<br/>dragen_metrics/&lt;sg&gt;/&lt;sg&gt;.sv.vcf.gz<br/><i>SVTYPE=DEL/DUP/INS/BND</i>"]
-        CNV["3 · CNV VCF<br/>dragen_metrics/&lt;sg&gt;/&lt;sg&gt;.cnv.vcf.gz<br/><i>every record SVTYPE=CNV</i>"]
-        PLOIDY["ploidy_estimation_metrics.csv<br/>+ &lt;sg&gt;.ploidy.vcf.gz<br/><i>per-sample sex</i>"]
+        SV["2 · SV VCF (Manta)<br/>dragen_metrics/&lt;sg&gt;/&lt;sg&gt;.sv.vcf.gz<br/><i>SVTYPE=DEL/DUP/INS/BND · exact breakpoints</i>"]
+        CNV["3 · CNV VCF<br/>dragen_metrics/&lt;sg&gt;/&lt;sg&gt;.cnv.vcf.gz<br/><i>every record SVTYPE=CNV · 1–2 kb bins · &lt;10 kb = cnvLength</i>"]
+        PLOIDY["ploidy_estimation_metrics.csv<br/><i>Ploidy estimation: XX / XY / other</i>"]
     end
 
-    GVCF -->|"convert → sites VCF<br/>split multiallelics, drop &lt;NON_REF&gt;/ref-blocks,<br/>restrict to bg_regions.GRCh38.bed"| SNVv["snv sites VCF"]
-    SV -->|"region-restrict, rename sample,<br/>sort/bgzip/tabix (no type change)"| SVv["sv VCF"]
-    CNV -->|"drop DRAGEN:REF records;<br/>rewrite SVTYPE=CNV → DEL/DUP;<br/>cnvLength policy"| CNVv["fixed cnv VCF"]
-    PLOIDY -.->|"expected copy number<br/>on chrX / chrY"| CNVv
+    GVCF -->|"convert → sites VCF<br/>split multiallelics, drop &lt;NON_REF&gt;/ref-blocks,<br/>restrict to bg_regions.GRCh38.bed<br/>(existing stage)"| SNVv["snv sites VCF"]
+    SV -->|"drop BND; region-restrict;<br/>rename sample"| SVv["sv records"]
+    CNV -->|"drop DRAGEN:REF records;<br/>rewrite SVTYPE=CNV → DEL/DUP from ALT;<br/>drop BC &lt; 3"| CNVv["cnv records"]
+    PLOIDY -.->|"not XX/XY → drop or tag<br/>chrX/chrY cnv records<br/>(§5.6 karyotype gate)"| CNVv
+
+    SVv --> TRIAGE
+    CNVv --> TRIAGE
+    TRIAGE["<b>Triage to database-relevant records (§5.5 rule 1)</b><br/>keep if (a) within SvMatcher tolerance of a db SV token,<br/>or (b) PASS deletion &lt;1 Mb spanning a defining SNV site;<br/>discard everything else<br/><i>150 genomes: 0–2 (a) + 0–3 (b) records per genome</i>"]
+
+    TRIAGE --> ONE{"two records,<br/>same direction,<br/>recip overlap ≥ 0.5?"}
+    ONE -->|"yes → keep Manta<br/>(exact breakpoints), record<br/>partner in INFO/SVPARTNER"| TAG
+    ONE -->|"no → keep as is"| TAG
+    TAG["tag INFO/SVSRC = MANTA · CNV · CNV_LOWRES<br/>rewrite FILTER → PASS, original in INFO/SVFILTER<br/>assert no two records share CHROM/POS/END/SVTYPE"]
 
     SNVv --> MERGE["bcftools concat + sort<br/>→ one bgzipped, tabixed VCF"]
-    SVv --> MERGE
-    CNVv --> MERGE
+    TAG --> MERGE
+    MERGE --> VCF["&lt;sg&gt;.rbceq2_input.vcf.gz"]
 
-    MERGE --> DEDUP{"SV/CNV overlap<br/>(~2–50 kb band)"}
-    DEDUP -->|"dedup here, or defer<br/>to select_best_per_vcf"| VCF["&lt;sg&gt;.merged.vcf.gz"]
-
-    VCF --> RBC["rbceq2 --vcf &lt;sg&gt;.merged.vcf.gz<br/>--reference_genome GRCh38<br/>(+ --no_filter if keeping sub-10kb CNVs)"]
+    VCF --> RBC["rbceq2 --vcf … --reference_genome GRCh38<br/>(never --no_filter, never --RH)"]
     RBC --> OUT["blood-group calls<br/>(geno / pheno TSVs)"]
+    VCF -.->|"structural records +<br/>DRAGEN:REF tiling"| QC["FlagBloodGroupCallQc (§11)<br/>SVNOCOV · SVLOWRES · SVUNASSESSED<br/>SVDEL · KARYOTYPE"]
 ```
+
+> **Why one record per event.** rbceq2 keeps the best db token per *record*, so a deletion that
+> arrives from both callers, offset by the CNV caller's bin snapping, is read as two different
+> alleles (a compound heterozygote). Its 2.4.4 tie error needs identical coordinates and never
+> fires on real pairs. Figure and evidence: SPEC §5.5 and `sv_cnv_overlap_50_samples.md`.
 
 ### Combine step notes
 - **Merge = `bcftools concat` of the three normalised VCFs, then sort/bgzip/tabix.** All
