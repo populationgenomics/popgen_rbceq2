@@ -367,26 +367,48 @@ Each threshold is recorded in the Analysis meta of the stage that applies it, as
 
 ## 10. Testing plan, expected outcome and success criteria
 
-Two kinds of check. Unit tests run in CI on constructed records committed under `tests/`, shaped like the records in §3 and the study's observations: no extract of any cohort genome enters the repo, and CI cannot read `gs://cpg-ourdna-main/…`, so no unit test may resolve a live GCS path. Concordance checks run by hand against the real files of the OurDNA 1000 Genomes (1KG) control replicates, independent sequencings of one public control individual (`NA12878`, XX): five SGs when this spec was first drafted, nine by the time of `ourdna_genomic_atlas#136`. Being XX, the replicates cannot exercise the haploid male chrX/chrY paths; that needs a male genome.
+Checks run in two places. Constructed-record tests run in CI; concordance checks run by hand against real files in GCS. Two further tests need samples the team does not yet have.
 
-- Unit: `fix_dragen_cnv_vcf` on a constructed CNV VCF holding a `DRAGEN:REF:` block and `<DEL>`/`<DUP>` events, asserting REF records dropped, every surviving `SVTYPE` in {DEL,DUP}, counts match `CnvRewriteStats`.
-- Unit: `merge_variant_vcfs` on a constructed SNV VCF, SV VCF and CNV VCF with a chrX record for the ploidy path; output is sorted, single-sample, tabix-indexed, `chr`-prefixed.
-- Integration (concordance, manual, needs GCS): run the full preprocess-plus-rbceq2 on every replicate; structural calls must be identical across all of them (same individual). Any divergence is a bug or a QC signal (compare the SNV divergence table in `ourdna_genomic_atlas#124`).
-- Sub-10 kb path, synthetic fixtures shaped like the study's observations, no cohort data in the repo: (a) a Manta DEL record of exactly 3609 bp at the GE\*01.-02.01 coordinates plus a 4961 bp `cnvLength` CN=1 CNV record over it, where the merge keeps the Manta record and records the CNV partner, and rbceq2 calls one GE allele, never two; (b) the CNV record alone, 3 bins, kept, PASS-rewritten, tagged, and the QC flags the GE call `SVLOWRES`; (c) the same with 2 bins, dropped, GE unassessed. The study observed both (a) and (b) in real genomes; the fixtures are constructed records, not extracts.
-- Karyotype gate, synthetic: a CNV record set with megabase CN=1 deletions across XK, CD99/XG and ATP11C paired with a ploidy metrics file reading `X0`, and a PAR1 CN=3 duplication paired with `XYY`; no X-linked allele is called and the QC reports `KARYOTYPE:<estimate>`.
-- Concordance across 150 genomes: the study's scripts, once committed, are the check that a code change to the merge does not alter the per-band record counts or the single GE hit under the `pass` policy. They read live GCS paths, so this is a manual check, not CI.
-- True-positive (DB-derived targets), still wanted: a sample with a known 10 kb+ deletion, asserting the allele is called. Concrete targets: XK\*N.05 (8 kb, non-PAR chrX, must come via the SV VCF, exercises the sub-10 kb path) and a larger non-PAR deletion, XK\*N.01 (53 kb) or ATP11C\*01N.01 (219 kb), from the CNV VCF (exercises the hemizygous ploidy path). Needed because the control shows no positive structural hit.
-- PAR-versus-hemizygous ploidy (needs a male sample): confirm the region-aware expected CN (§5.6): CD99/XG (PAR1, diploid in males) are not miscalled as deletions, while XK/ATP11C (non-PAR) are handled hemizygously. The XX 1KG replicates cannot provide this check.
+#### What runs in CI
 
-Expected outcome
+Unit tests use constructed records committed under `tests/`, shaped like the records in §3 and the study's observations. No extract of any cohort genome enters the repo. CI cannot read `gs://cpg-ourdna-main/…`, so no unit test may resolve a live GCS path.
 
-RBCeq2 gains the ability to call the roughly 40 large-CNV and 38 large-indel blood-group alleles it cannot call today, from data DRAGEN already produces, with no change to RBCeq2 and one new preprocessing stage. These alleles are rare: across the 150 study genomes the design calls one, the Gerbich deletion. The measurable gain is therefore correctness on the carriers that do occur, plus QC that reports unassessed targets and the deletions over defining sites that RBCeq2 ignores. Hybrid RH/GYP alleles remain out of reach on short-read data.
+| Test | Input (constructed) | Asserts |
+|---|---|---|
+| `fix_dragen_cnv_vcf` | A CNV VCF holding a `DRAGEN:REF:` block and `<DEL>`/`<DUP>` events | REF records dropped; every surviving `SVTYPE` in {DEL,DUP}; counts match `CnvRewriteStats` |
+| `merge_variant_vcfs` | An SNV VCF, SV VCF and CNV VCF, with a chrX record for the ploidy path | Output is sorted, single-sample, tabix-indexed, `chr`-prefixed |
+| Sub-10 kb path (a) | A Manta DEL record of exactly 3609 bp at the GE\*01.-02.01 coordinates plus a 4961 bp `cnvLength` CN=1 CNV record over it | The merge keeps the Manta record and records the CNV partner; rbceq2 calls one GE allele, never two |
+| Sub-10 kb path (b) | The CNV record alone, 3 bins | Kept, PASS-rewritten, tagged; the QC flags the GE call `SVLOWRES` |
+| Sub-10 kb path (c) | The CNV record alone, 2 bins | Dropped; GE unassessed |
+| Karyotype gate | Megabase CN=1 deletions across XK, CD99/XG and ATP11C with a ploidy metrics file reading `X0`; a PAR1 CN=3 duplication with `XYY` | No X-linked allele is called; the QC reports `KARYOTYPE:<estimate>` |
 
-Success criteria
+The study observed sub-10 kb cases (a) and (b) in real genomes. The fixtures are constructed records shaped like them, not extracts.
 
-- The synthetic fixtures above pass.
+#### What runs by hand against GCS
+
+The OurDNA 1000 Genomes (1KG) control replicates are independent sequencings of one public control individual (`NA12878`, XX): five SGs when this spec was first drafted, nine by the time of `ourdna_genomic_atlas#136`.
+
+- Replicate concordance: run the full preprocess-plus-rbceq2 on every replicate. Structural calls must be identical across all of them, since they are one individual. Any divergence is a bug or a QC signal (compare the SNV divergence table in `ourdna_genomic_atlas#124`).
+- 150-genome concordance: the study's scripts, once committed, check that a code change to the merge does not alter the per-band record counts or the single GE hit under the `pass` policy.
+
+#### Still wanted
+
+Both need a sample the replicates cannot supply. Being XX, they exercise neither the haploid male chrX/chrY paths nor a positive structural hit.
+
+- A true positive from a database-derived target: a sample with a known 10 kb+ deletion, asserting the allele is called. Concrete targets: XK\*N.05 (8 kb, non-PAR chrX, must come via the SV VCF, exercises the sub-10 kb path), and a larger non-PAR deletion from the CNV VCF, XK\*N.01 (53 kb) or ATP11C\*01N.01 (219 kb), which exercises the hemizygous ploidy path.
+- PAR-versus-hemizygous ploidy, needing a male genome: confirm the region-aware expected CN (§5.6). CD99/XG (PAR1, diploid in males) are not miscalled as deletions, while XK/ATP11C (non-PAR) are handled hemizygously.
+
+#### Expected outcome
+
+RBCeq2 gains the ability to call the roughly 40 large-CNV and 38 large-indel blood-group alleles it cannot call today, from data DRAGEN already produces, with no change to RBCeq2 and one new preprocessing stage. Hybrid RH/GYP alleles remain out of reach on short-read data.
+
+These alleles are rare: across the 150 study genomes the design calls one, the Gerbich deletion. The measurable gain is therefore correctness on the carriers that do occur, plus QC that reports unassessed targets and the deletions over defining sites that RBCeq2 ignores.
+
+#### Success criteria
+
+- The constructed-record tests above pass.
 - The 150-genome per-band counts and the single GE hit reproduce under the `pass` policy.
-- No X-linked allele is called in the X0 or XYY synthetic fixtures.
+- No X-linked allele is called in the X0 or XYY fixtures.
 - The merged VCF passes `validate_for_rbceq2`.
 
 ---
