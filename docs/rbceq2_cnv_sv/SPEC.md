@@ -489,9 +489,9 @@ short-read data.
 gVCF records and reference blocks. Structural alleles need the same two answers from different
 evidence, and the two sources answer differently:
 
-| Question | CNV VCF (10 kb+ targets) | Manta / CNV-only (sub-10 kb targets) |
+| Question | CNV VCF (10 kb+ targets) | gVCF depth (sub-10 kb targets) |
 |---|---|---|
-| Did the caller assess the region? | Yes: `DRAGEN:REF:` records tile every 10 kb+ target in 98–100% of genomes with 16–195 bins (study §7). A gap, or a `cnvQual` event, is the analogue of `NOCOV`. | Not from the VCFs. Manta emits events only, and a sub-10 kb target holds 1–7 bins, so a REF record over it says nothing. |
+| Did the caller assess the region? | Yes: `DRAGEN:REF:` records tile every 10 kb+ target in 98–100% of genomes with 16–195 bins (study §7). A gap, or a `cnvQual` event, is the analogue of `NOCOV`. | Not from the structural VCFs: Manta emits events only, and a sub-10 kb target holds 1–7 bins. But the **gVCF** already tiles the interval with reference blocks carrying `DP`/`MIN_DP`, and the conversion stage reads it once. Mean DP over the target against its flanks is the same signal the study's read-level check used (§11 there): about half for a heterozygous deletion, near zero for homozygous, flat for none. |
 | How good is the call? | `QUAL`, `CN`, `SM`, `BC`, FILTER. | Manta: `QUAL`, `PR`/`SR`, `CIPOS`. CNV-only: `BC`, `SM`, `QUAL`, and the fact that Manta saw nothing. |
 
 Design:
@@ -504,8 +504,12 @@ Design:
    - `SVNOCOV:<system>(<allele>,gap=<bp>)`: a 10 kb+ target not tiled by CNV records.
    - `SVLOWRES:<system>(<allele>,src=CNV,BC=<n>,SM=<x>,QUAL=<q>)`: an allele called from a
      §5.4.3 CNV-only sub-10 kb record. Provisional by construction.
-   - `SVUNASSESSED:<system>`: a sub-10 kb target with no event from either caller. States that
-     absence was not assessable, the honest answer until a CRAM-derived depth/MAPQ0 metric exists.
+   - `SVDEPTH:<system>(<allele>,ratio=<x>,DP=<n>,flank=<n>)`: gVCF depth over a sub-10 kb target
+     is below `sv_depth_ratio` of its flanking depth and no kept record explains it. The
+     dosage-drop signal without a breakpoint call; what the missed Gerbich deletion would have
+     raised had Manta and the CNV caller both been silent.
+   - `SVUNASSESSED:<system>`: a sub-10 kb target with no gVCF record over the interval at all
+     (an exome hole, or an unmapped region), so neither a call nor its absence can be judged.
    - `KARYOTYPE:<estimate>`: X-linked systems in a non-XX/XY sample (§5.6).
    - `SVDEL:<system>(<site>,del=<chrom:pos-end>,src=<caller>,GT=<gt>)`: a kept deletion, matched
      to a db allele or not, spans a defining SNV/indel site of the system. **rbceq2 does nothing
@@ -517,8 +521,14 @@ Design:
      does for a small deletion that removed the base (`DEL`).
    - A structural call that passes everything is not listed, so `PASS` keeps meaning "nothing to
      report".
-3. **Thresholds in Analysis meta**, as `min_depth`/`min_gq` are today: `sv_min_bins = 3`,
-   `sv_recip_overlap = 0.5`, `sv_lowres_max_bp = 10000` (the size below which a CNV-only record is graded `CNV_LOWRES`).
-4. **Out of scope for the first cut:** a CRAM-derived assessability metric for sub-10 kb
-   targets. The study's read-level check (§11) is the shape it would take (mean depth and
-   discordant-pair count over the target), and it costs a CRAM read per sample.
+3. **The defining-sites extract grows by the sub-10 kb target intervals.** `gen_bg_resources.py`
+   emits them as a second BED from the same db parse; `FilterAndConvertGvcfsForRbceq2` extracts
+   `DP`/`MIN_DP`/`END` over them and over a flank each side (say 5 kb) in the same pass it already
+   makes for the SNV sites. No new input, no new job.
+4. **Thresholds in Analysis meta**, as `min_depth`/`min_gq` are today: `sv_min_bins = 3`,
+   `sv_recip_overlap = 0.5`, `sv_lowres_max_bp = 10000` (the size below which a CNV-only record
+   is graded `CNV_LOWRES`), `sv_depth_ratio = 0.7`, `sv_depth_flank_bp = 5000`.
+5. **What gVCF depth does not give**, accepted for the first cut: the MAPQ0 fraction and
+   discordant-pair evidence a CRAM read would. DRAGEN's DP already excludes reads failing its
+   mapping filters, so poor mappability appears as low depth rather than as its own signal, which
+   a flag can live with. Breakpoint confirmation is the callers' job, not the QC's.
