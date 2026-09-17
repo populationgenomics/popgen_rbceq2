@@ -6,15 +6,23 @@
 **Author:** Joshua Schmidt · **Reviewers:** (fill in)
 **Companion docs (same directory):**
 - [`dragen_three_source_merge.md`](./research/dragen_three_source_merge.md) — the visual overview + mermaid diagram (read this first for the shape).
-- [`implement_cnv_rbceq2_research.md`](./research/implement_cnv_rbceq2_research.md) — the underlying RBCeq2 source analysis this spec rests on.
+- [`implement_cnv_rbceq2_research.md`](./research/implement_cnv_rbceq2_research.md) — the underlying RBCeq2 source analysis this spec rests on (v2.4.2).
+- [`resolvability_by_input_class.md`](./research/resolvability_by_input_class.md) — per-system estimate of what the gVCF resolves today and what the merge adds (v2.4.4 db), and what changed since this spec was written.
+
+> **Refreshed 2026-09-17.** rbceq2 2.4.4 was released on 2026-09-16. The maintainer's advice
+> with it: phase if you can (we cannot yet); do not use `--RH`, because DRAGEN SV/CNV does
+> not reliably detect the RH hybrids; and to use DRAGEN SV/CNV calls for other blood groups,
+> combine the VCFs so every variant is in one file. Both match this spec's premises. Facts
+> below that 2.4.4 or the db moved are corrected inline and marked *(2.4.4)*; the design
+> recommendations in §5 and §7 are unchanged here and are revisited in a separate design PR.
 
 
 > **Moved from `ourdna_genomic_atlas` (2026-08).** The RBCeq2 stages now live in this repo, and
 > this design was never implemented in either. The class names below are still correct, but the
 > file paths are not: they predate both the stage restructure and the repo split, so
-> `src/ourdna_genomic_atlas/stages.py` in §8's change table now maps to
-> `src/popgen_rbceq2/stages/blood_group_genotyping/`. Content is otherwise unchanged from the
-> original, including the open questions.
+> `src/ourdna_genomic_atlas/stages.py` in §6's change table now maps to
+> `src/popgen_rbceq2/stages/blood_group_genotyping/`; §6 has since been rewritten for this repo.
+> Content is otherwise unchanged from the original, including the open questions.
 
 ---
 
@@ -62,18 +70,23 @@ must be present in the single `--vcf`.
 
 ### 2.2 What the DB encodes
 Structural alleles live in the `GRCh37`/`GRCh38` columns of `db.tsv` as word-form tokens
-`<pos>_<type>_<len>` (e.g. `143914828_del_110kb`). Token-type totals in the GRCh38 column:
-**132 DEL, 41 INS, 1 DUP — no `INV`, no `BND`, no literal `<CNV>`.** Practical buckets:
-~40 true large CNVs (whole-gene/multi-exon del/dup), ~22 hybrid/complex SVs (paired DEL+INS,
-RH & GYP), ~38 large indels (<~1 kb). Hybrids are stored as *paired* tokens, not a "hybrid"
-type. (Full annotated list in the research doc §3.)
+`<pos>_<type>_<len>` (e.g. `143914828_del_110kb`), or as explicit sequences
+`<pos>_<REFseq>_<ALTseq>` that `parse_db_token` reads as a DEL/INS of `|len(ALT)-len(REF)|`.
+*(2.4.4)* GRCh38 column totals: **74 DEL, 22 INS, 1 DUP word-form tokens, plus 33 DEL and 8
+INS sequence-form tokens of 50 bp or more; no `INV`, `BND` or literal `<CNV>`.** The RH
+tokens are now bare base counts (`_DEL_59419`) and the GE, PIGG and MAM deletions are spelled
+as sequences, so the v2.4.2 counts in the research doc no longer match. Per-allele buckets
+across the non-RH db: 67 single large events (1 kb+), 16 mid indels (50 bp to 1 kb), 4 GYP
+hybrids; see `resolvability_by_input_class.md`. Hybrids are stored as *paired* tokens, not a
+"hybrid" type.
 
 ### 2.3 Matching is fuzzy in position/length, but strict on type
 `SvMatcher` (`large_variants.py:159-367`) uses adaptive positional/length tolerance and
 reciprocal-overlap gates, so imprecise breakpoints still match — **but
 `require_same_type=True` by default**, so the DB token type must equal the event `SVTYPE`.
 The symbolic-ALT fallback (`<DEL>`/`<DUP>`) in `SvReader` fires **only when `SVTYPE` is
-absent** (`large_variants.py:739`). This single fact is what forces the CNV rewrite in §5.4.
+absent** (`large_variants.py:739`; *(2.4.4)* unchanged, now at `:755-767`, and
+`SvMatcher.compatible` is unchanged too). This single fact is what forces the CNV rewrite in §5.4.
 RBCeq2 also pre-filters records to **±500 kb** of a DB position (`vcf.py:497`).
 
 ---
@@ -137,7 +150,9 @@ chr1  3501568  DRAGEN:GAIN:…  N  <DUP>  88  cnvLength  SVLEN=1000;SVTYPE=CNV;E
 - No re-run/backfill orchestration (tracked separately).
 
 **NB**. I havent pursued the needs re RHD/RHCE and GYPA/B/E any further, until we gather
-knowledge around how many samples and when long read data is being produced.
+knowledge around how many samples and when long read data is being produced. *(2.4.4)* The
+maintainer's own comparison of DRAGEN SV/CNV against matched long reads found deletions
+useful but hybrids not reliably detected, and recommends against `--RH`.
 
 ---
 
@@ -257,14 +272,19 @@ CNV records' `FILTER`→`PASS` in preprocessing instead (§5.4.3). Leave
 
 ## 6. Touch points
 
+*(rewritten 2026-09-17 for this repo; the original named `ourdna_genomic_atlas` paths.)*
+
 | File / symbol | Change |
 |---|---|
-| `src/ourdna_genomic_atlas/stages.py` | New `PreprocessDragenForRbceq2` SG stage; repoint `GenotypeBloodGroupsWithRbceq2.required_stages` + `--vcf` at its output |
-| `src/ourdna_genomic_atlas/jobs/` | New job module implementing the skeleton (`fix_dragen_cnv_vcf`, `normalize_sv`, `merge_variant_vcfs`, `validate_for_rbceq2`) |
-| `src/ourdna_genomic_atlas/popgen_utils.py:32` | Reuse `get_dragen_output_path` for `dragen_metrics/<sg>/<sg>.{sv,cnv}.vcf.gz` and ploidy |
-| `config/ourdna_genomic_atlas_default_config.toml` | New `[workflow.preprocess_dragen_for_rbceq2]` block: `keep_subthreshold_cnv`, `cnv_svtype_from`, `min_size`, resources |
-| `resources/bg_regions.GRCh38.bed` | Reused unchanged for region-restrict |
-| rbceq2 image `2.4.1-1` | Possibly bump — research referenced 2.4.2 (version TBC) |
+| `src/popgen_rbceq2/stages/blood_group_genotyping/` | New per-SG merge stage between `FilterAndConvertGvcfsForRbceq2` and `GenotypeBloodGroupsWithRbceq2`; repoint the latter's `required_stages` and `--vcf` (`genotype.py`) at its output |
+| `src/popgen_rbceq2/jobs/` | New job module: `fix_dragen_cnv_vcf`, `normalize_sv`, `merge_variant_vcfs`, `validate_for_rbceq2` |
+| `src/popgen_rbceq2/stages/blood_group_genotyping/filter_and_convert.py` | `bcftools +fixploidy` currently ends the conversion pipe (§5.2); relocate to the merged VCF (§5.5), or drop it if 2.4.4's native haploid handling makes it redundant (Q4) |
+| `src/popgen_rbceq2/stages/blood_group_qc/call_qc.py`, `jobs/rbceq2_call_qc_job.py` | Did not exist when this spec was written. Excludes SV sites by design and reports SV-only systems `NA`; a structural-call QC is a new design question (design PR) |
+| `src/popgen_rbceq2/scripts/bg_db.py` | Already parses every SV token form; `site_system_map` drops `kind == 'sv'` rows, which the QC change above would revisit |
+| `src/popgen_rbceq2/config/config_template.toml` | New stage section: sub-threshold CNV policy, CNV direction source, resources |
+| `src/popgen_rbceq2/resources/bg_regions.GRCh38.bed` | Reused unchanged for region-restrict |
+| `src/popgen_rbceq2/constants.py` | `RBCEQ2_VERSION`/`RBCEQ2_IMAGE_TAG` are `2.4.3`; the bump to 2.4.4 is its own PR (image, resources, `+fixploidy` re-test) |
+| Metamist | SV and CNV VCF analysis types (§4); whether `dragen_align` registers them today is unverified |
 
 ---
 
@@ -274,11 +294,14 @@ CNV records' `FILTER`→`PASS` in preprocessing instead (§5.4.3). Leave
   SV VCF (RBCeq2 default PASS-only), or keep them? **`--no_filter` is not the mechanism** —
   it is *global* and would also admit non-PASS SNVs and SVs (flagged in review); to keep
   sub-10 kb CNVs, rewrite just those records' `FILTER`→`PASS` in preprocessing (§5.4.3).
-  **From `db.tsv`:** only 6 DEL alleles fall in the 1–10 kb band, and 5 are RH/GYP (paralog
-  loci out of scope, §4); the **one in-scope** sub-10 kb structural allele is **XK\*N.05, an
-  8 kb XK deletion** (non-paralog locus, squarely in Manta's range → the SV VCF supplies it).
-  (Recommendation: SV VCF for <10 kb, keep CNV PASS-only; the `cnvLength`→`PASS` rewrite is
-  only needed if XK\*N.05 proves weak in the SV VCF — check in concordance, §9.)
+  **From `db.tsv` *(2.4.4)*:** 22 non-RH alleles fall in the 1–10 kb band, not one: the seven
+  3.6 kb GE exon deletions (Ge:-2/-3), GE\*01N.01, three PIGG, two MAM, ABO\*O.16 (6 kb),
+  XK\*N.05 (8 kb), XK\*N.03, and the small GYP deletions. The v2.4.2 count of six was wrong
+  because the GE/PIGG/MAM rows are sequence-form tokens the earlier tally missed. None of
+  these can come from the CNV VCF under the default filter, so the SV VCF is load-bearing
+  for them. (Recommendation unchanged: SV VCF for <10 kb, keep CNV PASS-only; the
+  `cnvLength`→`PASS` rewrite is only needed if the SV VCF proves weak — check in
+  concordance, §9.)
 - **Q2 — SV∩CNV overlap.** Dedup overlapping del calls at merge time, or defer to RBCeq2's
   `select_best_per_vcf`? (Recommendation: defer; simplest and RBCeq2 is built to tie-break —
   endorsed in review.)
@@ -304,7 +327,11 @@ CNV records' `FILTER`→`PASS` in preprocessing instead (§5.4.3). Leave
   truly hemizygous call — fine for detection, but relevant to zygosity-dependent filters;
   RBCeq2's native HEM status is deletion-derived, not from GT. Missed by the XX 1KG fixtures
   (§9). **Residual:** #128 covers SNV records only; when the merge stage (§5.5) lands, re-apply
-  `+fixploidy` to the merged VCF.
+  `+fixploidy` to the merged VCF. ***(2.4.4)* Re-open on the pin bump:** the 2.4.4 release
+  is "focused on supporting haploid encoding in VCF", motivated by DRAGEN and array data,
+  and says it keeps "chromosome-copy counts ... distinct". So the crash this fix works around
+  may be gone, and `1`→`1|1` may now overstate dosage where 2.4.4 would read hemizygosity
+  correctly. Test with and without `+fixploidy` on a male genome before deciding.
 
 ---
 
