@@ -57,7 +57,7 @@ reference blocks, restrict to blood-group regions. This is **preprocessing, not
 genotyping** — the genotypes are already in the gVCF (GATK `GenotypeGVCFs` does *joint*
 genotyping across samples and has no role here). bcftools only; no reference FASTA needed.
 - *This is already implemented today* in the `FilterAndConvertGvcfsForRbceq2` stage
-  (`src/ourdna_genomic_atlas/stages.py:410`) via `bcftools norm -m -any` +
+  (now `src/popgen_rbceq2/stages/blood_group_genotyping/filter_and_convert.py`) via `bcftools norm -m -any` +
   region-restrict to `resources/bg_regions.GRCh38.bed`. The SNV path is done; the gap is
   sources 2 and 3.
 

@@ -2,7 +2,7 @@
 
 - RBCeq2: the genotyping tool this pipeline wraps; consumes VCF file and outputs blood group assignments per-sample.
 - `db.tsv`: RBCeq2's bundled allele database; the source of truth for both calls and the regions BED.
-- Blood group system/reported locus: RBCeq2 emits one genotype+phenotype call per gene/locus (48 in v2.4.1: ABO, FY, VEL, GYPA, GYPB…). These map to ISBT blood group systems but not 1:1, one system can involve several genes, and some reported loci are related transporters/regulators.
+- Blood group system/reported locus: RBCeq2 emits one genotype+phenotype call per gene/locus (88 systems in the v2.4.4 db, 35 of them HPA platelet systems; 86 without RHD and RHCE. Was 48 at v2.4.1, before HPA). These map to ISBT blood group systems but not 1:1, one system can involve several genes, and some reported loci are related transporters/regulators.
 - Antigen vs phenotype vs genotype:
    - Genotype: The allele-pair call in ISBT nomenclature (`geno.tsv`), e.g. ABO*A1.01/ABO*O.01.05. RBCeq2 often lists many candidate pairs.
    - Phenotype (numeric): ISBT numeric antigen notation (`pheno_numeric.tsv`), e.g. ABCC1:1, CROM:1,2,-3 (system:antigen-number, sign = present/absent).
@@ -41,5 +41,9 @@ Lane's paper); RBCeq2 adds the reference allele to complete the genotype.
   DRAGEN normally pairs with it. We run the mode without the model, so post-hoc STR genotyping
   is close to but not identical with DRAGEN's.
 - geno / pheno_numeric / pheno_alphanumeric: the three output TSVs.
+- SV VCF / CNV VCF: DRAGEN's two structural-variant outputs per sequencing group, beside the gVCF. The SV VCF is Manta-derived (breakpoint evidence, events of any size, proper `SVTYPE`); the CNV VCF is bin-based read-depth (dosage, `SVTYPE=CNV` on every record, events under 10 kb filtered as `cnvLength`). Neither is an input to this pipeline yet; see `docs/rbceq2_cnv_sv/`.
+- `DRAGEN:REF:` record: a CNV VCF record spanning an interval the CNV caller assessed and found at reference copy number, with its bin count (`BC`) and segment mean (`SM`). The CNV analogue of a gVCF reference block. The SV VCF has no equivalent: an absent SV call is silence.
+- Structural-variant-defined allele: a db allele whose token names an event rather than a sequence change at a base (`<pos>_del_53kb`, or a spelled-out multi-kb deletion). rbceq2 matches these by fuzzy position and length through `SvReader`/`SvMatcher`, and only if the VCF record's `SVTYPE` equals the token's type. Excluded from the QC site map, so a system defined only by these reports `NA`.
+- Hybrid allele: a gene-conversion product between paralogs (RHD/RHCE, GYPA/GYPB/GYPE), stored in the db as a paired deletion plus insertion or duplication. Not reliably detectable from short-read SV/CNV calls; long read only, and why `--RH` stays off.
 - `Metamist`: CPG's sample-metadata system.
 - `analysis-runner`: CPG's tool to launch workflows.

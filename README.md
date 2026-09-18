@@ -602,7 +602,9 @@ means rbceq2 cannot call the allele either. `test_committed_sites_fall_inside_th
 catches another one reaching the resources.
 
 Calling these alleles needs the DRAGEN SV and CNV VCFs alongside the SNV calls, not the gVCF on
-its own.
+its own. The design for merging them, and an estimate of which systems it would open up, is in
+`docs/rbceq2_cnv_sv/`. The ABCC1 coordinate error is still present in the 2.4.4 database, so
+ABCC1 stays uncallable whatever the input.
 
 ## Development
 
