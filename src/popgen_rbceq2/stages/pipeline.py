@@ -10,7 +10,8 @@ depends on via ``requires``, and what it records in Metamist via ``analysis_type
 
 cpg_flow records each stage's name in ``Analysis.meta`` itself; ``wire`` re-asserts it after
 the stage's meta function runs, so a meta function that sets ``stage`` cannot override the
-framework's value with a stale hand-typed name.
+framework's value with a stale hand-typed name. ``wire`` also adds ``workflow_version``, the
+release the stage wrote under, since the pin it comes from is keyed on the stage name.
 """
 
 import cpg_flow.stage
