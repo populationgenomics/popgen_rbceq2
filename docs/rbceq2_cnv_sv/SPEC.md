@@ -240,7 +240,7 @@ Rule 3 is the reciprocal-overlap collapse a `bedtools merge` would do (review su
 #### What the study showed
 
 - Rule 1(a) kept 0 to 2 records per genome, 3 in total across 150 genomes: the two Gerbich records and the Gerbich CNV-only record.
-- Rule 1(b) kept another 0 to 3 records per genome, including a recurrent 9–13 kb deletion at chr19:48.69 Mb spanning a FUT2 defining site in 5 of 150 genomes, matching no db allele; rbceq2 ignores it, but the QC must not (§6).
+- Rule 1(b) kept another 0 to 3 records per genome, including a recurrent 8.5–12.8 kb deletion at chr19:48.69 Mb spanning every FUT2 defining site in 3 of 150 genomes (each seen by both callers: 5 PASS records plus one `cnvLength`; an earlier draft counted the records as genomes and said 5), matching no db allele; rbceq2 ignores it, but the QC must not (§6).
 - Rule 1 also removed a 126 Mb `MaxDepth` SV record seen once over AUG and RHAG.
 - Rule 2's 3-bin floor (`sv_min_bins`) reflects that the SV caller corroborates 45% of 1–2-bin deletions against 75–79% of 3–4-bin ones.
 - Rule 3 fired only on the Gerbich case: the SV caller's breakpoints were exact to `CIPOS` (0–50 bp) where the CNV caller's were bin-snapped by 0.2–4.6 kb, and the sub-10 kb targets (seven GE alleles, three A4GALT, the GYP cluster) differ from each other only by breakpoint.
@@ -480,7 +480,7 @@ To raise upstream with the RBCeq2 maintainers, feature requests rather than thin
 
 1. Matching is per record, not per locus. Two records for one event yield two alleles (§5.5 figure). Our merge guarantees one record per event; a per-locus selection in `select_best_per_vcf`, or a warning when two records match overlapping tokens of one system, would make that unnecessary.
 2. Unmatched deletions are ignored. A deletion that matches no db token never enters the variant pool, so the hemizygosity adjustment for SNVs inside it never runs and a single-copy genotype is read as homozygous. Our QC reports it (`SVDEL`, §6); rbceq2 could apply the same adjustment it already applies to matched deletions.
-3. Undefined null alleles. A deletion removing coding sequence of a blood-group gene is a null whether or not the db names it. The study found a recurrent 9–13 kb deletion over a FUT2 defining site in 5 of 150 genomes, matching no token. Two asks: consider it as a candidate allele for the db, and consider a generic 'coding deletion in system X, unnamed' call. We do not build gene-model resources for this here; it stays an observation to bear in mind, and a reason the `SVDEL` flag names the system.
+3. Undefined null alleles. A deletion removing coding sequence of a blood-group gene is a null whether or not the db names it. The study found a recurrent 8.5–12.8 kb whole-FUT2 deletion over every FUT2 defining site in 3 of 150 genomes, matching no token. Two asks: consider it as a candidate allele for the db, and consider a generic 'coding deletion in system X, unnamed' call. We do not build gene-model resources for this here; it stays an observation to bear in mind, and a reason the `SVDEL` flag names the system.
 
 ---
 
