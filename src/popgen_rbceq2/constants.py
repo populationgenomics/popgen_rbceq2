@@ -3,13 +3,17 @@
 # rbceq2 tool version. Recorded in the per-SG Analysis meta, and stage_support derives the
 # `rbceq2_<version>_<release>` segment of every output prefix from it, so bumping it starts
 # a fresh output tree. When it moves, regenerate resources/bg_*.<genome>.* against the
-# db.tsv from the new version (scripts/gen_bg_resources.py).
-RBCEQ2_VERSION = '2.4.3'
+# db.tsv the new version bundles (scripts/gen_bg_resources.py).
+RBCEQ2_VERSION = '2.4.4'
+# The allele database bundled with that version, versioned independently of the tool. The
+# committed resources/bg_*.<genome>.* are built from this db, not from the tool version above,
+# so it is what says whether they are current. Recorded for that; nothing reads it.
+RBCEQ2_DB_VERSION = '2.5.1'
 # The cpg-common image tag, a separate literal rather than derived from the version above:
 # the build-number suffix is owned by the images CI, which increments it on any rebuild
-# (2.4.3-1 -> 2.4.3-2) independently of the tool version. Check the registry for the
+# (2.4.4-1 -> 2.4.4-2) independently of the tool version. Check the registry for the
 # current tag when bumping either.
-RBCEQ2_IMAGE_TAG = '2.4.3-1'
+RBCEQ2_IMAGE_TAG = '2.4.4-1'
 
 # The `workflow.sequencing_type` value of an exome run. An exome gVCF is called against a
 # capture-target BED, which is what puts defining sites outside it beyond reach; a genome gVCF

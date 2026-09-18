@@ -5,7 +5,7 @@ BED that restricts the GVCF conversion, the defining-sites BED that the QC extra
 targets, and the site -> blood-group-system map that turns extracted DP/GQ into a
 per-system flag. Deriving all three here keeps them describing one site set.
 
-`parse_positions` and `build_intervals` mirror `rbceq2.IO.vcf` (v2.4.3), so the regions
+`parse_positions` and `build_intervals` mirror `rbceq2.IO.vcf` (v2.4.4), so the regions
 BED is a superset of the coordinates RBCeq2 itself reads.
 """
 
@@ -131,10 +131,13 @@ def parse_positions(cell: str | None) -> list[int]:
 def parse_defining_token(token: str) -> tuple[int, SiteKind, str, str] | None:
     """Parse one db coordinate token.
 
-    Recognises the forms occurring in v2.4.3's db: `3774964_A_G` (a variant),
+    Recognises the forms occurring in db 2.5.1: `3774964_A_G` (a variant),
     `207331122_ref` (a lane site), `95018451_del_21kb`, `144120545_dup_20kb` and
-    `25272546_DEL_148` (structural variants), any of those with a trailing `_no_phenotype`
-    note, and `159205730_TGTCC...>T` (a large indel, written with `>` rather than `_`).
+    `25272546_DEL_148` (structural variants), and any of those with a trailing
+    `_no_phenotype` note.
+
+    The `>` form of a large indel (`159205730_TGTCC...>T`) is gone as of db 2.5.1 and now
+    raises like any other unknown notation.
 
     Args:
         token: One comma-separated token from a db genome column.
@@ -158,12 +161,9 @@ def parse_defining_token(token: str) -> tuple[int, SiteKind, str, str] | None:
         return (int(pos), 'ref', '.', '.')
     if parts[0].lower() in _SV_WORDS:
         return (int(pos), 'sv', parts[0], parts[1] if len(parts) > 1 else '.')
-    if len(parts) >= 2:
-        ref, alt = parts[0], parts[1]
-    elif '>' in parts[0]:
-        ref, _, alt = parts[0].partition('>')
-    else:
+    if len(parts) < 2:
         raise ValueError(f'Unparseable allele in db coordinate token: {token!r}')
+    ref, alt = parts[0], parts[1]
     if not (_SEQUENCE.match(ref) and _SEQUENCE.match(alt)):
         raise ValueError(
             f'Unrecognised allele {ref}/{alt} in db coordinate token {token!r}. '
@@ -205,7 +205,7 @@ def site_system_map(rows: Iterable[dict[str, str]], genome: str) -> list[Definin
     SV sites are excluded. One base's DP and GQ cannot say whether a sample carries a 21kb
     deletion, so assessing an SV-defined allele at its start coordinate would report a
     quality for something the check never looked at. A system whose only defining alleles
-    are SVs therefore has no row here and is reported as not assessed. At v2.4.3 that is
+    are SVs therefore has no row here and is reported as not assessed. At db 2.5.1 that is
     ABCC1, ATP11C and CD99.
 
     Args:
