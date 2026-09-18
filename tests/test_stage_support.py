@@ -85,13 +85,16 @@ def test_wire_records_the_stage_name_without_anyone_typing_it():
         'stage': 'CallSomething',
         'n_systems': 42,
         'path': 'gs://bucket/out.tsv',
+        # The release half of the output tree, defaulted here: the config sets no
+        # workflow.version. See test_output_namespacing for the tie between the two.
+        'workflow_version': 'v1',
     }
 
 
 @pytest.mark.usefixtures('_workflow')
 def test_wire_records_the_stage_name_when_the_stage_adds_no_meta_of_its_own():
     wired = stage_support.wire(type('CallPlain', (_Impl,), {}), analysis_type='qc', analysis_keys=['vcf'])
-    assert _hook(wired)('gs://bucket/out.tsv') == {'stage': 'CallPlain'}
+    assert _hook(wired)('gs://bucket/out.tsv') == {'stage': 'CallPlain', 'workflow_version': 'v1'}
 
 
 @pytest.mark.usefixtures('_workflow')
@@ -108,7 +111,7 @@ def test_wire_keeps_the_class_name_even_when_the_stage_sets_stage_itself():
         analysis_keys=['vcf'],
         update_analysis_meta=stale,
     )
-    assert _hook(wired)('gs://b/o.tsv') == {'stage': 'CallCopied', 'n': 1}
+    assert _hook(wired)('gs://b/o.tsv') == {'stage': 'CallCopied', 'n': 1, 'workflow_version': 'v1'}
 
 
 @pytest.mark.usefixtures('_workflow')

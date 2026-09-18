@@ -207,3 +207,30 @@ def test_output_version_can_be_pinned_per_stage(mock_sequencing_group, shm_tmp_p
     assert str(output['qc']).endswith(
         f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_v2/FlagBloodGroupCallQc/SG000001/SG000001.qc.tsv',
     )
+
+
+def test_the_analysis_meta_records_the_release_its_outputs_went_to(mock_sequencing_group, shm_tmp_path):
+    # Metamist keeps a row per run and retires none, so workflow_version is how a reader tells
+    # two runs of one cohort apart. It is read from the same pin the path is, hence the tie to
+    # the path here: a stage with an output_versions pin must not record the unpinned release.
+    set_config(
+        {
+            'references': {'genome_build': 'GRCh38'},
+            'workflow': {
+                'name': 'popgen_rbceq2',
+                'version': 'v1',
+                'sequencing_type': 'genome',
+                'output_versions': {'FlagBloodGroupCallQc': 'v2'},
+            },
+        },
+        shm_tmp_path / 'meta_release.toml',
+    )
+    qc_path = shm_tmp_path / 'SG000001.qc.tsv'
+    qc_path.write_text('UUID: abc123\tJK\nSG000001\tPASS\n')
+    stage = pipeline.FlagBloodGroupCallQc()
+    assert stage.update_analysis_meta is not None
+
+    meta = stage.update_analysis_meta(str(qc_path))
+
+    assert meta['workflow_version'] == 'v2'
+    assert f'_{meta["workflow_version"]}/' in str(outputs_of(stage, mock_sequencing_group)['qc'])

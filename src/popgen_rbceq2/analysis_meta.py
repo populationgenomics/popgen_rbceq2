@@ -7,8 +7,9 @@ that wrote the file, so the file is there to be read.
 They are module-level functions, not methods: cpg_flow dill-pickles the callable into that job,
 and a bound method would carry ``self`` and fail there, long after the compute has run.
 
-None of them set ``meta.stage`` — ``stage_support.wire`` adds it from the stage class name, so a
-renamed stage cannot leave a stale literal behind. See its docstring.
+None of them set ``meta.stage`` or ``meta.workflow_version`` — ``stage_support.wire`` adds both
+from the stage class name, so a renamed stage cannot leave a stale literal behind, and the
+recorded release cannot disagree with the tree the outputs went to. See its docstring.
 """
 
 from typing import Any
@@ -63,7 +64,8 @@ def call_qc(output: str) -> dict[str, Any]:
             TSVs.
 
     Returns:
-        The Analysis meta. ``blood_group_qc_flags`` maps each system to ``PASS``, a
+        The Analysis meta, with the same tool version and build the calls Analysis records.
+        ``blood_group_qc_flags`` maps each system to ``PASS``, a
         semicolon-joined ``LOWQ``/``NOCOV`` flag naming the failing site and its DP and GQ,
         or ``NA`` for a system rbceq2 called that has no defining site in the map, e.g.
         ``{'JK': 'PASS', 'VEL': 'LOWQ:1:3774964(A>G,DP=8,GQ=45)', 'FUT2': 'NA'}``.
@@ -80,6 +82,7 @@ def call_qc(output: str) -> dict[str, Any]:
     hands the job, so a re-read of config could not disagree with what ran.
     """
     return {
+        'rbceq2_version': RBCEQ2_VERSION,
         'reference_genome': genome_build(),
         'blood_group_qc_flags': parse_single_row_rbceq2_tsv(cpg_utils.to_path(output).read_text()),
     }
