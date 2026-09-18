@@ -1,6 +1,6 @@
 # DRAGEN → RBCeq2: three data sources per sample, and how to combine them
 
-**Date:** 2026-07-16 · **Diagram revised 2026-09-18** to match SPEC §5.5 (triage, one record per event, karyotype gate, QC hand-off); the source tables below are unchanged from July.
+**Date:** 2026-07-16 · **Diagram revised 2026-09-18** to match SPEC §5.5 (triage, one record per event, karyotype gate, QC hand-off) and the first review round (exome path, sex-source fallback, `SVSRC=SV`); the source tables below are unchanged from July apart from the caller name. **Caller naming:** the SV VCF is written by the DRAGEN 3.7.8 SV caller, which integrates and extends Manta; record IDs keep Manta's prefix. This doc says "SV caller", not "Manta".
 **Context:** ICA **DRAGEN 3.7.8** (`SW: 13.021.604.3.7.8f`, hg38, `chr`-prefixed) emits
 **three** variant files per sample. RBCeq2 (v2.4.x) consumes **one VCF per sample**, and
 reads SNVs, indels *and* structural variants out of that single file — there is no
@@ -23,18 +23,29 @@ RBCeq2 source analysis this is built on.
 | # | Source | Path (per SG `<sg>`) | Caller | RBCeq2-ready? |
 |---|--------|----------------------|--------|---------------|
 | 1 | **SNV gVCF** | `recal_gvcf/<sg>.hard-filtered.recal.gvcf.gz` | DRAGEN SNV | ✅ needs converting to VCF - already handled |
-| 2 | **SV VCF** | `dragen_metrics/<sg>/<sg>.sv.vcf.gz` | Manta-derived | ✅ directly compatible |
-| 3 | **CNV VCF** | `dragen_metrics/<sg>/<sg>.cnv.vcf.gz` | DRAGEN bin CNV | ⚠️ needs SVTYPE rewrite |
+| 2 | **SV VCF** | `dragen_metrics/<sg>/<sg>.sv.vcf.gz` | DRAGEN SV caller (extends Manta) | ✅ directly compatible |
+| 3 | **CNV VCF** | `dragen_metrics/<sg>/<sg>.cnv.vcf.gz` | DRAGEN bin CNV (genomes); DRAGEN panel-of-normals target CNV (exomes) | ⚠️ needs SVTYPE rewrite; absent when the run did not call CNVs |
 
-Supporting file (not merged, read for sex): `dragen_metrics/<sg>/<sg>.ploidy_estimation_metrics.csv`
-and `<sg>.ploidy.vcf.gz` — X/Y coverage ratios for per-sample sex. **Do not** read sex
+Supporting files (not merged, read for sex): `dragen_metrics/<sg>/<sg>.ploidy_estimation_metrics.csv`
+(DRAGEN's karyotype estimate from X/Y over autosomal median coverage; primary) and
+`<sg>.wgs_coverage_metrics.csv` (average chrX, chrY and autosomal coverage; the fallback
+when DRAGEN omits the ploidy file, which it does for genomes with uneven coverage). Metamist's
+reported sex (`sequencing_group.pedigree.sex`) is a cross-check only. **Do not** read sex
 from the `##referenceSexKaryotype` header: it is a reference/config constant that reads
-`XXYY` for *every* sample.
+`XXYY` for *every* sample. Details and thresholds: SPEC §5.6, §8.
 
-> **Pipeline note:** these paths are shown as raw `gs://…` for grounding, but the SV and CNV
-> VCFs must be **registered in metamist** (a dedicated analysis type each) before a stage can
-> resolve them — ideally upstream in the `dragen_align` pipeline that produces them. See SPEC
-> §4 / §5.1.
+> **Exomes (DRAGEN 3.7.8, checked 2026-09-18):** every exome has the gVCF, the SV VCF and
+> both sex-metric files. The 11,917 production exomes also have a CNV VCF, called per capture
+> target against a panel of 100 normals: events only, no `DRAGEN:REF:` records, no
+> `cnvLength` filter, `BC` in target counts. The 10 exomes of the test run have none (their
+> `cnv_metrics.csv` stops after the target-interval count). Whether a CNV VCF is expected is
+> read from `cnv_metrics.csv`, not from the sequencing type. SPEC §3, §5.1.
+
+> **Pipeline note:** these paths are shown as raw `gs://…` for grounding. The stage derives
+> them from the registered gVCF's DRAGEN output prefix, checks expected presence by
+> sequencing type, and records them in the merged VCF's Analysis meta; no new metamist
+> analysis types, since `dragen_align` cannot register them before its Nextflow refactor and
+> cpg_flow is not to be extended. See SPEC §5.1.
 
 ---
 
@@ -63,7 +74,7 @@ genotyping across samples and has no role here). bcftools only; no reference FAS
 
 ---
 
-## 2. SV VCF (Manta) — directly compatible ✅
+## 2. SV VCF (DRAGEN SV caller) — directly compatible ✅
 
 Real records:
 
@@ -74,10 +85,11 @@ chr1  934064  MantaDEL:...  AGGG…    A   412  PASS  END=934904;SVTYPE=DEL;SVLE
 ```
 
 Header ALTs: `<DEL>`, `<INS>`, `<DUP:TANDEM>`. Proper `SVTYPE=DEL/DUP/INS/BND`, plus
-`SVLEN`, `END`, `CIPOS/CIEND`, `MATEID`. `DUP:TANDEM` is reported as `<INS>` (Manta
-convention) — fine, it matches the DB's INS/dup tokens.
+`SVLEN`, `END`, `CIPOS/CIEND`, `MATEID`. `DUP:TANDEM` is reported as `<INS>` (a Manta
+convention the DRAGEN caller keeps) — fine, it matches the DB's INS/dup tokens. FORMAT is
+`GT:FT:GQ:PL:PR:SR` (or without `SR`) on every record.
 
-**Modification:** essentially none for matching. Only housekeeping — restrict to
+**Modification:** essentially none for matching. Only housekeeping — drop `BND`, restrict to
 blood-group regions (size optimisation; RBCeq2 also does this internally), ensure the
 sample column name matches the merged VCF, sort/bgzip/tabix. **This is exactly what
 RBCeq2's `SvReader` was built for.**
@@ -94,7 +106,9 @@ chr1  2650427   DRAGEN:LOSS:chr1:2650428-2653075 N  <DEL>  51  cnvLength  SVLEN=
 chr1  3501568   DRAGEN:GAIN:chr1:3501569-3502568 N  <DUP>  88  cnvLength  SVLEN=1000;SVTYPE=CNV;END=3502568;REFLEN=1000     ./1:3.18:6:1:...
 ```
 
-Header ALTs `<CNV>`/`<DEL>`/`<DUP>`; `FORMAT` has `CN` (estimated copy number).
+Header ALTs `<CNV>`/`<DEL>`/`<DUP>`; FORMAT is `GT:SM:CN:BC:PE` on every record, with `CN`
+the estimated copy number and `BC` the bin count. Every PASS `<DUP>` in 150 genomes carried
+GT `./1`; every PASS `<DEL>` carried `0/1` or `1/1`.
 
 **Three problems, three fixes:**
 
@@ -122,10 +136,12 @@ Header ALTs `<CNV>`/`<DEL>`/`<DUP>`; `FORMAT` has `CN` (estimated copy number).
 flowchart TD
     subgraph DRAGEN["DRAGEN 3.7.8 output (per sample)"]
         GVCF["1 · SNV gVCF<br/>recal_gvcf/&lt;sg&gt;.hard-filtered.recal.gvcf.gz<br/><i>&lt;NON_REF&gt; ref-blocks</i>"]
-        SV["2 · SV VCF (Manta)<br/>dragen_metrics/&lt;sg&gt;/&lt;sg&gt;.sv.vcf.gz<br/><i>SVTYPE=DEL/DUP/INS/BND · exact breakpoints</i>"]
-        CNV["3 · CNV VCF<br/>dragen_metrics/&lt;sg&gt;/&lt;sg&gt;.cnv.vcf.gz<br/><i>every record SVTYPE=CNV · 1–2 kb bins · &lt;10 kb = cnvLength</i>"]
-        PLOIDY["ploidy_estimation_metrics.csv<br/><i>Ploidy estimation: XX / XY / other</i>"]
+        SV["2 · SV VCF (DRAGEN SV caller)<br/>dragen_metrics/&lt;sg&gt;/&lt;sg&gt;.sv.vcf.gz<br/><i>SVTYPE=DEL/DUP/INS/BND · exact breakpoints</i>"]
+        CNV["3 · CNV VCF (when cnv_metrics.csv shows the caller ran)<br/>dragen_metrics/&lt;sg&gt;/&lt;sg&gt;.cnv.vcf.gz<br/><i>every record SVTYPE=CNV · genomes: 1–2 kb bins, &lt;10 kb = cnvLength · exomes: capture targets vs panel of normals, events only</i>"]
+        PLOIDY["ploidy_estimation_metrics.csv<br/><i>Ploidy estimation: XX / XY / other</i><br/>fallback: wgs_coverage_metrics.csv<br/><i>X, Y, autosomal coverage → XX / XY / UNDETERMINED</i>"]
     end
+    SEX["metamist reported sex<br/>(sequencing_group.pedigree.sex)"]
+    SEX -.->|"cross-check only<br/>mismatch → SEXCHECK"| QC
 
     GVCF -->|"convert → sites VCF<br/>split multiallelics, drop &lt;NON_REF&gt;/ref-blocks,<br/>restrict to bg_regions.GRCh38.bed<br/>(existing stage)"| SNVv["snv sites VCF"]
     SV -->|"drop BND; region-restrict;<br/>rename sample"| SVv["sv records"]
@@ -137,9 +153,9 @@ flowchart TD
     TRIAGE["<b>Triage to database-relevant records (§5.5 rule 1)</b><br/>keep if (a) within SvMatcher tolerance of a db SV token,<br/>or (b) PASS deletion &lt;1 Mb spanning a defining SNV site;<br/>discard everything else<br/><i>150 genomes: 0–2 (a) + 0–3 (b) records per genome</i>"]
 
     TRIAGE --> ONE{"two records,<br/>same direction,<br/>recip overlap ≥ 0.5?"}
-    ONE -->|"yes → keep Manta<br/>(exact breakpoints), record<br/>partner in INFO/SVPARTNER"| TAG
+    ONE -->|"yes → keep the SV record<br/>(exact breakpoints), record<br/>partner in INFO/SVPARTNER"| TAG
     ONE -->|"no → keep as is"| TAG
-    TAG["tag INFO/SVSRC = MANTA · CNV · CNV_LOWRES<br/>rewrite FILTER → PASS, original in INFO/SVFILTER<br/>assert no two records share CHROM/POS/END/SVTYPE"]
+    TAG["tag INFO/SVSRC = SV · CNV · CNV_LOWRES<br/>rewrite FILTER → PASS, original in INFO/SVFILTER<br/>assert no two records share CHROM/POS/END/SVTYPE<br/>assert GT is the first FORMAT key on every row"]
 
     SNVv --> MERGE["bcftools concat + sort<br/>→ one bgzipped, tabixed VCF"]
     TAG --> MERGE
@@ -147,8 +163,13 @@ flowchart TD
 
     VCF --> RBC["rbceq2 --vcf … --reference_genome GRCh38<br/>(never --no_filter, never --RH)"]
     RBC --> OUT["blood-group calls<br/>(geno / pheno TSVs)"]
-    VCF -.->|"structural records +<br/>DRAGEN:REF tiling"| QC["FlagBloodGroupCallQc (§11)<br/>SVNOCOV · SVLOWRES · SVUNASSESSED<br/>SVDEL · KARYOTYPE"]
+    VCF -.->|"structural records +<br/>DRAGEN:REF tiling"| QC["FlagBloodGroupCallQc (SPEC §6)<br/>SVNOCOV · SVLOWRES · SVDEPTH · SVUNASSESSED<br/>SVDEL · KARYOTYPE · SEXCHECK"]
 ```
+
+> **Exomes** take the same path. With a production CNV VCF, the §5.4 step has no REF records to
+> drop and the QC reads "was the region assessed" from the capture design rather than from
+> `DRAGEN:REF:` tiling (SPEC §6). Where a run produced no CNV VCF (the test run), source 3 is
+> absent, triage runs over the SV records alone, and every 10 kb+ target is `SVUNASSESSED`.
 
 > **Why one record per event.** rbceq2 keeps the best db token per *record*, so a deletion that
 > arrives from both callers, offset by the CNV caller's bin snapping, is read as two different
@@ -159,13 +180,24 @@ flowchart TD
 - **Merge = `bcftools concat` of the three normalised VCFs, then sort/bgzip/tabix.** All
   three must share the same sample column name and contig naming (`chr`-prefixed hg38);
   RBCeq2 strips the `chr` prefix internally.
-- **SV ∩ CNV overlap:** the SV and CNV callers both emit events in the ~2–50 kb band, so
-  the same deletion can appear twice. Either dedup at merge time, or leave both and let
-  RBCeq2's `select_best_per_vcf` (tie-break) pick — decision still open.
+- **FORMAT fields (review asked, 2026-09-18):** nothing to harmonise. FORMAT is per record,
+  so gVCF rows keep `GT:AD:DP:GQ:…`, SV rows `GT:FT:GQ:PL:PR:SR`, CNV rows `GT:SM:CN:BC:PE`.
+  RBCeq2 only requires `GT` first on every retained row (`IO/vcf.py`), true of all three,
+  and reads the SV geometry from INFO. `bcftools concat` writes the union of the headers;
+  the tags the SV and CNV headers share (`GT`, `END`, `SVTYPE`, `SVLEN`, `CIPOS`, `CIEND`)
+  have identical Number/Type in DRAGEN 3.7.8, and a real concat of one genome's SV and CNV
+  files produced no header warning. SPEC §5.5.
+- **SV ∩ CNV overlap:** decided, SPEC §5.5 rule 3. Dedup at merge time, keeping the SV
+  record and recording the CNV partner; `select_best_per_vcf` cannot do it because it keeps
+  one db token per record, not per locus.
+- **Adjacent records (review asked):** not merged. Across 150 genomes, adjacent
+  same-direction CNV records were copy-number steps (3 of 254 pairs shared a `CN`), never a
+  target split in two, and the SV caller produced one such pair in 17,175 records.
+  `sv_cnv_overlap_50_samples.md` §13.
 - **Sex chromosomes:** for X-linked systems (XK/Kx, XG, CD99) the expected copy number
-  depends on the sample's sex karyotype. Resolve sex from the ploidy files (not the
-  header) and feed expected ploidy into the CNV direction logic — don't assume diploid
-  on chrX/chrY.
+  depends on the sample's sex karyotype. Resolve sex from the ploidy estimate, falling back
+  to the coverage metrics, with metamist's reported sex as a cross-check (SPEC §5.6), and
+  feed expected ploidy into the CNV direction logic — don't assume diploid on chrX/chrY.
 
 ### Caveats carried from the research
 - **RH / GYP hybrids are unreliable on short-read DRAGEN** (RHD/RHCE and GYPA/B/E are

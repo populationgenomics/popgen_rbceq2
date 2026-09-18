@@ -246,7 +246,7 @@ This is *preprocessing, not genotyping*: the per-sample genotypes already exist 
 bcftools alone suffices (as the current `FilterAndConvertGvcfsForRbceq2` stage does); no
 reference FASTA and no GATK `GenotypeGVCFs` (that is *joint* genotyping across samples).
 
-### 5b. SV VCF (Manta-derived) — directly compatible ✅
+### 5b. SV VCF (DRAGEN SV caller, which extends Manta) — directly compatible ✅
 ```
 ##source=DRAGEN 13.021.604.3.7.8f
 ##ALT=<ID=DEL,...> <ID=INS,...> <ID=DUP:TANDEM,...>
@@ -255,7 +255,7 @@ chr1  839442  MantaDEL:...  CACC...ACA  CT      463  PASS  END=839499;SVTYPE=DEL
 chr1  998743  MantaDUP:TANDEM:...  T   <INS>   369  PASS  END=998743;SVTYPE=INS;SVLEN=52;DUPSVLEN=42;...
 ```
 Proper `SVTYPE=DEL/DUP/INS/BND`, CIPOS/CIEND, MATEID. DUP:TANDEM reported as `<INS>`
-(Manta convention) — fine, matches DB INS/dup tokens. **This is exactly what SvReader
+(a Manta convention the DRAGEN caller keeps; record IDs keep the `Manta` prefix too) — fine, matches DB INS/dup tokens. **This is exactly what SvReader
 was built for.**
 
 ### 5c. CNV VCF — needs preprocessing ⚠️
