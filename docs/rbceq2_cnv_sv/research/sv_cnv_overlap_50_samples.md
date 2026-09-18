@@ -342,9 +342,9 @@ or `1/1` (108); five non-PASS records carry a haploid `1`.
 **Can the sex source fail, and what agrees with it?** The `Ploidy estimation` field read `XX` in
 86, `XY` in 62, `XYY` in 1 and `X0` in 1 of 150. Its ratios separate cleanly: XX genomes had
 X/autosomal 0.97–1.02 and Y/autosomal 0.00; XY had 0.50–0.52 and 0.42–0.52; the XYY genome had
-Y 0.93; the X0 genome Y 0.18. Those bands set the SPEC's coverage-metrics fallback (§8 there),
-which review asked for because DRAGEN omits the ploidy file on genomes with uneven coverage.
-The CNV caller's own `SEX GENOTYPER` line in `cnv_metrics.csv` agreed with the ploidy estimate
-in 49 of the 50 first-set genomes and was blank for the X0 genome, so it is not a usable
-fallback. `wgs_coverage_metrics.csv` (average chrX, chrY and autosomal coverage) is present for
-every genome and every exome checked.
+Y 0.93; the X0 genome Y 0.18. Review asked for a fallback because DRAGEN omits the ploidy file
+on genomes with uneven coverage; the SPEC takes the somalier signals `single_sample_qc_popgen`
+already registers in metamist rather than a coverage-ratio classifier, so these bands are
+recorded here as a calibration and not used (§5.6 there). The CNV caller's own `SEX GENOTYPER`
+line in `cnv_metrics.csv` agreed with the ploidy estimate in 49 of the 50 first-set genomes and
+was blank for the X0 genome, so it is not a usable fallback either.

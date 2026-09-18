@@ -26,13 +26,15 @@ RBCeq2 source analysis this is built on.
 | 2 | **SV VCF** | `dragen_metrics/<sg>/<sg>.sv.vcf.gz` | DRAGEN SV caller (extends Manta) | ✅ directly compatible |
 | 3 | **CNV VCF** | `dragen_metrics/<sg>/<sg>.cnv.vcf.gz` | DRAGEN bin CNV (genomes); DRAGEN panel-of-normals target CNV (exomes) | ⚠️ needs SVTYPE rewrite; absent when the run did not call CNVs |
 
-Supporting files (not merged, read for sex): `dragen_metrics/<sg>/<sg>.ploidy_estimation_metrics.csv`
-(DRAGEN's karyotype estimate from X/Y over autosomal median coverage; primary) and
-`<sg>.wgs_coverage_metrics.csv` (average chrX, chrY and autosomal coverage; the fallback
-when DRAGEN omits the ploidy file, which it does for genomes with uneven coverage). Metamist's
-reported sex (`sequencing_group.pedigree.sex`) is a cross-check only. **Do not** read sex
-from the `##referenceSexKaryotype` header: it is a reference/config constant that reads
-`XXYY` for *every* sample. Details and thresholds: SPEC §5.6, §8.
+Sex is read from `sg.meta['qc']`, which `single_sample_qc_popgen` already populates:
+`ploidy_estimation`, `norm_x_coverage`, `norm_y_coverage` (DRAGEN's karyotype estimate and X/Y
+over autosomal median coverage, from `ploidy_estimation_metrics.csv`), the somalier signals
+`f_stat_raw`, `x_het_rate`, `y_calls`, `y_n` (the fallback when DRAGEN omitted the ploidy
+file, as it does for genomes with uneven coverage; turned into a karyotype by the atlas repo's
+`karyotype_from_signals`), and `qc_checks_failed` (which records the ploidy-versus-reported-sex
+check). `dragen_metrics/<sg>/<sg>.ploidy_estimation_metrics.csv` is read directly only when
+the meta is absent. **Do not** read sex from the `##referenceSexKaryotype` header: it is a
+reference/config constant that reads `XXYY` for *every* sample. Details: SPEC §5.6.
 
 > **Exomes (DRAGEN 3.7.8, checked 2026-09-18):** every exome has the gVCF, the SV VCF and
 > both sex-metric files. The 11,917 production exomes also have a CNV VCF, called per capture
@@ -138,10 +140,11 @@ flowchart TD
         GVCF["1 · SNV gVCF<br/>recal_gvcf/&lt;sg&gt;.hard-filtered.recal.gvcf.gz<br/><i>&lt;NON_REF&gt; ref-blocks</i>"]
         SV["2 · SV VCF (DRAGEN SV caller)<br/>dragen_metrics/&lt;sg&gt;/&lt;sg&gt;.sv.vcf.gz<br/><i>SVTYPE=DEL/DUP/INS/BND · exact breakpoints</i>"]
         CNV["3 · CNV VCF (when cnv_metrics.csv shows the caller ran)<br/>dragen_metrics/&lt;sg&gt;/&lt;sg&gt;.cnv.vcf.gz<br/><i>every record SVTYPE=CNV · genomes: 1–2 kb bins, &lt;10 kb = cnvLength · exomes: capture targets vs panel of normals, events only</i>"]
-        PLOIDY["ploidy_estimation_metrics.csv<br/><i>Ploidy estimation: XX / XY / other</i><br/>fallback: wgs_coverage_metrics.csv<br/><i>X, Y, autosomal coverage → XX / XY / UNDETERMINED</i>"]
+        PLOIDY["ploidy_estimation_metrics.csv<br/><i>Ploidy estimation: XX / XY / other</i><br/>(read directly only if sg.meta['qc'] is absent)"]
     end
-    SEX["metamist reported sex<br/>(sequencing_group.pedigree.sex)"]
-    SEX -.->|"cross-check only<br/>mismatch → SEXCHECK"| QC
+    SEX["sg.meta['qc'] from single_sample_qc_popgen<br/>ploidy_estimation · norm_x/y_coverage<br/>somalier f_stat_raw, x_het_rate, y_calls → karyotype_from_signals<br/>qc_checks_failed (ploidy vs reported sex)"]
+    SEX -.->|"primary sex source<br/>+ somalier fallback"| CNVv
+    SEX -.->|"recorded reported-sex<br/>failure → SEXCHECK"| QC
 
     GVCF -->|"convert → sites VCF<br/>split multiallelics, drop &lt;NON_REF&gt;/ref-blocks,<br/>restrict to bg_regions.GRCh38.bed<br/>(existing stage)"| SNVv["snv sites VCF"]
     SV -->|"drop BND; region-restrict;<br/>rename sample"| SVv["sv records"]
@@ -195,8 +198,8 @@ flowchart TD
   target split in two, and the SV caller produced one such pair in 17,175 records.
   `sv_cnv_overlap_50_samples.md` §13.
 - **Sex chromosomes:** for X-linked systems (XK/Kx, XG, CD99) the expected copy number
-  depends on the sample's sex karyotype. Resolve sex from the ploidy estimate, falling back
-  to the coverage metrics, with metamist's reported sex as a cross-check (SPEC §5.6), and
+  depends on the sample's sex karyotype. Resolve sex from the QC meta in metamist (DRAGEN
+  ploidy estimate, somalier signals as fallback, recorded reported-sex check; SPEC §5.6), and
   feed expected ploidy into the CNV direction logic — don't assume diploid on chrX/chrY.
 
 ### Caveats carried from the research

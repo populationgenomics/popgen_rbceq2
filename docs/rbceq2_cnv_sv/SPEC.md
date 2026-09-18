@@ -56,8 +56,7 @@ Grounded on one of the OurDNA 1000 Genomes (1KG) control replicates:
 | 1 | SNV gVCF | `recal_gvcf/<sg>.hard-filtered.recal.gvcf.gz` | DRAGEN SNV | Convert to sites VCF |
 | 2 | SV VCF | `dragen_metrics/<sg>/<sg>.sv.vcf.gz` | DRAGEN SV caller (extends Manta) | Compatible |
 | 3 | CNV VCF | `dragen_metrics/<sg>/<sg>.cnv.vcf.gz` | DRAGEN bin CNV | Rewrite SVTYPE |
-| - | Ploidy (sex, primary) | `dragen_metrics/<sg>/<sg>.ploidy_estimation_metrics.csv` | DRAGEN | Read only |
-| - | Coverage (sex, fallback) | `dragen_metrics/<sg>/<sg>.wgs_coverage_metrics.csv` | DRAGEN | Read only |
+| - | Ploidy (sex) | `sg.meta['qc']` in metamist, else `dragen_metrics/<sg>/<sg>.ploidy_estimation_metrics.csv` | DRAGEN via `single_sample_qc_popgen` | Read only (§5.6) |
 
 What each sequencing type has, checked in the buckets on 2026-09-18 (150 OurDNA genomes; the 11,917 mackenzie exomes in `cpg-mackenzie-main`; the 10 exomes of the DRAGEN 3.7.8 test run in `cpg-mackenzie-test`):
 
@@ -67,7 +66,6 @@ What each sequencing type has, checked in the buckets on 2026-09-18 (150 OurDNA 
 | SV VCF | yes | yes, 11,917 of 11,917 (one exome: 65 records, 4 in the blood-group regions) | yes, 10 of 10 (one exome: 103 records, 9 in the regions) |
 | CNV VCF | yes | yes, 11,917 of 11,917 | no, 0 of 10: `cnv_metrics.csv` stops after "Number of target intervals", so the caller counted reads but never segmented |
 | `ploidy_estimation_metrics.csv` | yes | yes | yes |
-| `wgs_coverage_metrics.csv` | yes | yes | yes |
 | `ploidy.vcf.gz` | yes | no | no |
 
 The exome CNV VCF is not the genome file with fewer records. From one production exome's header and records: it is called per capture target (`--cnv-target-bed`) against a panel of 100 normals (`--cnv-normals-list`, `Number of normal samples,100` in `cnv_metrics.csv`, self-normalisation off) with HSLM segmentation. Every record is an event: no `DRAGEN:REF:` records at all (1,131 records, 30 of them in the blood-group regions, all events). FILTER values are PASS, `cnvQual`, `cnvBinSupportRatio` and `cnvCopyRatio`; there is no `cnvLength`, so sub-10 kb events pass (129 PASS under 1 kb, 121 PASS of 1 to 10 kb in that exome). `BC` counts capture targets, not 1–2 kb bins. FORMAT is the same `GT:SM:CN:BC:PE`, and duplications carry `./1` as in genomes. §5.4 and §6 say what follows from each difference.
@@ -110,7 +108,7 @@ In scope
 - A preprocessing step that (a) produces an SNV sites VCF, (b) normalises the SV VCF, (c) fixes the CNV VCF (drop REF records, rewrite `SVTYPE=CNV` to `DEL`/`DUP`), and (d) merges all three into one sorted, bgzipped, tabixed VCF per SG.
 - Exome SGs, through the same three branches. Production exomes carry a panel-of-normals CNV VCF (§3); where a run produced none, step (c) is skipped and the 10 kb+ targets are reported unassessed (§5.1, §6).
 - Feed the merged VCF into `GenotypeBloodGroupsWithRbceq2` in place of the SNV-only VCF.
-- Per-SG sex and ploidy from DRAGEN's ploidy estimate, with its coverage metrics as fallback and metamist's reported sex as a cross-check (§5.6), for CNV direction on chrX/chrY, the karyotype gate (§5.4, §5.6), and the `KARYOTYPE` and `SEXCHECK` QC flags (§6).
+- Per-SG sex and ploidy from the QC meta `single_sample_qc_popgen` already writes to metamist, with the somalier signals in that meta as fallback and its reported-sex check as cross-check (§5.6), for CNV direction on chrX/chrY, the karyotype gate (§5.4, §5.6), and the `KARYOTYPE` and `SEXCHECK` QC flags (§6).
 - A cross-replicate concordance check over the OurDNA 1KG control SGs (§10).
 
 Non-goals (explicit)
@@ -131,11 +129,11 @@ The existing rbceq2 stage is repointed at it for every SG. For an SG whose run p
 
 ### 5.1 Resolve the new inputs
 
-This step resolves the SV and CNV VCF paths per SG, and the two sex-metric files §5.6 reads.
+This step resolves the SV and CNV VCF paths per SG, and the ploidy file §5.6 falls back to when the QC meta is absent.
 
-The SNV gVCF is resolved from `sequencing_group.gvcf`, which cpg_flow populates from the gVCF analysis in metamist. That attribute is cpg_flow's, and review (2026-09-18) ruled out extending cpg_flow for the other files and confirmed that `dragen_align` will not register them until its Nextflow refactor. So the stage derives them from the gVCF's path: `<prefix>/recal_gvcf/<sg>.hard-filtered.recal.gvcf.gz` gives `<prefix>/dragen_metrics/<sg>/<sg>.sv.vcf.gz`, `<sg>.cnv.vcf.gz`, `<sg>.ploidy_estimation_metrics.csv` and `<sg>.wgs_coverage_metrics.csv`, the layout verified in both buckets (§3).
+The SNV gVCF is resolved from `sequencing_group.gvcf`, which cpg_flow populates from the gVCF analysis in metamist. That attribute is cpg_flow's, and review (2026-09-18) ruled out extending cpg_flow for the other files and confirmed that `dragen_align` will not register them until its Nextflow refactor. So the stage derives them from the gVCF's path: `<prefix>/recal_gvcf/<sg>.hard-filtered.recal.gvcf.gz` gives `<prefix>/dragen_metrics/<sg>/<sg>.sv.vcf.gz`, `<sg>.cnv.vcf.gz`, `<sg>.cnv_metrics.csv` and `<sg>.ploidy_estimation_metrics.csv`, the layout verified in both buckets (§3).
 
-The SV VCF, `cnv_metrics.csv` and at least one sex-metric file are expected for every SG; a missing one fails the SG, as the gVCF guard does today. Whether a CNV VCF is expected is not a property of the sequencing type (production exomes have one, the exome test run does not, §3) and is not a config default; it is read from `cnv_metrics.csv`, which every run writes. A run that segmented and called carries `Number of segments` (and `Number of normal samples` when a panel was used) and must have a CNV VCF; a run whose metrics stop after `Number of target intervals` never called and must not. A CNV VCF present without segment metrics, or absent with them, fails the SG. The ploidy file may be absent for a genome with uneven coverage (§5.6), which is the one case the coverage fallback covers; both sex-metric files missing fails the SG. Both VCFs need their `.tbi`.
+The SV VCF and `cnv_metrics.csv` are expected for every SG; a missing one fails the SG, as the gVCF guard does today. Whether a CNV VCF is expected is not a property of the sequencing type (production exomes have one, the exome test run does not, §3) and is not a config default; it is read from `cnv_metrics.csv`, which every run writes. A run that segmented and called carries `Number of segments` (and `Number of normal samples` when a panel was used) and must have a CNV VCF; a run whose metrics stop after `Number of target intervals` never called and must not. A CNV VCF present without segment metrics, or absent with them, fails the SG. The ploidy file is read only when `sg.meta['qc']` carries no ploidy estimate, and may be absent for a genome with uneven coverage (§5.6); an SG with no estimate in meta, no ploidy file and no somalier signals in meta fails. Both VCFs need their `.tbi`.
 
 The derived paths are recorded in the merged VCF's Analysis meta, as the thresholds are (§8). No new metamist analysis types are created for the raw DRAGEN files (Q6 decided, §13).
 
@@ -260,11 +258,11 @@ For X-linked systems (XK/Kx, XG, CD99), expected copy number depends on the samp
 
 #### Sources, in order
 
-1. **`Ploidy estimation` in `ploidy_estimation_metrics.csv`**, DRAGEN's karyotype call from X and Y median coverage over autosomal median coverage. Primary, because it is the only source that names X0 and XYY. Present for all 150 study genomes and all 10 test exomes (§3).
-2. **`wgs_coverage_metrics.csv`**, the fallback when the ploidy file is absent. Review (2026-09-18) reports DRAGEN omitting the ploidy file for genomes with uneven coverage: three Garvan DSP samples in `tenk10k-phase2`, none from AGRF. The coverage file is written regardless and carries `Average chr X coverage over genome`, `Average chr Y coverage over genome` and `Average autosomal coverage over genome`, so the same two ratios can be formed. They are classified with the §8 bands: `XX` when X/autosomal is at least `sex_xx_x_min` and Y/autosomal is below `sex_xx_y_max`; `XY` when both ratios fall in `sex_xy_x_range` and `sex_xy_y_range`; anything else `UNDETERMINED`, which the karyotype gate treats as a non-XX/XY estimate. The bands are set from the 150 genome ploidy files, where XX genomes had X/autosomal 0.97–1.02 and Y/autosomal 0.00, XY had 0.50–0.52 and 0.42–0.52, the XYY genome had Y 0.93 and the X0 genome Y 0.18. Two exomes read: an `XX` with X 0.88 and Y 0.01, and an `XY` with X 0.50 and Y 0.35, the latter on the lower edge of `sex_xy_y_range`. Capture design shifts the Y ratio, so the fallback will return `UNDETERMINED` for some XY exomes; that gates them conservatively rather than wrongly, and the bands are revisited if the ploidy file ever goes missing on an exome.
-3. **Metamist reported sex**, `sequencing_group.pedigree.sex`, which cpg_flow populates from the participant's `reportedSex` (`cpg_flow/inputs.py`). A cross-check, never the gate's input, because reported sex cannot express X0 or XYY. Disagreement with the estimate from source 1 or 2 raises `SEXCHECK:<reported>/<estimated>` on the X-linked systems (§6) and nothing else changes.
+1. **`sg.meta['qc']`, written by `single_sample_qc_popgen`.** Its `RegisterQcMetricsToMetamist` stage registers `ploidy_estimation`, `norm_x_coverage` and `norm_y_coverage` per SG, which are DRAGEN's `Ploidy estimation`, `X median / Autosomal median` and `Y median / Autosomal median` from `ploidy_estimation_metrics.csv` as MultiQC reads them. Primary, because it is already in metamist and is the only source that names X0 and XYY. When the meta is absent (a cohort not yet through that pipeline) the stage reads the ploidy file directly; the file was present for all 150 study genomes and every exome checked (§3). If the file is also absent, source 2.
+2. **The somalier signals in the same meta**, `f_stat_raw`, `x_het_rate`, `y_calls` and `y_n`, also registered by `single_sample_qc_popgen`. They are computed from genotype sketches, not from the ploidy file, so they survive the uneven-coverage genomes for which DRAGEN omits it (review, 2026-09-18: three Garvan DSP samples in `tenk10k-phase2`, none from AGRF). `karyotype_from_signals` in `ourdna_genomic_atlas` (`ImputeSex`) already turns them and the DRAGEN estimate into a karyotype with a loss-of-Y rescue and an `ambiguous` gate; this design reuses that function rather than deriving a second one, and treats `ambiguous` as a non-XX/XY estimate. Where the function lives so both repos can import it is an implementation decision (§9). An SG with no ploidy estimate in meta, no ploidy file and no somalier signals fails (§5.1).
+3. **Reported sex, as a cross-check only.** `single_sample_qc_popgen` already compares DRAGEN's ploidy estimate with the participant's reported sex and records a failure in `sg.meta['qc']['qc_checks_failed']`. The `SEXCHECK` flag (§6) reads that recorded outcome for the X-linked systems and recomputes nothing. Reported sex never drives the gate, because it cannot express X0 or XYY.
 
-Not used: the `##referenceSexKaryotype` header, a constant reading `XXYY` for every sample, verified 102/102 (§7); `.ploidy.vcf.gz`, absent for exomes and whose `##estimatedSexKaryotype` header repeats source 1; and `SEX GENOTYPER` in `cnv_metrics.csv`, which agreed with source 1 in 49 of 50 genomes and was blank for the X0 genome, so it fails on the sample that needs it. The SNV GT diploid-isation in the conversion stage (§5.2) is not a consumer; it needs no sex or PAR input (§13, Q4).
+Not used: `wgs_coverage_metrics.csv`, which review suggested as the fallback. `single_sample_qc_popgen` stages it for MultiQC but registers only coverage from it (mean, median, percent over 20x); its `Average chr X/Y coverage over genome` lines feed nothing today, and a classifier built on them would duplicate `karyotype_from_signals` with a weaker signal. For the record, the 150 ploidy files would have calibrated it cleanly (XX genomes X/autosomal 0.97–1.02 and Y 0.00; XY 0.50–0.52 and 0.42–0.52; the XYY genome Y 0.93; the X0 genome Y 0.18), but an XY exome read Y 0.35, so capture design shifts the ratios. Also not used: the `##referenceSexKaryotype` header, a constant reading `XXYY` for every sample, verified 102/102 (§7); `.ploidy.vcf.gz`, absent for exomes and whose `##estimatedSexKaryotype` header repeats source 1; and `SEX GENOTYPER` in `cnv_metrics.csv`, which agreed with source 1 in 49 of 50 genomes and was blank for the X0 genome, so it fails on the sample that needs it. The SNV GT diploid-isation in the conversion stage (§5.2) is not a consumer; it needs no sex or PAR input (§13, Q4).
 
 Expected CN is region times sex, not a blanket 'chrX = 1 in males' rule. Of the seven chrX structural alleles, four sit in PAR1 and are diploid in males; only XK and ATP11C are genuinely hemizygous (CN=1 in males).
 
@@ -283,7 +281,7 @@ A naive haploid-X rule would expect CN=1 in PAR and miscall the normal CD99/XG s
 
 #### Karyotype gate
 
-The gate reads the sample's estimate from source 1, or source 2 when the ploidy file is absent. For any value other than `XX` or `XY`, `UNDETERMINED` included, it drops or tags the sample's chrX/chrY CNV records (§5.4, open decision Q5), and the QC reports the X-linked systems as `KARYOTYPE:<estimate>` rather than assessing them.
+The gate reads the sample's estimate from source 1, or source 2 when no ploidy estimate exists. For any value other than `XX` or `XY`, `ambiguous` included, it drops or tags the sample's chrX/chrY CNV records (§5.4, open decision Q5), and the QC reports the X-linked systems as `KARYOTYPE:<estimate>` rather than assessing them.
 
 What the study observed, across the 150 genomes:
 
@@ -334,8 +332,8 @@ Design:
    - `SVLOWRES:<system>(<allele>,src=CNV,BC=<n>,SM=<x>,QUAL=<q>)`: an allele called from a §5.4 CNV-only sub-10 kb record. Provisional by construction.
    - `SVDEPTH:<system>(<allele>,ratio=<x>,DP=<n>,flank=<n>)`: gVCF depth over a sub-10 kb target falls below `sv_depth_ratio` of its flanking depth with no kept record to explain it. This is the dosage-drop signal without a breakpoint call.
    - `SVUNASSESSED:<system>`: a sub-10 kb target with no gVCF record over the interval at all, an exome hole or an unmapped region, so neither a call nor its absence can be judged.
-   - `KARYOTYPE:<estimate>`: X-linked systems in a non-XX/XY sample (§5.6), `UNDETERMINED` from the coverage fallback included.
-   - `SEXCHECK:<reported>/<estimated>`: X-linked systems where metamist's reported sex disagrees with DRAGEN's estimate (§5.6).
+   - `KARYOTYPE:<estimate>`: X-linked systems in a non-XX/XY sample (§5.6), `ambiguous` from the somalier fallback included.
+   - `SEXCHECK:<reported>/<estimated>`: X-linked systems of a sample for which `single_sample_qc_popgen` recorded a ploidy-versus-reported-sex failure in `sg.meta['qc']['qc_checks_failed']` (§5.6).
    - `SVDEL:<system>(<site>,del=<chrom:pos-end>,src=<caller>,GT=<gt>)`: a kept deletion, matched to a db allele or not, spans a defining SNV/indel site of the system.
 
    A structural call that passes everything is not listed, so `PASS` keeps meaning 'nothing to report'.
@@ -362,7 +360,9 @@ So a gVCF `A/A` under a heterozygous deletion that matches no db SV is reported 
 | Keep exome SGs out of scope | Every production exome has an SV VCF and a panel-of-normals CNV VCF, both with records in the blood-group regions; only the 10-exome test run lacks the CNV VCF | §3, `resolvability_by_input_class.md` §3 |
 | Decide whether a CNV VCF is expected from the sequencing type, or from a config flag | Production exomes have one and the exome test run does not, so the type is the wrong key; a config flag would be a default standing in for a fact the run already records in `cnv_metrics.csv` | §5.1 |
 | Metamist reported sex as the karyotype source | Cannot express X0 or XYY, the two estimates the gate exists for; kept as a cross-check | §5.6 |
-| `SEX GENOTYPER` in `cnv_metrics.csv` as the sex fallback | Blank for the X0 genome, so it fails on exactly the sample that needs it; `wgs_coverage_metrics.csv` is written regardless | §5.6 |
+| `SEX GENOTYPER` in `cnv_metrics.csv` as the sex fallback | Blank for the X0 genome, so it fails on exactly the sample that needs it | §5.6 |
+| `wgs_coverage_metrics.csv` chrX/chrY averages as the sex fallback (review suggestion) | The QC pipeline registers nothing from those lines, and a classifier on them would duplicate `karyotype_from_signals`, which already derives a karyotype from the somalier signals in metamist and does not depend on coverage evenness | §5.6 |
+| Recomputing the reported-sex check for `SEXCHECK` | `single_sample_qc_popgen` already records the ploidy-versus-reported-sex outcome in `qc_checks_failed` | §5.6, §6 |
 | New metamist analysis types for the raw SV and CNV VCFs | `dragen_align` cannot register them before its Nextflow refactor, cpg_flow is not to be extended, and the paths derive from the registered gVCF's prefix | §5.1 |
 | `--no_filter` to admit sub-10 kb CNVs | It is global: it would also admit non-PASS SNVs and non-PASS SVs, not only the CNV records it was meant for | §5.4, §5.7 |
 | The `##referenceSexKaryotype` header as the sex source | It is a constant `XXYY` in 102 of 102 samples, not a per-sample estimate | §5.6 |
@@ -383,12 +383,7 @@ So a gVCF `A/A` under a heterozygous deletion that matches no db SV is reported 
 | `sv_depth_ratio` | 0.7 | Depth ratio below which gVCF depth over a sub-10 kb target triggers `SVDEPTH` | §6 |
 | `sv_depth_flank_bp` | 5000 | Flank size either side of a target used to compute the depth ratio | §6 |
 | `sv_del_max_bp` (name proposed) | 1000000 | Upper size cap on a PASS deletion admitted by rule 1(b) for spanning a defining SNV/indel site | §5.5, rule 1(b); caps out the X0 sample's megabase events and the 126 Mb SV `MaxDepth` record |
-| `sex_xx_x_min` | 0.8 | Coverage-fallback classifier (§5.6): minimum X/autosomal ratio for `XX` | 150 ploidy files: XX genomes 0.97–1.02, XY 0.50–0.52; one exome 0.88 |
-| `sex_xx_y_max` | 0.1 | Coverage-fallback classifier: maximum Y/autosomal ratio for `XX` | 150 ploidy files: XX genomes 0.00; the X0 genome 0.18 |
-| `sex_xy_x_range` | 0.4–0.6 | Coverage-fallback classifier: X/autosomal band for `XY` | 150 ploidy files: XY genomes 0.50–0.52 |
-| `sex_xy_y_range` | 0.35–0.65 | Coverage-fallback classifier: Y/autosomal band for `XY`; the XYY genome (0.93) and the X0 genome (0.18) fall outside it | 150 ploidy files: XY genomes 0.42–0.52 |
-
-Each threshold is recorded in the Analysis meta of the stage that applies it, as `min_depth`/`min_gq` are today; §9 says which config section holds which.
+Each threshold is recorded in the Analysis meta of the stage that applies it, as `min_depth`/`min_gq` are today; §9 says which config section holds which. The sex fallback (§5.6) carries no thresholds of its own: `karyotype_from_signals` owns them.
 
 ---
 
@@ -399,8 +394,10 @@ Each threshold is recorded in the Analysis meta of the stage that applies it, as
 | `src/popgen_rbceq2/stages/blood_group_genotyping/filter_and_convert.py` (`FilterAndConvertGvcfsForRbceq2`) | Unchanged. Its `vcf` output is the SNV branch (§5.2); the merge stage lists it as a required stage |
 | `src/popgen_rbceq2/stages/blood_group_genotyping/` | New `PreprocessDragenForRbceq2` per-SG stage for every SG, with the CNV branch conditional on sequencing type (§5.1); repoint `GenotypeBloodGroupsWithRbceq2`'s required stages and `--vcf` (`genotype.py`) at its output |
 | `src/popgen_rbceq2/jobs/` | New job module. Proposed function names, no code yet: `resolve_dragen_inputs`, `read_sample_sex`, `fix_dragen_cnv_vcf`, `normalize_sv`, `merge_variant_vcfs`, `validate_for_rbceq2` |
-| SV/CNV input resolution | Paths derived from `sequencing_group.gvcf`'s DRAGEN output prefix (§5.1), expected-file check by `sequencing_group.sequencing_type`, paths recorded in the merged VCF's Analysis meta. Reported sex from `sequencing_group.pedigree.sex` (Q6 decided) |
-| `src/popgen_rbceq2/config/popgen_rbceq2_default_config.toml`, `[workflow.preprocess_dragen_for_rbceq2]` (new) | `cnv_svtype_from`, `min_size`, resources, the merge thresholds from §8 (`sv_min_bins`, `sv_recip_overlap`, `sv_lowres_max_bp`, `sv_del_max_bp`) and the sex-fallback bands (`sex_xx_x_min`, `sex_xx_y_max`, `sex_xy_x_range`, `sex_xy_y_range`) |
+| SV/CNV input resolution | Paths derived from `sequencing_group.gvcf`'s DRAGEN output prefix (§5.1), CNV expectation read from `cnv_metrics.csv`, paths recorded in the merged VCF's Analysis meta (Q6 decided) |
+| Sex and ploidy | Read from `sequencing_group.meta['qc']` as `single_sample_qc_popgen` writes it: `ploidy_estimation`, `norm_x_coverage`, `norm_y_coverage`, `f_stat_raw`, `x_het_rate`, `y_calls`, `y_n`, `qc_checks_failed`; the ploidy file only when the meta is absent (§5.6) |
+| `karyotype_from_signals` (today in `ourdna_genomic_atlas`, `jobs/sample_qc/impute_sex_job.py`) | Reused for the somalier fallback. Import across repos or move to a shared package: decide at implementation, do not re-derive |
+| `src/popgen_rbceq2/config/popgen_rbceq2_default_config.toml`, `[workflow.preprocess_dragen_for_rbceq2]` (new) | `cnv_svtype_from`, `min_size`, resources, and the merge thresholds from §8 (`sv_min_bins`, `sv_recip_overlap`, `sv_lowres_max_bp`, `sv_del_max_bp`) |
 | `src/popgen_rbceq2/resources/bg_regions.GRCh38.bed` | Reused unchanged for region-restrict |
 | `src/popgen_rbceq2/resources/bg_site_systems.GRCh38.tsv` | Gains SV definition rows (§6) |
 | `src/popgen_rbceq2/scripts/bg_db.py` (`SiteKind`) | Stops excluding `kind == 'sv'` rows when building the site-system map |
@@ -426,7 +423,7 @@ Unit tests use constructed records committed under `tests/`, shaped like the rec
 | `validate_for_rbceq2` | A merged VCF with one row whose FORMAT is `DP:GT` | Fails naming the row |
 | No-CNV path | An SNV VCF and SV VCF, a `cnv_metrics.csv` that stops after the target-interval count, no CNV VCF | Merge succeeds; every 10 kb+ target is `SVUNASSESSED`; the same inputs plus a CNV VCF, or segment metrics without a CNV VCF, fail the SG |
 | Exome CNV path | An exome-shaped CNV VCF: events only, no `DRAGEN:REF:` records, PASS and `cnvQual`, `BC` in target counts, with `Number of segments` in the metrics | Edit 1 drops nothing; triage keeps the db-relevant records; the QC reads assessability from the capture design and emits no `SVNOCOV` |
-| Sex sources | No ploidy file and a coverage metrics file with ratios shaped like an XX, an XY and an X0 genome; a ploidy file reading `XY` with reported sex female | `XX`, `XY`, `UNDETERMINED`; `SEXCHECK:female/XY` on the X-linked systems |
+| Sex sources | (a) meta with `ploidy_estimation`; (b) meta without it plus a ploidy file; (c) neither, with somalier signals shaped like XX, XY and loss-of-Y; (d) none of the three; (e) meta whose `qc_checks_failed` records the ploidy-versus-reported-sex check | (a) estimate read from meta, file untouched; (b) read from the file; (c) `XX`, `XY`, `ambiguous` via `karyotype_from_signals`, the last gated; (d) the SG fails; (e) `SEXCHECK` on the X-linked systems only |
 | Sub-10 kb path (a) | An SV DEL record of exactly 3609 bp at the GE\*01.-02.01 coordinates plus a 4961 bp `cnvLength` CN=1 CNV record over it | The merge keeps the SV record and records the CNV partner; rbceq2 calls one GE allele, never two |
 | Sub-10 kb path (b) | The CNV record alone, 3 bins | Kept, PASS-rewritten, tagged; the QC flags the GE call `SVLOWRES` |
 | Sub-10 kb path (c) | The CNV record alone, 2 bins | Dropped; GE unassessed |
@@ -496,7 +493,7 @@ To raise upstream with the RBCeq2 maintainers, feature requests rather than thin
 3. *Q6 decided: no new metamist analysis types.* cpg_flow is not extended and `dragen_align` cannot register the files before its Nextflow refactor, so the stage derives the paths from the registered gVCF's prefix, checks expected presence by sequencing type, fails on deviation, and records the paths in the merged VCF's Analysis meta (§5.1). Alternatives rejected: a small registration stage in this repo, which would register another pipeline's outputs under types nobody else reads.
 4. *FORMAT needs no harmonisation.* Verified on the study files and a real concat (§5.5); `validate_for_rbceq2` gains a `GT`-first assertion. Alternatives rejected: none needed.
 5. *No merge-adjacent step.* Measured over 150 genomes: adjacent CNV records are copy-number steps, not fragments, and the 3-bin Gerbich call is one record (§7, `sv_cnv_overlap_50_samples.md` §13). Alternatives rejected: an optional pre-triage merge with a gap threshold, which would have merged records of different `CN` in 251 of 254 observed cases.
-6. *Sex from three sources in order.* DRAGEN's ploidy estimate, then `wgs_coverage_metrics.csv` when the ploidy file is absent (review reports this on uneven-coverage genomes), with metamist's reported sex as a cross-check raising `SEXCHECK` (§5.6, §8). Alternatives rejected: reported sex as the gate's input (cannot express X0/XYY); `SEX GENOTYPER` in `cnv_metrics.csv` (blank on the X0 genome); `.ploidy.vcf.gz` (absent for exomes).
+6. *Sex from the QC meta already in metamist.* `single_sample_qc_popgen` registers DRAGEN's ploidy estimate and X/Y ratios, the somalier signals, and the outcome of its own ploidy-versus-reported-sex check into `sg.meta['qc']`; this design reads those, falls back to the ploidy file only when the meta is absent, uses the somalier signals through `karyotype_from_signals` when no ploidy estimate exists (the uneven-coverage genomes review described), and lets `SEXCHECK` echo the recorded check (§5.6). An earlier draft of this round proposed a coverage-ratio fallback from `wgs_coverage_metrics.csv` with four thresholds in §8; the author pointed out the QC pipeline and the somalier signals, and it was withdrawn the same day. Alternatives rejected: reported sex as the gate's input (cannot express X0/XYY); `SEX GENOTYPER` in `cnv_metrics.csv` (blank on the X0 genome); `.ploidy.vcf.gz` (absent for exomes); `wgs_coverage_metrics.csv` chrX/chrY averages (registered nowhere, and a duplicate of `karyotype_from_signals`).
 
 Also recorded: the `+fixploidy` question raised again at §5.2 is the one already deferred to the pin bump (the 2026-09-18 entry below); §5.2 now points there. The bedtools-merge suggestion is rule 3 (§5.5). Two reviewer observations stand as written: the callers' breakpoints never agree, and the 2.4.4 tie error will not fire on real pairs. The DRAGEN-version question is a new risk (§11) and open question (Q8).
 
