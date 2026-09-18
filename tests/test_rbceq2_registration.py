@@ -168,10 +168,10 @@ def test_blood_group_calls_meta_tracks_the_configured_reference_build(shm_tmp_pa
 
 
 @pytest.mark.usefixtures('qc_config')
-def test_both_per_sg_metas_record_the_tool_version(shm_tmp_path: Path):
-    # The QC flags are the caller's output as much as the calls are, so a row that reports a
-    # flag has to name the rbceq2 the flag came from — a reader comparing two runs of one
-    # sequencing group otherwise cannot tell which db version each was called against.
+def test_every_registered_meta_records_the_tool_version(shm_tmp_path: Path):
+    # Metamist keeps a row per run and retires none, so each row has to name the rbceq2 it came
+    # from or a reader comparing two runs of one sequencing group cannot tell which db version
+    # each was called against. True of the QC flags and the cohort tables as much as the calls.
     qc_path = shm_tmp_path / 'SG000001.qc.tsv'
     qc_path.write_text(QC_TSV)
     geno_path = shm_tmp_path / 'SG000001.geno.tsv'
@@ -180,6 +180,7 @@ def test_both_per_sg_metas_record_the_tool_version(shm_tmp_path: Path):
 
     assert analysis_meta.call_qc(str(qc_path))['rbceq2_version'] == constants.RBCEQ2_VERSION
     assert analysis_meta.blood_group_calls(str(geno_path))['rbceq2_version'] == constants.RBCEQ2_VERSION
+    assert analysis_meta.cohort_calls(str(geno_path))['rbceq2_version'] == constants.RBCEQ2_VERSION
 
 
 def test_cohort_calls_meta_points_at_the_sibling_qc_tsv():

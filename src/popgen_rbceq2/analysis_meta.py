@@ -95,10 +95,11 @@ def cohort_calls(output: str) -> dict[str, str]:
         output: The combined geno TSV.
 
     Returns:
-        The sibling phenotype and QC TSV paths, which are otherwise undiscoverable: the
-        Analysis is registered against the geno TSV alone.
+        The tool version, and the sibling phenotype and QC TSV paths, which are otherwise
+        undiscoverable: the Analysis is registered against the geno TSV alone.
     """
     return {
+        'rbceq2_version': RBCEQ2_VERSION,
         'pheno_numeric_path': output.replace('.geno.tsv', '.pheno_numeric.tsv'),
         'pheno_alphanumeric_path': output.replace('.geno.tsv', '.pheno_alphanumeric.tsv'),
         'qc_path': output.replace('.geno.tsv', '.qc.tsv'),
