@@ -133,10 +133,11 @@ def parse_defining_token(token: str) -> tuple[int, SiteKind, str, str] | None:
 
     Recognises the forms occurring in db 2.5.1: `3774964_A_G` (a variant),
     `207331122_ref` (a lane site), `95018451_del_21kb`, `144120545_dup_20kb` and
-    `25272546_DEL_148` (structural variants), any of those with a trailing `_no_phenotype`
-    note, and `159205730_TGTCC...>T` (a large indel, written with `>` rather than `_`).
-    No `>` token remains as of db 2.5.1, which rewrote the last one (`FY*01N.09`) to `_`,
-    but the branch stays: the form is the db's own and nothing says it will not return.
+    `25272546_DEL_148` (structural variants), and any of those with a trailing
+    `_no_phenotype` note.
+
+    The `>` form of a large indel (`159205730_TGTCC...>T`) is gone as of db 2.5.1 and now
+    raises like any other unknown notation.
 
     Args:
         token: One comma-separated token from a db genome column.
@@ -160,12 +161,9 @@ def parse_defining_token(token: str) -> tuple[int, SiteKind, str, str] | None:
         return (int(pos), 'ref', '.', '.')
     if parts[0].lower() in _SV_WORDS:
         return (int(pos), 'sv', parts[0], parts[1] if len(parts) > 1 else '.')
-    if len(parts) >= 2:
-        ref, alt = parts[0], parts[1]
-    elif '>' in parts[0]:
-        ref, _, alt = parts[0].partition('>')
-    else:
+    if len(parts) < 2:
         raise ValueError(f'Unparseable allele in db coordinate token: {token!r}')
+    ref, alt = parts[0], parts[1]
     if not (_SEQUENCE.match(ref) and _SEQUENCE.match(alt)):
         raise ValueError(
             f'Unrecognised allele {ref}/{alt} in db coordinate token {token!r}. '

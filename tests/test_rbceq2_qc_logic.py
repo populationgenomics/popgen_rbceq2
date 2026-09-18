@@ -79,8 +79,6 @@ def _db_row(chrom='chr1', genotype='VEL*01.01', genome='3774964_A_G', genotype_a
         # Trailing db notes must not be mistaken for alleles.
         ('25284544_G_C_no_phenotype', (25284544, 'var', 'G', 'C')),
         ('25321858_ref_no_phenotype', (25321858, 'ref', '.', '.')),
-        # A large indel, which the db writes with `>` rather than `_`.
-        ('159205730_TGTCCTGGCACAGCTG>T', (159205730, 'var', 'TGTCCTGGCACAGCTG', 'T')),
         # Structural variants, in the db's two spellings: `del`/`ins`/`dup` with a size, and
         # RHD/RHCE's `DEL`/`INS` with a base count. Neither word is a sequence.
         ('95018451_del_21kb', (95018451, 'sv', 'del', '21kb')),
@@ -105,6 +103,14 @@ def test_parse_defining_token_raises_on_unknown_allele_form():
     # BED, so the site would be converted but never assessed.
     with pytest.raises(ValueError, match='Unparseable allele'):
         bg_db.parse_defining_token('3774964_somethingnew')
+
+
+def test_parse_defining_token_raises_on_the_retired_indel_form():
+    """The `>` spelling of a large indel is gone from the db, so it is no longer parsed."""
+    # Handled through db 2.5.0, dropped when 2.5.1 rewrote the last one (`FY*01N.09`) to
+    # `_`. If the db brings it back, that must be a loud failure, not a silent reversion.
+    with pytest.raises(ValueError, match='Unparseable allele'):
+        bg_db.parse_defining_token('159205730_TGTCCTGGCACAGCTG>T')
 
 
 def test_parse_defining_token_raises_on_an_allele_that_is_not_a_sequence():
