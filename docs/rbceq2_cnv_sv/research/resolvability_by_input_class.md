@@ -102,15 +102,20 @@ therefore depend on the **SV VCF**, not the CNV VCF. The 10 kb and larger events
 XG, C4A) can come from either. This is why the SPEC merges all three files
 rather than adding just the CNV VCF.
 
-**Exomes.** Everything above assumes genome DRAGEN outputs. The mackenzie exome runs
-(DRAGEN 3.7.8, `cpg-mackenzie-test`, 10 sequencing groups listed 2026-09-18) each have an
-`sv.vcf.gz`, a `ploidy_estimation_metrics.csv` and a `wgs_coverage_metrics.csv`, and none
-has a `cnv.vcf.gz`: the exome `cnv_metrics.csv` stops after "Number of target intervals",
-so the CNV caller counted reads but never segmented or called. One exome's SV VCF held 103
-records, 9 of them in the blood-group regions; its PASS deletions were 43 under 1 kb and
-6 of 1 to 10 kb, with one duplication. So for an exome the merge is gVCF plus SV VCF, the
-sub-10 kb SV-VCF-only alleles are the only structural gain, and the 10 kb+ CNV-band alleles
-stay unassessed. The SPEC (§4, §5) puts exomes in scope on those terms.
+**Exomes.** Everything above assumes genome DRAGEN outputs. Checked in the buckets on
+2026-09-18: every one of the 11,917 production mackenzie exomes (`cpg-mackenzie-main`,
+DRAGEN 3.7.8) has an `sv.vcf.gz`, a `cnv.vcf.gz`, a `ploidy_estimation_metrics.csv` and a
+`wgs_coverage_metrics.csv`. The exome CNV VCF is a different file from the genome one: called
+per capture target against a panel of 100 normals, events only with no `DRAGEN:REF:` records,
+no `cnvLength` filter (sub-10 kb events can PASS), and `BC` counting capture targets. One
+production exome held 1,131 CNV event records, 30 in the blood-group regions, and 65 SV
+records, 4 in the regions. The 10 exomes of the earlier test run (`cpg-mackenzie-test`) have
+the SV VCF but no CNV VCF; their `cnv_metrics.csv` stops after "Number of target intervals",
+so that run's caller counted reads but never segmented. So exomes carry both structural
+inputs in production, the sub-10 kb SV-VCF-only alleles and the CNV-band alleles are both
+in reach in principle, and the exome caller's sensitivity in the blood-group regions is
+unmeasured. The SPEC (§3, §4, §5.1) puts exomes in scope on those terms, reading whether a
+CNV VCF is expected from `cnv_metrics.csv` rather than from the sequencing type.
 
 ## 4. Reproducing
 
