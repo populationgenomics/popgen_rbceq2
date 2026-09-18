@@ -293,9 +293,13 @@ paralog locus, still matching no db allele.
 **Triage simulation (SPEC §5.5 rule 1) over all 150 genomes.** Records within `SvMatcher`
 tolerance of any db SV definition: 3 in total, all Gerbich (two SV-visible, one CNV-only);
 0 to 2 per genome. PASS deletions under 1 Mb spanning a defining SNV/indel site but matching
-no db SV: 0 to 3 per genome, and almost all one thing: a recurrent **9–13 kb deletion at
-chr19:48.69 Mb spanning a FUT2 defining site**, in 5 of 150 genomes, reported by both callers
-(SV 9.3–10.1 kb PASS, CNV 8.5–12.8 kb PASS or `cnvLength`). It matches no db allele. A
+no db SV: 0 to 3 per genome, and almost all one thing: a recurrent **8.5–12.8 kb deletion at
+chr19:48.69 Mb spanning every FUT2 defining site**, in 3 of 150 genomes, each reported by both
+callers (SV 9.3–10.1 kb PASS, QUAL 400–797; CNV 8.5–12.8 kb, CN=1 on 6–9 bins, PASS in two and
+`cnvLength` in one). Two of the three carriers share identical SV breakpoints
+(chr19:48,697,201–48,706,493), consistent with one recurrent allele. (An earlier revision of this
+paragraph said "5 of 150 genomes": the triage script counted PASS records, five, not carriers,
+three. Corrected 2026-09-18.) It matches no db allele. A
 heterozygous whole-FUT2 deletion leaves one FUT2 copy; whatever the gVCF reports at the
 secretor-defining sites is then a single-copy call read as homozygous. rbceq2 does nothing with
 an unmatched deletion, so this is exactly the case the `SVDEL` flag in SPEC §6 exists for. The
