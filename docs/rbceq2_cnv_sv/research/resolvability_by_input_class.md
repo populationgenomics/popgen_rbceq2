@@ -8,13 +8,19 @@ RH (RHD, RHCE) is listed but **excluded from the gain**: the maintainer's advice
 2.4.4 release is that DRAGEN SV/CNV does not reliably detect the RH hybrids, so `--RH`
 stays off. This note is about every other system.
 
+**Callers.** The SV VCF is written by the DRAGEN 3.7.8 SV caller, which Illumina
+describes as integrating and extending Manta; its record IDs keep Manta's prefix
+(`MantaDEL:`, `MantaINS:`). This note says "SV caller" and "SV VCF", not "Manta", because
+the caller is DRAGEN's and claims about Manta's internals may not hold for it. The CNV VCF
+is written by DRAGEN's bin-based CNV caller.
+
 ## 1. Allele classes
 
 | Class | Definition | Where it can come from |
 |---|---|---|
 | **A small** | Every token is a SNV, a `_ref` lane site, or an indel under 50 bp | DRAGEN SNV/indel gVCF: **what we run today** |
-| **B mid indel** | Largest event 50 bp to 1 kb | Sometimes the gVCF (DRAGEN calls indels up to a few hundred bp), otherwise the Manta SV VCF. Assume **not** reliably called today. |
-| **C large, single** | One event of 1 kb or more: a deletion, duplication or insertion, not paired | 1 kb to 10 kb: Manta SV VCF only (DRAGEN CNV filters these as `cnvLength`). 10 kb and up: CNV VCF, and usually Manta too. **This is the gain.** |
+| **B mid indel** | Largest event 50 bp to 1 kb | Sometimes the gVCF (DRAGEN calls indels up to a few hundred bp), otherwise the SV VCF. Assume **not** reliably called today. |
+| **C large, single** | One event of 1 kb or more: a deletion, duplication or insertion, not paired | 1 kb to 10 kb: SV VCF only (DRAGEN CNV filters these as `cnvLength`). 10 kb and up: CNV VCF, and usually the SV caller too. **This is the gain.** |
 | **D hybrid** | Two or more large events, a deletion paired with an insertion or duplication | Gene-conversion products. Long read only. |
 
 rbceq2 reads B, C and D from the same VCF via `SvReader`, matching on `SVTYPE` and
@@ -38,13 +44,13 @@ rest, is **entirely class A**, so the gVCF already resolves everything the db de
 | GYPB | 40 | 33 | 1 | 6 | 0 | Whole-GYPB dels, 19 kb to 224 kb: the U- / S-s-U- alleles. Paralog locus. |
 | GYPA | 26 | 24 | 0 | 2 | 0 | 101 kb and 119 kb dels. Paralog locus. |
 | GYP | 18 | 2 | 4 | 8 | 4 | The MNS hybrid system. 3 of the C are the 122 kb del of GYP*201/202/203 (with SNVs); 5 are 1.8 kb to 3.6 kb explicit-sequence dels. Paralog locus. |
-| GE | 20 | 10 | 2 | 8 | 0 | Seven 3.6 kb exon dels (Ge:-2 / Ge:-3, Melanesian) and one 2.3 kb del. All **under 10 kb**: Manta only. |
+| GE | 20 | 10 | 2 | 8 | 0 | Seven 3.6 kb exon dels (Ge:-2 / Ge:-3, Melanesian) and one 2.3 kb del. All **under 10 kb**: SV VCF only. |
 | A4GALT | 43 | 40 | 0 | 3 | 0 | 21 kb to 33 kb dels (P1PK null). |
-| PIGG | 8 | 4 | 1 | 3 | 0 | 4 kb to 6.3 kb dels. Manta only. |
-| MAM | 5 | 1 | 2 | 2 | 0 | 8.5 kb dels. Manta only. |
+| PIGG | 8 | 4 | 1 | 3 | 0 | 4 kb to 6.3 kb dels. SV VCF only. |
+| MAM | 5 | 1 | 2 | 2 | 0 | 8.5 kb dels. SV VCF only. |
 | LU | 38 | 36 | 0 | 2 | 0 | 1 kb and 27 kb dels. |
-| ABO | 207 | 206 | 0 | 1 | 0 | ABO*O.16, 6 kb del. Manta only. |
-| ABCG2 | 32 | 31 | 0 | 1 | 0 | 1.8 kb delins. Manta only. |
+| ABO | 207 | 206 | 0 | 1 | 0 | ABO*O.16, 6 kb del. SV VCF only. |
+| ABCG2 | 32 | 31 | 0 | 1 | 0 | 1.8 kb delins. SV VCF only. |
 | ABCC4 | 4 | 3 | 0 | 1 | 0 | 68 kb whole-gene del. |
 | C4A | 3 | 2 | 0 | 1 | 0 | 20 kb del, MHC segmental duplication with C4B. |
 | CTL2 | 4 | 3 | 0 | 1 | 0 | 37 kb del. |
@@ -91,14 +97,25 @@ share of the 16 mid-size indels. In system terms:
 
 **Two size bands, two sources.** 22 of the 67 C alleles are under 10 kb, which DRAGEN CNV
 filters as `cnvLength`; 45 are 10 kb or more. GE, PIGG, MAM, ABO*O.16, XK*N.05, ABCG2 and the small GYP dels
-therefore depend on the **Manta SV VCF**, not the CNV VCF. The 10 kb and larger events
+therefore depend on the **SV VCF**, not the CNV VCF. The 10 kb and larger events
 (whole-gene dels: GYPB, XK, ATP11C, A4GALT, CTL2, GCNT2, ABCC4, RHAG, LU*02N.06, CD99,
 XG, C4A) can come from either. This is why the SPEC merges all three files
 rather than adding just the CNV VCF.
 
-**Exomes.** Everything above assumes genome DRAGEN outputs. The mackenzie exome runs
-may have no `sv.vcf.gz`/`cnv.vcf.gz`, or a CNV VCF that needs a panel of normals; that
-has to be checked before promising any exome gain.
+**Exomes.** Everything above assumes genome DRAGEN outputs. Checked in the buckets on
+2026-09-18: every one of the 11,917 production mackenzie exomes (`cpg-mackenzie-main`,
+DRAGEN 3.7.8) has an `sv.vcf.gz`, a `cnv.vcf.gz`, a `ploidy_estimation_metrics.csv` and a
+`wgs_coverage_metrics.csv`. The exome CNV VCF is a different file from the genome one: called
+per capture target against a panel of 100 normals, events only with no `DRAGEN:REF:` records,
+no `cnvLength` filter (sub-10 kb events can PASS), and `BC` counting capture targets. One
+production exome held 1,131 CNV event records, 30 in the blood-group regions, and 65 SV
+records, 4 in the regions. The 10 exomes of the earlier test run (`cpg-mackenzie-test`) have
+the SV VCF but no CNV VCF; their `cnv_metrics.csv` stops after "Number of target intervals",
+so that run's caller counted reads but never segmented. So exomes carry both structural
+inputs in production, the sub-10 kb SV-VCF-only alleles and the CNV-band alleles are both
+in reach in principle, and the exome caller's sensitivity in the blood-group regions is
+unmeasured. The SPEC (§3, §4, §5.1) puts exomes in scope on those terms, reading whether a
+CNV VCF is expected from `cnv_metrics.csv` rather than from the sequencing type.
 
 ## 4. Reproducing
 
@@ -120,7 +137,7 @@ name follows `rbceq2.core_logic.alleles.Allele.blood_group` (KLF1 becomes KLF).
   without `+fixploidy` on a male sample when we bump the pin.
 - **2.4.4 refuses tied SV evidence** with a named sample error
   (`SvMatcher.match/ambiguous_equal_best_sv_evidence`). The SV∩CNV overlap the SPEC's Q2
-  left open (the same deletion arriving from both Manta and the CNV caller) may now fail
+  left open (the same deletion arriving from both the SV caller and the CNV caller) may now fail
   the sample rather than pick one. Q2's recommendation to defer to rbceq2 no longer holds
   as written; the design PR revisits it.
 - **2.4.4 keeps the selected SV event's GT, phase and FILTER together and logs the source
@@ -142,9 +159,9 @@ different answers for the structural inputs:
 | | Did the caller assess the region? | How confident is the event call? |
 |---|---|---|
 | **CNV VCF** | Yes, answerable: `DRAGEN:REF:` records span every assessed interval with `BC` (bin count) and `SM` (segment mean). A gene span covered by a REF record with adequate `BC` is the analogue of a reference block; a gap is the analogue of `NOCOV`. | `QUAL`, `FILTER` (`cnvLength`, `cnvQual`, `cnvCopyRatio`, `cnvBinSupportRatio`), `CN`, `SM`, `BC`. |
-| **SV VCF (Manta)** | **Not answerable from the VCF.** Manta emits events only; absence is silence, the same trap as a gVCF hole. Assessability would have to come from the CRAM (depth and MAPQ0 fraction over the gene, e.g. mosdepth), which is a new input and a new job. | `QUAL`, `FILTER` (`MinQUAL`, `MaxDepth`, `MaxMQ0Frac`, `NoPairSupport`, `Ploidy`), `PR`/`SR` read counts, `CIPOS`/`CIEND`. |
+| **SV VCF (DRAGEN SV caller)** | **Not answerable from the VCF.** The file holds event records only, no reference or assessed-interval records (observed across 150 genomes and one exome); absence is silence, the same trap as a gVCF hole. Assessability would have to come from the CRAM (depth and MAPQ0 fraction over the gene, e.g. mosdepth), which is a new input and a new job. | `QUAL`, `FILTER` (`MinQUAL`, `MaxDepth`, `MaxMQ0Frac`, `NoPairSupport`, `Ploidy`, `MinGQ`, `HomRef`, `SampleFT`, as declared in the 3.7.8 header), `PR`/`SR` read counts, `CIPOS`/`CIEND`. |
 
-So the sub-10 kb Manta-only alleles (GE, PIGG, MAM, ABO*O.16) can be *called* from the
+So the sub-10 kb SV-VCF-only alleles (GE, PIGG, MAM, ABO*O.16) can be *called* from the
 merged VCF, but the QC cannot say whether their absence was assessed without a
 CRAM-derived region metric, while the CNV-band alleles can get both answers from the CNV
 VCF alone. How the QC stage should report structural calls is the design PR's question.
@@ -154,7 +171,7 @@ VCF alone. How the QC stage should report structural calls is the design PR's qu
 - Inputs: two more files per SG to resolve, and metamist analysis types for them if
   `dragen_align` does not already register them (unverified since the SPEC).
 - Compute: the merge is bcftools on three small region-restricted files; negligible next
-  to the existing conversion. The CRAM-derived assessability metric for Manta-band QC is
+  to the existing conversion. The CRAM-derived assessability metric for SV-band QC is
   the only new cost of note, and it reads the same ~50 regions the conversion already
   restricts to.
 - Validation: no positive control among the five NA12878 replicates. Concordance across
