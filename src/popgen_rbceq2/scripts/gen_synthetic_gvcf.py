@@ -8,12 +8,13 @@ say when the sex chromosomes are encoded the way DRAGEN encodes them?**
 
 That question is why this exists. DRAGEN calls non-PAR chrX and chrY at their real ploidy in
 a male sample, writing a one-token `GT`, and three blood-group loci sit there: XK, GATA1 and
-ATP11C. `--diploidise` writes the same sample the way `bcftools +fixploidy` used to leave it,
-and `--mixed` writes the half-rewritten state rbceq2 2.4.4 refuses. Running all three through
-the pipeline and diffing the TSVs is what the haploid-encoding section of the README reports.
+ATP11C. `--diploidise` writes the same sample with both alleles spelled out (`1` as `1|1`), and
+`--mixed` writes one site that way and the rest as single copies, which is the self-contradiction
+rbceq2 refuses. Running all three and diffing the TSVs is what the haploid-encoding section of
+the README reports.
 
 Coordinates are read from the committed `bg_site_systems.<genome>.tsv` rather than written
-here, so a fixture cannot describe a site the pipeline no longer ships.
+here, so a fixture cannot describe a site the pipeline does not ship.
 
     gen_synthetic_gvcf.py GRCh38 out.g.vcf
     gen_synthetic_gvcf.py GRCh38 out.diploidised.g.vcf --diploidise
@@ -43,20 +44,24 @@ SAMPLE = 'CPGSYNTH1'
 NON_PAR_X = (2_781_480, 155_701_382)
 
 # Which defining site to call, and with how many copies of the ALT, per blood-group system.
-# The index selects from that system's sites in coordinate order, so a system whose site list
-# grows keeps describing the same allele. Two XK entries so --mixed has a second one to
-# disagree with; the rest are one apiece, enough to produce a multi-system report.
+#
+# Named by coordinate, not by position in the system's site list. An index would survive a
+# database bump that reshuffled the list and quietly describe a different allele, and the
+# tests would not notice, because they only check that a called site is *a* defining site.
+# A coordinate that stops existing stops the run instead, naming what went missing.
 CALLS = (
-    # (system, index into that system's sites, ALT copies)
-    ('XK', 5, 1),  # non-PAR: hemizygous null in a male
-    ('GATA1', 0, 1),  # non-PAR: hemizygous
-    ('XG', 0, 1),  # PAR1: genuinely diploid, must stay two-token
-    ('FY', 3, 2),  # autosomal: homozygous
-    ('FY', 9, 1),  # autosomal: heterozygous
+    # (system, 1-based GRCh38 position, ALT copies)
+    ('XK', 37686082, 1),  # non-PAR chrX: one copy in a male
+    ('GATA1', 48794162, 1),  # non-PAR chrX: one copy
+    ('XG', 2748343, 1),  # PAR1: genuinely two copies, must stay two-token
+    ('FY', 159205564, 2),  # autosomal: both copies
+    ('FY', 159205704, 1),  # autosomal: one of two
 )
 
-# The XK site --mixed writes diploid while the rest of non-PAR chrX stays haploid.
-MIXED_SYSTEM, MIXED_INDEX = 'XK', 7
+# The XK site --mixed writes with two copies while the rest of non-PAR chrX stays at one.
+# The README quotes the rbceq2 warning this produces, by coordinate, so moving it means
+# editing that quote too.
+MIXED_SYSTEM, MIXED_POS = 'XK', 37686132
 
 # Length of the reference block placed before each called site. rbceq2 never sees these -- the
 # <NON_REF> drop removes them -- but the QC extract reads them, so the conversion stage has to
@@ -100,8 +105,8 @@ def render_gt(chrom: str, pos: int, copies: int, *, diploidise: bool) -> str:
         chrom: Contig name.
         pos: 1-based position.
         copies: How many copies of the ALT allele the sample carries, 0 to 2.
-        diploidise: Write a haploid site the way `bcftools +fixploidy` left it -- allele
-            duplication with a phased separator -- instead of as DRAGEN called it.
+        diploidise: Write a single-copy site with its allele duplicated and a phased separator
+            (`1` as `1|1`) instead of as DRAGEN called it.
 
     Returns:
         A one-token GT on non-PAR chrX unless `diploidise`, and a two-token GT elsewhere.
@@ -140,35 +145,68 @@ def sites_by_system(genome: str) -> dict[str, list[bg_db.DefiningSite]]:
     return grouped
 
 
+def _site_at(
+    grouped: dict[str, list[bg_db.DefiningSite]],
+    system: str,
+    pos: int,
+    genome: str,
+) -> bg_db.DefiningSite:
+    """Find one `CALLS` entry's defining site in the committed map.
+
+    Args:
+        grouped: Output of `sites_by_system`.
+        system: Blood-group system the site belongs to.
+        pos: 1-based position, as written in `CALLS`.
+        genome: Genome build, for the error message.
+
+    Returns:
+        The matching site.
+
+    Raises:
+        LookupError: The system or the coordinate is absent. Both messages name what was
+            looked for, because the caller is a hard-coded table and the reader's next
+            question is always which entry to change.
+    """
+    sites = grouped.get(system)
+    if not sites:
+        raise LookupError(f'{system} has no variant site in bg_site_systems.{genome}.tsv')
+    for site in sites:
+        if site.pos == pos:
+            return site
+    raise LookupError(
+        f'{system} has no variant site at {genome} position {pos} in '
+        f'bg_site_systems.{genome}.tsv. The resources moved; pick another {system} site '
+        f'and update CALLS. Available: {[s.pos for s in sites[:10]]}'
+    )
+
+
 def build(genome: str, *, diploidise: bool = False, mixed: bool = False) -> str:
     """Render the whole gVCF.
 
     Args:
         genome: Genome build, selecting the committed site map to read coordinates from.
-        diploidise: Write every non-PAR chrX call pre-expanded, as `+fixploidy` left it.
-        mixed: Write one extra XK site diploid while the rest of non-PAR chrX stays haploid,
-            reproducing a half-applied ploidy rewrite.
+        diploidise: Write every non-PAR chrX call with both alleles spelled out.
+        mixed: Write one extra XK site with two alleles while the rest of non-PAR chrX keeps
+            one, so the file contradicts itself about the chromosome count.
 
     Returns:
         The complete VCF text, records sorted by contig then position.
 
     Raises:
-        KeyError: A system named in `CALLS` has no variant site in the committed map, which
-            means the resources moved and this script's indices need revisiting.
+        LookupError: A site named in `CALLS` is not in the committed map for this build,
+            which means the resources moved and this script needs revisiting. Deliberate:
+            skipping it would shrink the fixture and weaken every comparison built on it,
+            without failing anything.
     """
     grouped = sites_by_system(genome)
-    calls = [*CALLS, (MIXED_SYSTEM, MIXED_INDEX, 1)] if mixed else list(CALLS)
+    calls = [*CALLS, (MIXED_SYSTEM, MIXED_POS, 1)] if mixed else list(CALLS)
 
     rows: list[tuple[str, int, str]] = []
-    contigs: set[str] = set()
-    for system, index, copies in calls:
-        if system not in grouped:
-            raise KeyError(f'{system} has no variant site in bg_site_systems.{genome}.tsv')
-        site = grouped[system][index]
-        contigs.add(site.chrom)
-        # --mixed diploidises only the extra site, which is what makes the file disagree
-        # with itself; --diploidise applies to every haploid coordinate.
-        site_diploidise = diploidise or (mixed and (system, index) == (MIXED_SYSTEM, MIXED_INDEX))
+    for system, pos, copies in calls:
+        site = _site_at(grouped, system, pos, genome)
+        # --mixed gives two copies to only the extra site, which is what makes the file
+        # disagree with itself; --diploidise applies to every single-copy coordinate.
+        site_diploidise = diploidise or (mixed and (system, pos) == (MIXED_SYSTEM, MIXED_POS))
 
         block_start = site.pos - BLOCK_LEN - 1
         block_end = block_start + BLOCK_LEN - 1
@@ -208,12 +246,12 @@ def main(argv: list[str] | None = None) -> int:
     shape.add_argument(
         '--diploidise',
         action='store_true',
-        help='Pre-expand every haploid call, as the removed `bcftools +fixploidy` step left it',
+        help='Write every single-copy call with both alleles spelled out (`1` as `1|1`)',
     )
     shape.add_argument(
         '--mixed',
         action='store_true',
-        help='Expand one non-PAR chrX call and not the rest, the state rbceq2 2.4.4 refuses',
+        help='Expand one non-PAR chrX call and not the rest, the contradiction rbceq2 refuses',
     )
     args = parser.parse_args(argv)
 

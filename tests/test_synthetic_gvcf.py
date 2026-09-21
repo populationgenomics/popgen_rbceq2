@@ -76,10 +76,10 @@ def test_the_native_fixture_is_haploid_outside_par_and_diploid_inside_it():
 
 
 def test_the_diploidised_fixture_has_no_haploid_genotype_left():
-    """`--diploidise` reproduces what the removed +fixploidy step left behind."""
+    """`--diploidise` leaves no single-copy genotype anywhere in the file."""
     text = gen_synthetic_gvcf.build(GENOME, diploidise=True)
     assert not any(_is_one_token(_gt(r)) for r in _records(text))
-    # Allele duplication with a phased separator is what bcftools 1.24 actually writes.
+    # Allele duplication with a phased separator, which is the shape bcftools 1.24 writes.
     assert any(_gt(r) == '1|1' for r in _variants(text))
 
 
@@ -122,22 +122,51 @@ def test_a_reference_block_precedes_each_call_and_does_not_cover_it():
     """The blocks exercise the <NON_REF> drop without masking the variant they sit before."""
     # A block whose END reached the call would make the site covered twice, and the QC
     # extract would read the block's MIN_DP where it should read the variant's DP.
+    #
+    # The comparison has to be against the variant's own POS. Comparing the block's END to
+    # anything derived from BLOCK_LEN checks the generator against its own arithmetic, which
+    # holds whatever the block and the variant do to each other.
     text = gen_synthetic_gvcf.build(GENOME)
-    blocks = [r for r in _records(text) if r[4] == '<NON_REF>']
-    assert len(blocks) == len(_variants(text))
+    records = _records(text)
+    blocks = [r for r in records if r[4] == '<NON_REF>']
+    variants = _variants(text)
+    assert len(blocks) == len(variants)
+
+    # Each block is emitted immediately before the variant it belongs to, and the whole file
+    # is then sorted by coordinate, so pairing by position is what the reader sees.
     for block in blocks:
+        following = [v for v in variants if v[0] == block[0] and int(v[1]) > int(block[1])]
+        assert following, f'block at {block[0]}:{block[1]} precedes no variant on its contig'
+        variant_pos = min(int(v[1]) for v in following)
         end = int(block[7].removeprefix('END='))
-        assert end < int(block[1]) + gen_synthetic_gvcf.BLOCK_LEN
+        assert end < variant_pos, f'block {block[0]}:{block[1]}-{end} covers the call at {variant_pos}'
 
 
-def test_an_unknown_system_fails_loudly():
+def test_an_unknown_system_fails_loudly(monkeypatch):
     """A resource bump that removes a system this script calls must not pass silently."""
-    # The indices in CALLS point into a system's site list. If the system disappeared, a
-    # silent skip would shrink the fixture and weaken every comparison built on it.
-    original = gen_synthetic_gvcf.CALLS
-    gen_synthetic_gvcf.CALLS = (('NOT_A_BLOOD_GROUP', 0, 1),)
-    try:
-        with pytest.raises(KeyError, match='NOT_A_BLOOD_GROUP'):
-            gen_synthetic_gvcf.build(GENOME)
-    finally:
-        gen_synthetic_gvcf.CALLS = original
+    # A silent skip would shrink the fixture and weaken every comparison built on it.
+    monkeypatch.setattr(gen_synthetic_gvcf, 'CALLS', (('NOT_A_BLOOD_GROUP', 1, 1),))
+    with pytest.raises(LookupError, match='NOT_A_BLOOD_GROUP'):
+        gen_synthetic_gvcf.build(GENOME)
+
+
+def test_a_coordinate_that_left_the_resources_fails_by_name(monkeypatch):
+    """The case naming sites by coordinate exists to catch, and the one an index could not.
+
+    An index into a system's site list stays valid when the list is reshuffled and simply
+    points at a different allele, so the fixture would keep generating and every other test
+    here would keep passing while describing something else. A coordinate cannot do that.
+    """
+    monkeypatch.setattr(gen_synthetic_gvcf, 'CALLS', (('XK', 1, 1),))
+    with pytest.raises(LookupError, match='XK has no variant site at GRCh38 position 1'):
+        gen_synthetic_gvcf.build(GENOME)
+
+
+def test_every_called_coordinate_resolves_in_the_shipped_resources():
+    """CALLS is a hard-coded table; this is what ties it to what the repo actually ships."""
+    grouped = gen_synthetic_gvcf.sites_by_system(GENOME)
+    mixed = (gen_synthetic_gvcf.MIXED_SYSTEM, gen_synthetic_gvcf.MIXED_POS, 1)
+    for system, pos, _copies in (*gen_synthetic_gvcf.CALLS, mixed):
+        site = gen_synthetic_gvcf._site_at(grouped, system, pos, GENOME)
+        assert site.pos == pos
+        assert site.system == system

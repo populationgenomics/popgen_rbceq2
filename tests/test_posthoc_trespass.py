@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+from popgen_rbceq2.constants import POSTHOC_CALLER
 from popgen_rbceq2.jobs.rbceq2_call_qc_job import flags_by_system, load_fillable_sites, parse_extract
 from popgen_rbceq2.scripts.bg_db import DefiningSite
 from popgen_rbceq2.stages.blood_group_genotyping.filter_and_convert import (
@@ -74,6 +75,7 @@ DRAGEN_RECORDS = f'chr1\t{IN_DESIGN}\t.\tA\tG,<NON_REF>\t200\tPASS\tSPARE=1\tGT:
 # HaplotypeCaller header declares.
 HEADER = """##fileformat=VCFv4.2
 ##contig=<ID=chr1,length=250000000>
+##contig=<ID=chrX,length=156040895>
 ##ALT=<ID=NON_REF,Description="Represents any possible alternative allele">
 ##INFO=<ID=END,Number=1,Type=Integer,Description="Block end position">
 ##INFO=<ID=SPARE,Number=1,Type=Integer,Description="A tag nothing downstream reads">
@@ -143,6 +145,7 @@ def _merge(
             str(off_design),
             'exome_probesets_hg38/test_design_bed',
             cpu=1,
+            genome='GRCh38',
         )
     )
     return subprocess.run(  # noqa: S603
@@ -173,7 +176,12 @@ def _guard_then_merge(
         'set -euo pipefail\n'
         + _primary_records_guard(str(sites), 'GRCh38')
         + _merge_posthoc_commands(
-            str(posthoc), str(sites), str(off_design), 'exome_probesets_hg38/test_design_bed', cpu=1
+            str(posthoc),
+            str(sites),
+            str(off_design),
+            'exome_probesets_hg38/test_design_bed',
+            cpu=1,
+            genome='GRCh38',
         )
     )
     return subprocess.run(  # noqa: S603
@@ -505,3 +513,63 @@ def test_the_guard_passes_a_gvcf_dragen_called_a_defining_site_in(tmp_path):
     assert (tmp_path / 'merged.vcf.gz').exists()
     flags = _flags(tmp_path)
     assert flags[OFF_DESIGN].startswith('POSTHOC:')
+
+
+# Single-copy chrX, where the two callers disagree about ploidy. XK:37694549 is a real
+# GRCh38 defining site and is off-design on the Twist exome; XG:2748343 is a real one in
+# PAR1, where a male sample is genuinely diploid and the fill must still work.
+XK_SINGLE_COPY = 37694549
+XG_IN_PAR1 = 2748343
+
+
+def _chrx_beds(pos: int) -> tuple[str, str]:
+    """Sites and off-design BEDs with one chrX hole at `pos`, beside the chr1 pair."""
+    row = f'chrX\t{pos - 1}\t{pos}\n'
+    return SITES_BED + row, OFF_DESIGN_BED + row
+
+
+def test_a_posthoc_call_in_single_copy_chrx_is_not_filled(tmp_path):
+    """HaplotypeCaller's diploid GT must not reach the merged VCF beside DRAGEN's haploid one.
+
+    What this guards is not in this stage's own shell. HaplotypeCaller runs at its default
+    ploidy of 2, so its record here says two chromosome copies while DRAGEN's chrX records say
+    one, and rbceq2 answers a file claiming both by reporting the whole blood group
+    Undetermined. A het post-hoc call is worse: it claims one copy, passes unchallenged, and
+    flips the phenotype.
+    """
+    sites_bed, off_design_bed = _chrx_beds(XK_SINGLE_COPY)
+    posthoc = f'chrX\t{XK_SINGLE_COPY}\t.\tG\tA,<NON_REF>\t410\t.\tSPARE=1\tGT:DP:GQ\t1/1:38:99\n'
+    result = _merge(tmp_path, posthoc, sites_bed=sites_bed, off_design_bed=off_design_bed)
+
+    assert result.returncode == 0, result.stderr
+    merged = subprocess.run(  # noqa: S603
+        ['bcftools', 'query', '-f', '%CHROM\t%POS\t[%GT]\n', str(tmp_path / 'merged.vcf.gz')],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert f'chrX\t{XK_SINGLE_COPY}' not in merged
+    # And the job says so, rather than dropping the site without a word.
+    assert 'single-copy chrX left unfilled' in result.stderr
+
+
+def test_a_posthoc_call_in_par1_is_still_filled(tmp_path):
+    """The gate is bounded by PAR, so XG and CD99 keep their off-design recovery.
+
+    A male sample has two copies of PAR1, so HaplotypeCaller's diploid GT is correct there
+    and agrees with DRAGEN's. Gating the whole contig instead of the single-copy stretch
+    would silently cost these sites for no ploidy reason at all.
+    """
+    sites_bed, off_design_bed = _chrx_beds(XG_IN_PAR1)
+    posthoc = f'chrX\t{XG_IN_PAR1}\t.\tG\tC,<NON_REF>\t410\t.\tSPARE=1\tGT:DP:GQ\t0/1:38:99\n'
+    result = _merge(tmp_path, posthoc, sites_bed=sites_bed, off_design_bed=off_design_bed)
+
+    assert result.returncode == 0, result.stderr
+    merged = subprocess.run(  # noqa: S603
+        ['bcftools', 'query', '-f', '%CHROM\t%POS\t[%GT]\t%INFO/POSTHOC\n', str(tmp_path / 'merged.vcf.gz')],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert f'chrX\t{XG_IN_PAR1}\t0/1\t{POSTHOC_CALLER}' in merged
+    assert 'single-copy chrX left unfilled' not in result.stderr

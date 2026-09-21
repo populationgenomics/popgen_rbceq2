@@ -2,19 +2,16 @@
 
 DRAGEN calls non-PAR chrX and chrY at their real ploidy in a male sample, writing a one-token
 `GT=1` rather than the pseudo-diploid `1/1` some callers emit. XK, GATA1 and ATP11C are defined
-there. Until rbceq2 2.4.3 a bare `1` crashed the run, so this pipe ended in a parameter-free
-`bcftools +fixploidy` that rewrote it as `1|1`. rbceq2 2.4.4 reads the one-token form natively
-and scores it as one chromosome copy, so the rewrite is gone.
+there, and rbceq2 scores a one-token GT as one chromosome copy.
 
-These tests exist because putting it back would be silent. A diploidised hemizygous null is a
-well-formed VCF and a well-formed call: rbceq2 reports `XK*N.16/XK*N.16`, indistinguishable in
-the genotype TSV from a female homozygote, with the correct phenotype beside it. Nothing fails,
-nothing logs, and the only evidence is a genotype string no consumer can challenge. So the
-check has to be on the bytes the converter emits, not on anything downstream.
+A ploidy rewrite inserted into this pipe would be silent. Diploidising a hemizygous null gives
+a well-formed VCF and a well-formed call: rbceq2 reports `XK*N.16/XK*N.16`, indistinguishable
+in the genotype TSV from a female homozygote, with the correct phenotype beside it. Nothing
+fails and nothing logs, so the check has to be on the bytes the converter emits.
 
-They run the real `bcftools view` from the real helper, because what is being asserted is
-bcftools' own behaviour: that `view --trim-alt-alleles` leaves FORMAT/GT alone. A Python
-stand-in would assert that this file believes that, which is not the same claim.
+These run the real `bcftools view` from the real helper, because what is asserted is bcftools'
+own behaviour: that `view --trim-alt-alleles` leaves FORMAT/GT alone. A Python stand-in would
+assert that this file believes that, which is not the same claim.
 
 Skipped where bcftools is not installed. Local bcftools is expected to be the pinned image's
 1.24, as for the other shell tests here.
@@ -90,10 +87,10 @@ def test_a_haploid_genotype_survives_the_conversion_unchanged(tmp_path):
 
 
 def test_a_haploid_reference_call_survives_the_conversion_unchanged(tmp_path):
-    """The `0` half of the same case, which fixploidy also used to rewrite."""
-    # rbceq2 2.4.4 reads a single-token `0` as no data rather than as a hemizygous reference,
-    # so this is not merely the symmetric case: diploidising it to `0|0` would assert a
-    # reference genotype the caller never made.
+    """The `0` half of the same case."""
+    # rbceq2 reads a single-token `0` as no data rather than as a hemizygous reference, so this
+    # is not merely the symmetric case: expanding it to `0|0` would assert a reference genotype
+    # the caller never made.
     assert _convert(tmp_path, _record(XK_NON_PAR, '0')) == ['0']
 
 
@@ -105,10 +102,10 @@ def test_a_diploid_genotype_in_par_survives_the_conversion_unchanged(tmp_path):
 def test_the_converter_does_not_normalise_ploidy_across_records(tmp_path):
     """Mixed ploidy in, mixed ploidy out: the converter has no opinion about it.
 
-    This is the state rbceq2 2.4.4 refuses, dropping the blood group to Undetermined rather
-    than mis-rendering it, and the converter must not be the thing that hides it. Making the
-    file self-consistent here would mean choosing a ploidy for a sample from its own calls,
-    which is rbceq2's job and is done against the PAR table this stage does not carry.
+    rbceq2 refuses a file that claims both one chromosome copy and two, and the converter must
+    not be the thing that hides it. Making the file self-consistent here would mean choosing a
+    ploidy for a sample from its own calls, which is `_merge_posthoc_commands`' job and needs
+    the PAR bounds this helper does not carry.
     """
     body = _record(XK_NON_PAR, '1') + _record(XK_NON_PAR + 10, '1/1')
     assert _convert(tmp_path, body) == ['1', '1/1']
@@ -124,10 +121,9 @@ def test_the_non_ref_drop_still_applies_to_a_haploid_record(tmp_path):
 
 def test_the_conversion_shell_runs_no_bcftools_plugin():
     """The converter is two bcftools subcommands and no plugin."""
-    # The behavioural tests above cover what the current shell does. This one is about what a
-    # future edit puts back. A plugin is how ploidy gets rewritten -- `+fixploidy` was the one
-    # here, `+setGT` would do it too -- so the shape is worth pinning, not just the old name.
-    # Named separately from the behavioural tests because it needs no bcftools to fail.
+    # The behavioural tests above cover what the shell does; this one constrains what can be
+    # added to it. A plugin is how ploidy gets rewritten, `+fixploidy` and `+setGT` alike, so
+    # the shape is worth pinning rather than any one name. Needs no bcftools to fail.
     shell = _convert_commands('converted.vcf.gz', cpu=1)
     assert 'fixploidy' not in shell
     assert ' bcftools +' not in shell

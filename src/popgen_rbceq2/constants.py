@@ -15,6 +15,40 @@ RBCEQ2_DB_VERSION = '2.5.1'
 # current tag when bumping either.
 RBCEQ2_IMAGE_TAG = '2.4.4-1'
 
+# The single-copy stretch of chrX in a male sample, 1-based inclusive: everything between PAR1
+# and PAR2. DRAGEN calls it at its real ploidy and writes a one-token GT there. Three
+# blood-group loci sit in it: XK, GATA1 and ATP11C.
+#
+# Keyed by genome build because the boundaries move between builds, and absent rather than
+# guessed for a build whose resources this repo does not ship. chrY needs no entry: no
+# blood-group defining site or region is on it, so no chrY record ever reaches rbceq2.
+NON_PAR_X: dict[str, tuple[int, int]] = {
+    # PAR1 ends at 2,781,479 and PAR2 begins at 155,701,383.
+    'GRCh38': (2_781_480, 155_701_382),
+}
+
+
+def non_par_x(genome: str) -> tuple[int, int]:
+    """Return the single-copy chrX bounds for a genome build.
+
+    Args:
+        genome: The configured `references.genome_build`.
+
+    Returns:
+        `(first, last)`, 1-based inclusive.
+
+    Raises:
+        KeyError: The build has no entry. Deliberate: a wrong boundary would silently
+            mis-classify PAR as single-copy and vice versa, which is worse than stopping.
+    """
+    if genome not in NON_PAR_X:
+        raise KeyError(
+            f'No chrX PAR boundaries recorded for {genome}. Add them to NON_PAR_X rather than '
+            'letting the post-hoc ploidy gate fall back to a build that does not apply.'
+        )
+    return NON_PAR_X[genome]
+
+
 # The `workflow.sequencing_type` value of an exome run. An exome gVCF is called against a
 # capture-target BED, which is what puts defining sites outside it beyond reach; a genome gVCF
 # has no such edge. Post-hoc calling exists for this type, and stage_support keys an exome

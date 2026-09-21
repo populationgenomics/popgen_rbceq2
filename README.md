@@ -367,31 +367,50 @@ counted as evidence.
 
 Removing the workaround changes what the genotype TSV says. A hemizygous XK null diploidised
 to `1|1` was reported as `XK*N.16/XK*N.16`, which no consumer can distinguish from a female
-homozygote; read natively it is `XK*N.16/-`. **The phenotype is unchanged either way** — both
-encodings resolve to the same allele pair and the same numeric and alphanumeric call — so
-calls already released are not wrong, only less informative than they could have been.
+homozygote; read natively it is `XK*N.16/-`. **On a genome the phenotype is unchanged either
+way** — both encodings resolve to the same allele pair and the same numeric and alphanumeric
+call — so calls already released are not wrong, only less informative than they could have
+been. That equivalence is a genome-path statement; the exome path has a second caller in it
+and is covered below.
 
 **The one state to avoid is a partial fix-up.** rbceq2 2.4.4 derives a single chromosome-copy
 count per blood group and refuses any record claiming more copies than that. The affected
 system reports `Undetermined/Undetermined` in the geno TSV and an empty field in both pheno
-TSVs; the rest of the sample is unaffected. Observed by running 2.4.4 over a converted VCF
-carrying `GT=1` at one XK defining site and `GT=1|1` at another:
+TSVs; the rest of the sample is unaffected. This is what `gen_synthetic_gvcf.py --mixed`
+produces, run through the steps below:
 
 ```
-WARNING | rbceq2.core_logic.data_procesing:record_unreadable - XK could not be read and is
-reported as Undetermined. The rest of the sample is unaffected. A variant claims more copies
-than the sample has chromosomes there. ... | Context: BG: XK, variant: X:37686115_C_T,
-zygosity: Homozygous (2 copies), chrom_copies: 1
+WARNING | rbceq2.core_logic.data_procesing:record_unreadable - mixed.conv.vcf: XK could not be
+read and is reported as Undetermined. The rest of the sample is unaffected. A variant claims
+more copies than the sample has chromosomes there. ... | Context: BG: XK,
+variant: X:37686132_CG_C, zygosity: Homozygous (2 copies), chrom_copies: 1
 ```
 
 So this fails loudly, not silently, and `--debug` being unconditional means that line is in the
 run log this pipeline already keeps. It is still worth avoiding: nothing downstream of the TSVs
 reads the log, and `Undetermined` in a blood-group table is a result-shaped absence of a result.
 
-Passing DRAGEN's calls through untouched is self-consistent by construction. Reintroducing a
-ploidy rewrite that reaches some non-PAR records and not others — a sex file that misses
-samples, a contig-name table that matches only half the time — is what puts XK, GATA1 and
-ATP11C into that state.
+**On a genome, passing DRAGEN's calls through is self-consistent, because the converted file
+has one author. On an exome it has two, and that is not free.** `PosthocGenotypeOffTargetSites`
+runs HaplotypeCaller at its default ploidy of 2, so it writes a two-token genotype everywhere,
+including the stretch of chrX where DRAGEN wrote a one-token one. Concatenated, those two
+records say the sample has both one chromosome copy and two.
+
+While `+fixploidy` was in the pipe this was invisible: it diploidised DRAGEN's side too, so the
+file agreed with itself for the wrong reason. Removing it exposed a disagreement that was
+already there. So the merge now leaves single-copy chrX out of the fill entirely, and says so
+on stderr when it does. The cost is the off-design XK sites on an exome, 10 on Twist and 2 on
+Agilent CREv2; they reach the QC as NOCOV, which is where they were before post-hoc calling
+existed.
+
+Dropping the site rather than rewriting its genotype is the deliberate choice. A rewrite has to
+decide the sample's copy number from the DRAGEN side to know what to write, and a rewrite that
+gets that wrong produces a confident wrong call where this produces a NOCOV flag.
+
+The same reasoning applies to any future ploidy rewrite here, whether it comes from a sex file
+that misses samples or a contig-name table that matches only half the time. **The invariant is
+a property of the merged VCF, not of the conversion step, so assert it where the second caller's
+records enter.**
 
 PAR is handled by rbceq2 and needs nothing here. XG and CD99 sit inside PAR1, where a male
 sample is genuinely diploid, and rbceq2 declines to treat a PAR coordinate as evidence of a
@@ -402,17 +421,59 @@ single chromosome copy.
 This repo ships no test data and cannot: a real DRAGEN gVCF is 12-15Gb and names a real
 individual. `scripts/gen_synthetic_gvcf.py` writes a small one instead, reading its
 coordinates out of the committed `bg_site_systems.<genome>.tsv` so a fixture cannot call a
-site the pipeline no longer ships. Three encodings of the same sample:
+site the pipeline no longer ships.
+
+The whole check runs locally in four steps. It needs `bcftools`, `bgzip` and `tabix` on PATH;
+the pinned image is bcftools 1.24.
+
+**1. Environment, and a scratch directory.** `tmp/` is already gitignored, which matters
+because the later steps write a dozen files you do not want offered as untracked:
 
 ```
-python src/popgen_rbceq2/scripts/gen_synthetic_gvcf.py GRCh38 native.g.vcf
-python src/popgen_rbceq2/scripts/gen_synthetic_gvcf.py GRCh38 diploidised.g.vcf --diploidise
-python src/popgen_rbceq2/scripts/gen_synthetic_gvcf.py GRCh38 mixed.g.vcf --mixed
+uv sync --group dev
+mkdir -p tmp
 ```
 
-`--diploidise` is what `+fixploidy` used to leave behind and `--mixed` is the half-rewritten
-state. `bgzip` and index each, run the conversion, then run rbceq2 over the result and diff
-the TSVs. Comparing the first two on rbceq2 2.4.4 gives:
+**2. The three encodings.** `--diploidise` is what `+fixploidy` used to leave behind, and
+`--mixed` is the half-rewritten state:
+
+```
+uv run python -m popgen_rbceq2.scripts.gen_synthetic_gvcf GRCh38 tmp/native.g.vcf
+uv run python -m popgen_rbceq2.scripts.gen_synthetic_gvcf GRCh38 tmp/diploidised.g.vcf --diploidise
+uv run python -m popgen_rbceq2.scripts.gen_synthetic_gvcf GRCh38 tmp/mixed.g.vcf --mixed
+```
+
+**3. The conversion.** This is the genome path of `FilterAndConvertGvcfsForRbceq2`, which
+otherwise only exists inside a Hail Batch job. The `POSTHOC` declaration is not optional: the
+QC extract reads that tag, and `bcftools query` aborts on a tag the header does not declare:
+
+```
+cd tmp
+echo '##INFO=<ID=POSTHOC,Number=1,Type=String,Description="Caller that supplied this record at a site the primary gVCF had no record for">' > posthoc_hdr.txt
+for f in native diploidised mixed; do
+    bgzip -kf $f.g.vcf && tabix -fp vcf $f.g.vcf.gz
+    bcftools norm -m -any -R ../src/popgen_rbceq2/resources/bg_regions.GRCh38.bed -Ou $f.g.vcf.gz \
+        | bcftools annotate -h posthoc_hdr.txt -Oz -o $f.merged.vcf.gz -
+    bcftools view -e 'ALT="<NON_REF>"' --trim-alt-alleles -Oz -o $f.conv.vcf.gz $f.merged.vcf.gz
+    bcftools index -t -f $f.conv.vcf.gz
+done
+```
+
+**4. rbceq2 itself.** It needs Python 3.12 and this repo is pinned to 3.11, so it cannot go in
+the repo venv; `uv pip install rbceq2` into a 3.11 environment refuses outright. Give it its
+own:
+
+```
+uv venv --python 3.12 v312
+VIRTUAL_ENV=$PWD/v312 uv pip install rbceq2==2.4.4
+for f in native diploidised mixed; do
+    ./v312/bin/rbceq2 --vcf $f.conv.vcf.gz --out $f --reference_genome GRCh38 --debug
+done
+```
+
+Then diff the TSVs, **ignoring column 1**: it carries a per-run UUID and the input filename,
+so every file differs there and it means nothing. Comparing native against diploidised on
+rbceq2 2.4.4 gives:
 
 | Output | Difference |
 | --- | --- |

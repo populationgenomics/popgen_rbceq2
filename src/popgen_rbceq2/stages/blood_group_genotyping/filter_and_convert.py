@@ -159,17 +159,16 @@ def _sample_check_commands(posthoc_gvcf: str, gvcf: str) -> str:
 def _convert_commands(out_vcf: str, cpu: int) -> str:
     """Shell turning `merged.vcf.gz` into the VCF rbceq2 reads, and indexing it.
 
-    Two things happen and no more. `<NON_REF>` records are dropped, because the symbolic
-    allele breaks rbceq2 and 2.4.4 still lists native gVCFs as unsupported input; and the
-    ALT alleles left unused by the earlier split are trimmed. Genotypes are passed through
-    exactly as DRAGEN called them.
+    Two things happen and no more. `<NON_REF>` records are dropped, because the symbolic allele
+    breaks rbceq2, which does not accept native gVCFs; and the ALT alleles left unused by the
+    earlier split are trimmed. **Nothing touches FORMAT/GT.**
 
-    That last part is the whole point of this helper being separate and tested. A haploid
-    genotype on non-PAR chrX or chrY has to reach rbceq2 as the single token DRAGEN wrote:
-    2.4.4 reads it as one chromosome copy, and rewriting it to a pseudo-diploid `1|1` is
-    what made a hemizygous male null print as a homozygote. See the haploid-encoding section
-    of the README for why the `bcftools +fixploidy` that used to end this pipe is gone, and
-    why a rewrite that reaches only some records is worse than either extreme.
+    Separate from the stage, and tested against real bcftools, so that last part is assertable:
+    a one-token GT on single-copy chrX must reach rbceq2 as one token. Keeping the helper free
+    of any ploidy rewrite is what `tests/test_haploid_passthrough.py` pins.
+
+    The no-rewrite guarantee is this helper's alone. `merged.vcf.gz` may hold a second caller's
+    records; reconciling their ploidy is `_merge_posthoc_commands`' job.
 
     Args:
         out_vcf: Path to write the bgzipped converted VCF to. Its `.tbi` goes beside it.
@@ -191,6 +190,7 @@ def _merge_posthoc_commands(
     off_design_bed: str,
     design_key: str,
     cpu: int,
+    genome: str,
 ) -> str:
     """Shell to fill the primary gVCF's blind spots from the post-hoc caller's gVCF.
 
@@ -248,10 +248,16 @@ def _merge_posthoc_commands(
             committed `off_design.resource_path`; the only sites a post-hoc record may fill.
         design_key: The `[references]` key the design came from, for the error message.
         cpu: Threads to give the BGZF steps.
+        genome: The configured genome build, for the single-copy chrX bounds the fill is
+            kept out of.
 
     Returns:
         The shell fragment, for interpolation into the stage's command.
+
+    Raises:
+        KeyError: `genome` has no recorded chrX PAR boundaries. See `constants.non_par_x`.
     """
+    non_par_lo, non_par_hi = constants.non_par_x(genome)
     return f"""
         # --targets-overlap 1 here, not 2: this needs every record whose *span* reaches a
         # defining site, which is what %END reports and what the QC counts as covering. Mode 2
@@ -268,7 +274,28 @@ def _merge_posthoc_commands(
         # design and the committed sites and on nothing about this sample, so it is subtracted
         # once per design and committed under resources/.
         awk -v spans=covered.bed '{_SITES_OUTSIDE_SPANS_AWK}' \\
-            covered.bed {off_design_bed} > uncovered.bed
+            covered.bed {off_design_bed} > uncovered.all.bed
+
+        # Single-copy chrX is not filled. HaplotypeCaller runs at its default ploidy of 2 and
+        # writes a two-token GT there, where DRAGEN writes one token for a male sample. Both in
+        # one file tell rbceq2 the sample has one chromosome copy and two, and it reports the
+        # blood group Undetermined; a het post-hoc call claims fewer copies than it has, passes
+        # silently and flips the phenotype. See "Haploid genotypes on the sex chromosomes" in
+        # the README.
+        #
+        # Drop the site, do not rewrite its genotype. A rewrite has to decide the sample's
+        # ploidy from the DRAGEN side, and a wrong decision yields a confident wrong call where
+        # this yields a NOCOV flag.
+        #
+        # Costs the off-design XK sites: 10 on Twist, 2 on Agilent CREv2. GATA1 and ATP11C have
+        # no off-design site, so nothing else in single-copy chrX is affected.
+        awk -v lo={non_par_lo} -v hi={non_par_hi} 'BEGIN{{FS=OFS="\\t"}} \\
+            !($1 == "chrX" && $3 >= lo && $3 <= hi)' uncovered.all.bed > uncovered.bed
+        n_haploid=$(($(wc -l < uncovered.all.bed) - $(wc -l < uncovered.bed)))
+        if [ "$n_haploid" -gt 0 ]; then
+            echo "post-hoc: $n_haploid off-design site(s) in single-copy chrX left unfilled, to" >&2
+            echo "keep one ploidy in the merged VCF; they reach the QC as NOCOV" >&2
+        fi
 
         # A DRAGEN reference block reaching a site outside the design means the configured BED
         # is not the one the gVCF was called against. The likely case is a target-regions file
@@ -448,27 +475,20 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
     delete every variant in the file. After the split only the symbolic-only record
     matches and the real variant survives.
 
-    DRAGEN's true haploid calls (GT="1"/"0") on non-PAR chrX/chrY in male samples are
-    passed through as they were called. Up to rbceq2 2.4.3 they could not be: `get_ref`
-    asserted the GT string was three characters long, so a bare "1" crashed the run at the
-    XK/GATA1/ATP11C blood-group loci, and a parameter-free `bcftools +fixploidy` ended this
-    pipe to rewrite them as pseudo-diploid ("1" -> "1|1"). rbceq2 2.4.4, whose release is
-    titled Haploid Encoding, reads a one-token GT directly and scores it as one copy
-    (Zygosity.HEM) wherever it has established that the region has one chromosome copy.
+    Genotypes are never rewritten. DRAGEN calls single-copy chrX at its real ploidy in a male
+    sample (GT="1"/"0" outside PAR), rbceq2 scores a one-token GT as one copy, and a rewrite to
+    "1|1" would make a hemizygous XK null render as `XK*N.16/XK*N.16`, indistinguishable in the
+    genotype TSV from a female homozygote.
 
-    Dropping `+fixploidy` is a correctness change, not just the removal of dead scaffolding.
-    A hemizygous call diploidised to "1|1" is reported in the genotype TSV as
-    `XK*N.16/XK*N.16`, which no consumer can tell apart from a female homozygote; read
-    natively it is `XK*N.16/-`, which says what was actually observed. The phenotype was
-    unaffected either way, so nothing already released is wrong, only less informative.
+    **The file rbceq2 reads must carry one ploidy per region.** rbceq2 derives a single
+    chromosome-copy count per blood group and refuses any record claiming more: the system
+    reports `Undetermined/Undetermined` and empty phenotypes. A record claiming *fewer* passes
+    silently and resolves the contradiction the wrong way, flipping the phenotype.
 
-    What this stage must not do is diploidise *some* non-PAR chrX/chrY calls and not others.
-    rbceq2 2.4.4 derives one chromosome-copy count per blood group and then refuses any record
-    claiming more copies than that: the system reports `Undetermined/Undetermined` in the geno
-    TSV and an empty field in both pheno TSVs, with a named WARNING in the run log, and the
-    rest of the sample is unaffected. Passing DRAGEN's calls through untouched is
-    self-consistent by construction; a partial fix-up is the state that puts XK, GATA1 and
-    ATP11C there. See the haploid-encoding section of the README, which quotes the warning.
+    That invariant belongs to `merged.vcf.gz`, not to this conversion. A genome's merged VCF is
+    DRAGEN's records alone and satisfies it by construction. An exome's also holds
+    HaplotypeCaller's, which run at ploidy 2, so `_merge_posthoc_commands` keeps the fill out of
+    single-copy chrX. See the haploid-encoding section of the README.
     """
 
     def expected_outputs(
@@ -550,6 +570,7 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
                 str(off_design_bed),
                 design_key,
                 cpu,
+                genome,
             )
         else:
             merge_posthoc = '        mv dragen.vcf.gz merged.vcf.gz'
@@ -561,9 +582,7 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
         # --threads only ever parallelises BGZF (de)compression, so it belongs on the steps
         # that do some: norm decompresses the bgzipped gVCF (the shared pool is attached to
         # input readers as well as the output, synced_bcf_reader.c bcf_sr_add_hreader), the
-        # final view deflates the -Oz output, and index reads that back. That view took no
-        # thread count while it wrote an uncompressed BCF stream into `+fixploidy`; now that
-        # it produces the converted VCF itself, it is the step doing the deflation.
+        # final view deflates the -Oz converted VCF, and index reads that back.
         #
         # --targets-overlap 2 is what makes the extract see a reference block that starts
         # before a defining site and spans it. Streamed targets default to `pos`, which
