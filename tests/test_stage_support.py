@@ -23,7 +23,7 @@ import cpg_utils
 import cpg_utils.config
 import pytest
 
-from popgen_rbceq2 import run_workflow, stage_support
+from popgen_rbceq2 import constants, run_workflow, stage_support
 from popgen_rbceq2.stages import pipeline
 from tests import helpers
 
@@ -62,7 +62,14 @@ def _as_stage(name: str) -> Any:
 @pytest.fixture
 def _workflow(mocker, tmp_path) -> Any:
     """Constructing a wired stage reads the active workflow and config; neither exists here."""
-    helpers.set_config({'workflow': {'name': 'popgen_rbceq2', 'dataset': 'ourdna'}}, tmp_path / 'config.toml')
+    helpers.set_config(
+        # sequencing_type is read by the meta hook, for the exome design key, and by the path
+        # helpers. No workflow.version and no output_versions pin, so the 'v1' these tests
+        # expect is _release_version's own fallback literal — not the 'v4' the shipped default
+        # config sets. See test_output_namespacing for the path/meta tie.
+        {'workflow': {'name': 'popgen_rbceq2', 'dataset': 'ourdna', 'sequencing_type': 'genome'}},
+        tmp_path / 'config.toml',
+    )
     mock_wf = mocker.MagicMock()
     mock_wf.name = 'popgen_rbceq2'
     mock_wf.status_reporter = None
@@ -85,16 +92,23 @@ def test_wire_records_the_stage_name_without_anyone_typing_it():
         'stage': 'CallSomething',
         'n_systems': 42,
         'path': 'gs://bucket/out.tsv',
-        # The release half of the output tree, defaulted here: the config sets no
-        # workflow.version. See test_output_namespacing for the tie between the two.
-        'workflow_version': 'v1',
+        'stage_version': 'v1',  # _release_version's fallback; the _workflow fixture pins nothing
+        'rbceq2_version': constants.RBCEQ2_VERSION,
+        'rbceq2_db_version': constants.RBCEQ2_DB_VERSION,
+        'exome_design': None,
     }
 
 
 @pytest.mark.usefixtures('_workflow')
 def test_wire_records_the_stage_name_when_the_stage_adds_no_meta_of_its_own():
     wired = stage_support.wire(type('CallPlain', (_Impl,), {}), analysis_type='qc', analysis_keys=['vcf'])
-    assert _hook(wired)('gs://bucket/out.tsv') == {'stage': 'CallPlain', 'workflow_version': 'v1'}
+    assert _hook(wired)('gs://bucket/out.tsv') == {
+        'stage': 'CallPlain',
+        'stage_version': 'v1',
+        'rbceq2_version': constants.RBCEQ2_VERSION,
+        'rbceq2_db_version': constants.RBCEQ2_DB_VERSION,
+        'exome_design': None,
+    }
 
 
 @pytest.mark.usefixtures('_workflow')
@@ -111,7 +125,14 @@ def test_wire_keeps_the_class_name_even_when_the_stage_sets_stage_itself():
         analysis_keys=['vcf'],
         update_analysis_meta=stale,
     )
-    assert _hook(wired)('gs://b/o.tsv') == {'stage': 'CallCopied', 'n': 1, 'workflow_version': 'v1'}
+    assert _hook(wired)('gs://b/o.tsv') == {
+        'stage': 'CallCopied',
+        'n': 1,
+        'stage_version': 'v1',
+        'rbceq2_version': constants.RBCEQ2_VERSION,
+        'rbceq2_db_version': constants.RBCEQ2_DB_VERSION,
+        'exome_design': None,
+    }
 
 
 @pytest.mark.usefixtures('_workflow')
