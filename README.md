@@ -68,8 +68,10 @@ To re-run one stage into a fresh tree without moving the rest, pin it by class n
 FlagBloodGroupCallQc = 'v5'
 ```
 
-The pinned stage's path and its `meta.stage_version` both take the pin, as written — a blank
-pin is an error, not a silent fall back to `workflow.version`. Nothing downstream
+The pinned stage's path and its `meta.stage_version` both take the pin, as written. A pin has
+to be a string or whole number made of `[A-Za-z0-9._-]`, since it becomes a path segment
+verbatim; anything else — blank, `false`, a list, or a value with a `/` or a space in it — is
+an error naming the key, not a silent fall back to `workflow.version`. Nothing downstream
 notices: a stage consuming its outputs keeps writing into, and recording, its own release, so
 unforced it reuses what it built from the old tree. **Pin the downstream stages too.** Merely
 adding them to `force_stages` rebuilds them at the same path and records the same
