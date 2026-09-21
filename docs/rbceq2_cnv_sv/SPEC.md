@@ -147,7 +147,7 @@ The stage reads the gVCF once, restricted to `resources/bg_regions.<genome>.bed`
 
 From that intermediate the stage writes two things: the defining-sites extract the QC stage reads, and the rbceq2 input. The rbceq2 input drops every `<NON_REF>` record (the reference blocks and the split-off symbolic twin of each variant) and trims now-unused ALT alleles.
 
-It then ends in a parameter-free `bcftools +fixploidy`, which expands DRAGEN's haploid non-PAR chrX/chrY genotypes to diploid (`1` to `1|1`), because the pinned rbceq2 (2.4.3) asserts a three-character GT and crashes otherwise. 2.4.4 reads haploid GT natively, so whether this invocation stays is decided at the pin bump, for SNV and structural records together (§13, the 2026-09-18 entry). The full rationale, including why this parameter-free default is sufficient and necessary at 2.4.3 and why a sex-aware config re-crashes rbceq2, is in §13 (Q4) and the §7 table.
+The pipe ends there. Genotypes are never rewritten: rbceq2 2.4.4 reads DRAGEN's one-token non-PAR chrX genotypes natively, and the `bcftools +fixploidy` step that expanded them to diploid for 2.4.3 was removed in `popgen_rbceq2#20` (§13, the 2026-09-21 entry). On an exome the post-hoc fill is kept out of single-copy chrX, so the merged file carries one ploidy per region.
 
 No reference FASTA is involved, and no genotyping happens here. A single-sample gVCF already carries GT at every variant site, and GATK `GenotypeGVCFs` has no role here.
 
@@ -246,9 +246,9 @@ Rule 3 is the reciprocal-overlap collapse a `bedtools merge` would do (review su
 - Rule 3 fired only on the Gerbich case: the SV caller's breakpoints were exact to `CIPOS` (0–50 bp) where the CNV caller's were bin-snapped by 0.2–4.6 kb, and the sub-10 kb targets (seven GE alleles, three A4GALT, the GYP cluster) differ from each other only by breakpoint.
 - The only allele actually called across the study was the Gerbich deletion.
 
-Haploid GT can also appear on non-PAR chrX/chrY SV and CNV records once the merge exists, at a similarly low rate to the one seen on chrX CNV records in the study. The merge does not add a second `bcftools +fixploidy` invocation for this.
+Haploid GT can also appear on non-PAR chrX/chrY SV and CNV records once the merge exists, at a similarly low rate to the one seen on chrX CNV records in the study. The merge must not add a `bcftools +fixploidy`, `+setGT` or any other ploidy rewrite: since `popgen_rbceq2#20` no step in the pipe rewrites a genotype, and rbceq2 refuses a file that claims two ploidies in one region (§13, the 2026-09-21 entry).
 
-That question is decided once, on the 2.4.4 pin bump, for SNV and structural records together, because 2.4.4 claims native haploid support that may make the invocation redundant everywhere (§13, Q4 and the 2026-09-18 entry).
+The SNV side already carries DRAGEN's true haploid GT, so a structural record on non-PAR chrX with a haploid GT is consistent with it, and one with a diploid GT is the contradiction to watch for in `validate_for_rbceq2`.
 
 ### 5.6 Sex and ploidy
 
@@ -404,7 +404,7 @@ Each threshold is recorded in the Analysis meta of the stage that applies it, as
 | `src/popgen_rbceq2/scripts/gen_bg_resources.py` | Emits the sub-10 kb target BED (§6) from the same db parse |
 | `src/popgen_rbceq2/stages/blood_group_qc/call_qc.py` (`FlagBloodGroupCallQc`), `src/popgen_rbceq2/jobs/rbceq2_call_qc_job.py` | Today raises `ValueError` if the site-system map carries any `kind == 'sv'` row; gains the §6 QC design once that map has SV rows |
 | `[workflow.flag_blood_group_call_qc]` in the same config file | Holds `min_depth = 10`, `min_gq = 20` today; gains the QC thresholds from §8: `sv_depth_ratio`, `sv_depth_flank_bp` |
-| `src/popgen_rbceq2/constants.py` (`RBCEQ2_VERSION`, `RBCEQ2_IMAGE_TAG`) | Pinned at `2.4.3` / `2.4.3-1`. The bump to 2.4.4 is its own PR: image, regenerated resources, and the `+fixploidy` re-test (§13, Q4) |
+| `src/popgen_rbceq2/constants.py` (`RBCEQ2_VERSION`, `RBCEQ2_IMAGE_TAG`, `NON_PAR_X`) | Pinned at `2.4.4` / `2.4.4-1` (`popgen_rbceq2#17`); `+fixploidy` removed in `#20`, which also added the single-copy chrX bounds the post-hoc gate reads |
 
 ---
 
@@ -470,7 +470,7 @@ These alleles are rare: across the 150 study genomes the design calls one, the G
 - Exome sensitivity and thresholds. The SV caller on capture data sees breakpoints only where reads reach them; a 3.6 kb exon deletion whose breakpoints fall in intronic sequence outside the capture may be missed even though the exon itself is covered. The exome CNV caller is a different instrument from the genome one (§3): `sv_min_bins` was set from 1–2 kb genome bins, exome `BC` counts capture targets, and the panel-of-normals caller's false-positive rate in the blood-group regions (30 event records in one exome's regions, against 1 to 7 PASS events per genome) is unmeasured. The exome path therefore adds structural alleles as a possibility, not a promise, until an exome study like `sv_cnv_overlap_50_samples.md` is run; `SVLOWRES` and `SVDEPTH` are the flags that keep an exome call honest meanwhile.
 - Positive controls. The 1KG replicate control samples showed no blood-group CNVs at GYP/XK/RHD in the earlier data look, good for a concordance/regression baseline, but the study's Gerbich carrier partly answers this for one 3.6 kb sub-10 kb allele. A 10 kb or larger true positive is still wanted to exercise the CNV-VCF path directly (§10).
 - Merge correctness. Contig or sample-name mismatches, or unsorted concat, will silently break RBCeq2's region fetch; `validate_for_rbceq2` must assert sorted, single-sample, `chr`-prefixed, indexed.
-- Residual haploid-GT dosage. Diploid-ising a true haploid call (`1` to `1|1`) reads as HOM (dosage 2, `core_logic/alleles.py:284`), overstating dosage for a truly hemizygous call. Fine for detection, but relevant to any future zygosity-dependent filter, and 2.4.4 may read hemizygosity correctly from the haploid GT that `+fixploidy` currently erases (§13, Q4).
+- A ploidy rewrite reintroduced on the merged VCF. Since `popgen_rbceq2#20` the file rbceq2 reads carries DRAGEN's true haploid GT and a hemizygous call renders as `XK*01.02/-`. A `+fixploidy` or `+setGT` on the concat would turn it back into a fabricated homozygote, and nothing fails or logs: the VCF stays well formed and the TSV stays plausible (§13, the 2026-09-21 entry).
 
 ---
 
@@ -485,6 +485,8 @@ To raise upstream with the RBCeq2 maintainers, feature requests rather than thin
 ---
 
 ## 13. Decision log
+
+**2026-09-21, `+fixploidy` removed at the pin bump (`popgen_rbceq2#20`), closing the 2026-09-18 deferral.** Decision: the SNV conversion pipe no longer rewrites any genotype. rbceq2 2.4.4 reads DRAGEN's one-token non-PAR chrX GT natively and renders a hemizygous null as `XK*01.02/-`, where the `1` to `1|1` expansion had rendered it `XK*01.02/XK*01.02`, indistinguishable from a female homozygote; phenotype TSVs were unchanged in the synthetic check. rbceq2 derives one chromosome-copy count per blood group and refuses a file whose records disagree (`Undetermined`), and a record claiming fewer copies than its neighbours passes silently and can flip the phenotype, so the exome post-hoc fill is kept out of single-copy chrX (`constants.NON_PAR_X`), at the cost of 10 off-design XK sites on Twist and 2 on Agilent CREv2, which reach the QC as `NOCOV`. Alternatives rejected: relocating `+fixploidy` onto the merged VCF (the superseded 2026-09-18 position), which would re-fabricate homozygotes for every structural and SNV record on non-PAR chrX; rewriting the post-hoc caller's genotypes to match DRAGEN, which needs a ploidy inference and turns a wrong inference into a confident wrong call. Consequences for this design: the concat in §5.5 adds no ploidy rewrite; `validate_for_rbceq2` should treat a two-token GT on a non-PAR chrX structural record beside one-token SNV records as the contradiction rbceq2 will refuse; §5.2, §5.5, §9 and §11 updated. Open: the gate is sex-blind, so female exomes also lose those XK sites; a DRAGEN-encoding-based gate was raised in the `#20` review.
 
 **2026-09-18, first review round (`popgen_rbceq2#15`, `#16`, and the two Slack threads).** Six decisions from Alexander Stuckey's comments:
 
