@@ -195,10 +195,11 @@ def test_every_wired_stage_records_the_provenance_of_its_row(shm_tmp_path: Path)
         pipeline.CombineRbceq2OutputsPerCohort: geno_path,
     }
 
+    metas: dict[str, dict] = {}
     for wired, output in registered.items():
         stage = wired()
         assert stage.update_analysis_meta is not None, f'{stage.name} registers an Analysis with no meta'
-        meta = stage.update_analysis_meta(str(output))
+        meta = metas[stage.name] = stage.update_analysis_meta(str(output))
         assert meta['stage'] == stage.name
         assert meta['stage_version'] == 'v1'
         assert meta['rbceq2_version'] == constants.RBCEQ2_VERSION
@@ -206,9 +207,9 @@ def test_every_wired_stage_records_the_provenance_of_its_row(shm_tmp_path: Path)
 
     # The keys each stage's own meta function contributes, which is what says the right
     # function is wired to the right stage.
-    assert 'blood_group_genotypes' in pipeline.GenotypeBloodGroupsWithRbceq2().update_analysis_meta(str(geno_path))
-    assert 'blood_group_qc_flags' in pipeline.FlagBloodGroupCallQc().update_analysis_meta(str(qc_path))
-    assert 'qc_path' in pipeline.CombineRbceq2OutputsPerCohort().update_analysis_meta(str(geno_path))
+    assert 'blood_group_genotypes' in metas['GenotypeBloodGroupsWithRbceq2']
+    assert 'blood_group_qc_flags' in metas['FlagBloodGroupCallQc']
+    assert 'qc_path' in metas['CombineRbceq2OutputsPerCohort']
 
 
 def test_cohort_calls_meta_points_at_the_sibling_qc_tsv():

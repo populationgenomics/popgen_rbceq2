@@ -280,6 +280,6 @@ def test_the_analysis_meta_records_the_design_an_exome_was_called_against(
         },
         shm_tmp_path / 'genome_meta.toml',
     )
-    genome_meta = pipeline.FlagBloodGroupCallQc().update_analysis_meta(str(qc_path))
+    genome_meta = stage.update_analysis_meta(str(qc_path))
     assert genome_meta['exome_design'] is None
     assert 'twist' not in str(outputs_of(stage, mock_sequencing_group)['qc'])
