@@ -10,8 +10,7 @@ That question is why this exists. DRAGEN calls non-PAR chrX and chrY at their re
 a male sample, writing a one-token `GT`, and three blood-group loci sit there: XK, GATA1 and
 ATP11C. `--diploidise` writes the same sample with both alleles spelled out (`1` as `1|1`), and
 `--mixed` writes one site that way and the rest as single copies, which is the self-contradiction
-rbceq2 refuses. Running all three and diffing the TSVs is what the haploid-encoding section of
-the README reports.
+rbceq2 refuses. Run all three through the conversion, then rbceq2, and diff the TSVs.
 
 Coordinates are read from the committed `bg_site_systems.<genome>.tsv` rather than written
 here, so a fixture cannot describe a site the pipeline does not ship.

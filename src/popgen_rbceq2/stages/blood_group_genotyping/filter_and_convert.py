@@ -280,8 +280,7 @@ def _merge_posthoc_commands(
         # writes a two-token GT there, where DRAGEN writes one token for a male sample. Both in
         # one file tell rbceq2 the sample has one chromosome copy and two, and it reports the
         # blood group Undetermined; a het post-hoc call claims fewer copies than it has, passes
-        # silently and flips the phenotype. See "Haploid genotypes on the sex chromosomes" in
-        # the README.
+        # silently and flips the phenotype.
         #
         # Drop the site, do not rewrite its genotype. A rewrite has to decide the sample's
         # ploidy from the DRAGEN side, and a wrong decision yields a confident wrong call where
@@ -488,7 +487,7 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
     That invariant belongs to `merged.vcf.gz`, not to this conversion. A genome's merged VCF is
     DRAGEN's records alone and satisfies it by construction. An exome's also holds
     HaplotypeCaller's, which run at ploidy 2, so `_merge_posthoc_commands` keeps the fill out of
-    single-copy chrX. See the haploid-encoding section of the README.
+    single-copy chrX.
     """
 
     def expected_outputs(
