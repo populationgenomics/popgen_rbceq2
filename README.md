@@ -48,6 +48,42 @@ Sequencing groups without a gVCF are skipped, not failed. Exome runs get one ext
 `PosthocGenotypeOffTargetSites` per sequencing group, and an exome `only_stages` list has to
 name it alongside the conversion stage; genome runs are unaffected.
 
+### One release is one output tree
+
+`workflow.version` names the release. Outputs live under
+`.../rbceq2_<tool version>_<release>/<stage>/...` — an exome run gets a capture-design segment
+between the two, see below — and every Analysis records the release as `meta.stage_version`, so
+a row says which release produced it. The
+[default config](src/popgen_rbceq2/config/popgen_rbceq2_default_config.toml) sets it, and
+carries a note per bump saying what each was for; bump it when a pipeline change alters the
+outputs, so a re-run writes a fresh tree instead of reusing files the change would have changed.
+The tool half of the segment moves on its own, with `constants.RBCEQ2_VERSION`.
+
+To re-run one stage into a fresh tree without moving the rest, pin it by class name:
+
+```toml
+[workflow.output_versions]
+FlagBloodGroupCallQc = 'v5'
+```
+
+The pinned stage's path and its `meta.stage_version` both take the pin. Nothing downstream
+notices: a stage consuming its outputs keeps writing into, and recording, its own release, so
+unforced it reuses what it built from the old tree. **Pin the downstream stages too.** Merely
+adding them to `force_stages` rebuilds them at the same path and records the same
+`stage_version`, so the new Analysis cannot be told apart from the one it supersedes.
+
+Every Analysis this pipeline registers carries these, whatever its stage's own meta function
+adds ([`stage_support.wire`](src/popgen_rbceq2/stage_support.py) puts them there, not
+`analysis_meta`):
+
+| `meta` key | what it is |
+|---|---|
+| `stage` | the stage class name |
+| `stage_version` | the release above: the stage's `output_versions` pin if it has one, else `workflow.version` |
+| `rbceq2_version` | the rbceq2 tool, `constants.RBCEQ2_VERSION` — the other half of the path segment |
+| `rbceq2_db_version` | the allele database the committed `resources/bg_*` were built from, `constants.RBCEQ2_DB_VERSION`. Moves independently of the tool, and deliberately *not* in the path: a db bump changes the QC flags without starting a fresh tree |
+| `exome_design` | the `exome_design_bed` key an exome run was called against, as configured; `null` on a genome run, so the shape of the meta does not depend on sequencing type |
+
 ### An exome run must name its capture design
 
 Exome runs recover defining sites the capture never targeted, so they have to say which capture
@@ -125,7 +161,7 @@ in Metamist, and confirm the cohort is one design rather than a mix.
 | [`stages/blood_group_genotyping/`](src/popgen_rbceq2/stages/blood_group_genotyping) | one undecorated stage class per module |
 | [`stages/blood_group_qc/`](src/popgen_rbceq2/stages/blood_group_qc) | one undecorated stage class per module |
 | [`stage_support.py`](src/popgen_rbceq2/stage_support.py) | `wire()`, output prefixes, the config-section convention, job configuration |
-| [`analysis_meta.py`](src/popgen_rbceq2/analysis_meta.py) | what each Analysis records in its `meta` |
+| [`analysis_meta.py`](src/popgen_rbceq2/analysis_meta.py) | the per-stage half of what an Analysis records in its `meta`; `wire()` adds `stage`, `stage_version`, `rbceq2_version`, `rbceq2_db_version` and `exome_design` on top |
 | [`jobs/`](src/popgen_rbceq2/jobs) | scripts a stage runs in a batch job, invoked by path |
 | [`scripts/`](src/popgen_rbceq2/scripts) | developer scripts, run by hand |
 | [`resources/`](src/popgen_rbceq2/resources) | the committed blood-group site resources |
