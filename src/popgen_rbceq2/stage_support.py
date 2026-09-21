@@ -318,9 +318,33 @@ def _release_version(stage_name: str) -> str:
     downstream stage writing and recording its own unpinned release over inputs from a pinned
     one. Pin the downstream stages too: merely forcing them rebuilds at the same path and
     records the same release, so the new Analysis cannot be told from the one it supersedes.
+
+    A pin is honoured as set, not for being truthy: an empty or blank one is a mistake, and
+    silently falling back to ``workflow.version`` would write the pinned stage into the shared
+    tree and record the shared release, which is the opposite of what pinning was for. The
+    value is stringified so a TOML integer cannot type ``meta.stage_version`` differently from
+    one row to the next.
+
+    Returns:
+        The release, always a non-empty string.
+
+    Raises:
+        cpg_utils.config.ConfigError: Neither a pin nor ``workflow.version`` is set, or the
+            one that is set is blank. Not defaulted: a release this run never declared would
+            name an output tree and assert itself in Metamist on every row.
     """
     pinned = cpg_utils.config.config_retrieve(['workflow', 'output_versions', stage_name], None)
-    return pinned or cpg_utils.config.config_retrieve(['workflow', 'version'], 'v1')
+    source = 'workflow.version' if pinned is None else f'workflow.output_versions.{stage_name}'
+    raw = cpg_utils.config.config_retrieve(['workflow', 'version'], None) if pinned is None else pinned
+    version = str(raw).strip() if raw is not None else ''
+    if not version:
+        raise cpg_utils.config.ConfigError(
+            f"{source} names the release, e.g. 'v4'; got {raw!r}. It is the segment of every "
+            'output path after the rbceq2 version, and what every Analysis records as '
+            'meta.stage_version. The shipped default config sets workflow.version, so a run '
+            'reaching this either does not merge the defaults or pins a stage to a blank value.'
+        )
+    return version
 
 
 def _release_tree(stage_name: str) -> str:

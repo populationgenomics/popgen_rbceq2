@@ -5,8 +5,10 @@ inputs.as_path(key=...) — and the paths are what makes a re-run reuse or rebui
 type error to catch it, so they are asserted literally here.
 """
 
+import re
 from pathlib import Path
 
+import cpg_utils.config
 import pytest
 
 from popgen_rbceq2 import constants, stage_support
@@ -207,6 +209,59 @@ def test_output_version_can_be_pinned_per_stage(mock_sequencing_group, shm_tmp_p
     assert str(output['qc']).endswith(
         f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_v2/FlagBloodGroupCallQc/SG000001/SG000001.qc.tsv',
     )
+
+
+@pytest.mark.parametrize(
+    ('workflow_config', 'expected_in_message'),
+    [
+        # No release at all. Defaulting one would name an output tree and assert itself on
+        # every Metamist row under a version the run never declared.
+        ({'name': 'popgen_rbceq2', 'sequencing_type': 'genome'}, 'workflow.version'),
+        # A blank pin. Falling back to workflow.version here would write the pinned stage into
+        # the shared tree and record the shared release — the opposite of what pinning is for.
+        (
+            {
+                'name': 'popgen_rbceq2',
+                'version': 'v1',
+                'sequencing_type': 'genome',
+                'output_versions': {'FlagBloodGroupCallQc': '  '},
+            },
+            'workflow.output_versions.FlagBloodGroupCallQc',
+        ),
+    ],
+    ids=['no_version', 'blank_pin'],
+)
+def test_a_release_is_never_invented(workflow_config, expected_in_message, mock_sequencing_group, shm_tmp_path):
+    set_config({'workflow': workflow_config}, shm_tmp_path / 'bad_release.toml')
+
+    with pytest.raises(cpg_utils.config.ConfigError, match=re.escape(expected_in_message)):
+        outputs_of(pipeline.FlagBloodGroupCallQc(), mock_sequencing_group)
+
+
+def test_a_pin_is_used_as_written_not_for_being_truthy(mock_sequencing_group, shm_tmp_path):
+    # A TOML integer pin is stringified, so meta.stage_version holds the same type whatever the
+    # config author typed, and the path segment it produces is the one the meta names.
+    set_config(
+        {
+            'references': {'genome_build': 'GRCh38'},
+            'workflow': {
+                'name': 'popgen_rbceq2',
+                'version': 'v1',
+                'sequencing_type': 'genome',
+                'output_versions': {'FlagBloodGroupCallQc': 2},
+            },
+        },
+        shm_tmp_path / 'int_pin.toml',
+    )
+    qc_path = shm_tmp_path / 'SG000001.qc.tsv'
+    qc_path.write_text('UUID: abc123\tJK\nSG000001\tPASS\n')
+    stage = pipeline.FlagBloodGroupCallQc()
+    assert stage.update_analysis_meta is not None
+
+    meta = stage.update_analysis_meta(str(qc_path))
+
+    assert meta['stage_version'] == '2'
+    assert f'_{meta["stage_version"]}/' in str(outputs_of(stage, mock_sequencing_group)['qc'])
 
 
 def test_the_analysis_meta_records_the_release_its_outputs_went_to(mock_sequencing_group, shm_tmp_path):

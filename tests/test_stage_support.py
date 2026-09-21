@@ -64,10 +64,11 @@ def _workflow(mocker, tmp_path) -> Any:
     """Constructing a wired stage reads the active workflow and config; neither exists here."""
     helpers.set_config(
         # sequencing_type is read by the meta hook, for the exome design key, and by the path
-        # helpers. No workflow.version and no output_versions pin, so the 'v1' these tests
-        # expect is _release_version's own fallback literal — not the 'v4' the shipped default
-        # config sets. See test_output_namespacing for the path/meta tie.
-        {'workflow': {'name': 'popgen_rbceq2', 'dataset': 'ourdna', 'sequencing_type': 'genome'}},
+        # helpers. version is set because _release_version refuses to invent one; 'v1' rather
+        # than the shipped default's 'v4' so nothing here reads as coming from that file. No
+        # output_versions pin, so every stage resolves to it. See test_output_namespacing for
+        # the path/meta tie.
+        {'workflow': {'name': 'popgen_rbceq2', 'dataset': 'ourdna', 'sequencing_type': 'genome', 'version': 'v1'}},
         tmp_path / 'config.toml',
     )
     mock_wf = mocker.MagicMock()
@@ -92,7 +93,7 @@ def test_wire_records_the_stage_name_without_anyone_typing_it():
         'stage': 'CallSomething',
         'n_systems': 42,
         'path': 'gs://bucket/out.tsv',
-        'stage_version': 'v1',  # _release_version's fallback; the _workflow fixture pins nothing
+        'stage_version': 'v1',  # the _workflow fixture's workflow.version; no stage pin overrides it
         'rbceq2_version': constants.RBCEQ2_VERSION,
         'rbceq2_db_version': constants.RBCEQ2_DB_VERSION,
         'exome_design': None,
