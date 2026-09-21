@@ -43,20 +43,37 @@ JobArg: TypeAlias = str | cpg_utils.Path | hailtop.batch.resource.Resource | boo
 ExpectedOutputs: TypeAlias = dict[str, str | cpg_utils.Path | list[str | cpg_utils.Path]]
 
 
-def _with_run_provenance(output: str, *, fn: 'Callable[[str], dict] | None', stage_name: str) -> dict:
-    """Apply the stage's own meta function, then add what only the stage class can say.
+def _with_stage_name(output: str, *, fn: 'Callable[[str], dict] | None', stage_name: str) -> dict:
+    """Apply the stage's own meta function, then add what a meta function cannot know.
 
-    Two keys, both keyed on the class name rather than typed into a meta function:
+    A meta function is handed the output path and nothing else, so five keys are added here.
+    Two are the stage class:
 
-    - ``stage``. cpg_flow already records ``stage=<class name>`` in every Analysis meta (via
-      ``get_job_attrs``), but the status reporter merges the meta function's dict in last, so a
-      function that set ``stage`` itself would override the framework's value with a hand-typed
-      one. Re-applying the class name after the function closes that hole.
-    - ``workflow_version``, the release the stage's outputs were written under
-      (`release_version`, which reads the stage's own ``output_versions`` pin). Metamist
-      inserts a new Analysis per run and retires none, so every row has to name the release it
-      came from for a reader to tell two runs of one cohort apart; ``rbceq2_version`` in the
-      meta functions names the tool half of the same tree.
+    - ``stage``, the class name. cpg_flow's ``get_job_attrs`` puts ``stage=<class name>`` on
+      the Hail *job*, not in ``Analysis.meta``, so this hook is the only thing that puts it in
+      the meta — and adding it last also stops a meta function carrying a stale hand-typed
+      one, which the pre-wire house style did.
+    - ``stage_version``, the release the stage's outputs were written under, from
+      `_release_version` — a config lookup keyed on the class name, so a stage with its own
+      ``output_versions`` pin records the release it actually wrote into. It is the writing
+      stage's own release, not its inputs'; see `_release_version`.
+
+    Three are properties of the run, the same for every stage in it:
+
+    - ``rbceq2_version``, the tool, from `constants`.
+    - ``rbceq2_db_version``, the allele database, from `constants`. It moves independently of
+      the tool: the committed ``resources/bg_*`` are built from the db, so a db bump changes
+      the QC flags with no tool bump to show for it. Deliberately *not* an axis of the output
+      tree — adding it to `_release_tree` would orphan every tree written so far — so a row's
+      meta is the only place a db bump shows.
+    - ``exome_design``, the capture design an exome run was called against, as configured, or
+      None for a genome. Recorded on every row rather than only on exome rows so the meta
+      shape does not depend on sequencing type (as call_qc's static meta already does).
+
+    All but the db version are axes of the output tree (see `_release_tree`), and together the
+    five are what make a row self-describing: Metamist inserts an Analysis per run and retires
+    none, so a reader meeting two rows for one sequencing group has only the meta to tell which
+    release, tool, database and design produced each.
 
     A partial over this is what wire hands to cpg_flow. It is a module-level function rather
     than a closure because cpg_flow ships the callable into a Hail PythonJob, where it is
@@ -72,7 +89,13 @@ def _with_run_provenance(output: str, *, fn: 'Callable[[str], dict] | None', sta
         raise TypeError(
             f'update_analysis_meta for {stage_name} returned {type(extra).__name__}, expected dict',
         )
-    return extra | {'stage': stage_name, 'workflow_version': release_version(stage_name)}
+    return extra | {
+        'stage': stage_name,
+        'stage_version': _release_version(stage_name),
+        'rbceq2_version': constants.RBCEQ2_VERSION,
+        'rbceq2_db_version': constants.RBCEQ2_DB_VERSION,
+        'exome_design': exome_design_bed() if _is_exome_run() else None,
+    }
 
 
 def wire(
@@ -93,7 +116,9 @@ def wire(
         analysis_keys: Which expected_outputs keys to register. Required when analysis_type
             is set and expected_outputs returns a dict.
         update_analysis_meta: Module-level function (not a method) taking the output path and
-            returning extra Analysis.meta. The stage name is added for you.
+            returning extra Analysis.meta. The stage name, its release version, the rbceq2
+            tool and db versions and the exome design are added for you — see
+            `_with_stage_name`.
         **stage_kwargs: Passed through to cpg_flow's ``@stage`` — e.g. tolerate_missing_output.
 
     Returns:
@@ -114,9 +139,10 @@ def wire(
             update_analysis_meta=analysis_meta.call_qc,
         )
 
-    The recorded meta is ``analysis_meta.call_qc``'s dict plus ``{'stage':
-    'FlagBloodGroupCallQc', 'workflow_version': <release>}`` — both come from the class, so
-    renaming the stage moves them without anyone editing a string literal.
+    The recorded meta is ``analysis_meta.call_qc``'s dict plus the keys `_with_stage_name`
+    adds, among them ``{'stage': 'FlagBloodGroupCallQc', 'stage_version': <release>}``:
+    ``stage`` is the class name itself and ``stage_version`` a config lookup keyed on it, so
+    renaming the stage moves both without anyone editing a string literal.
 
     Note: when cpg_flow reports "getting inputs from stage X, but X is not listed in
     required_stages. Consider adding it into the decorator: @stage(required_stages=[X])", the
@@ -139,12 +165,12 @@ def wire(
             ) from e
         except ValueError:
             # No introspectable signature (a builtin, or a C function). Nothing to check; a bad
-            # return value is still caught by _with_run_provenance.
+            # return value is still caught by _with_stage_name.
             pass
 
     meta_hook = None
     if analysis_type:
-        meta_hook = functools.partial(_with_run_provenance, fn=update_analysis_meta, stage_name=cls.__name__)
+        meta_hook = functools.partial(_with_stage_name, fn=update_analysis_meta, stage_name=cls.__name__)
 
     return cpg_flow.stage.stage(
         required_stages=requires or [],
@@ -235,9 +261,12 @@ DESIGN_CONFIG_PATH = f'workflow.{EXOME_DESIGN_KEY}'
 def exome_design_bed() -> str:
     """The key of the capture design an exome run fills holes outside of.
 
-    Read at graph-build time, so a run missing it fails before a job starts rather than on the
-    first exome sequencing group's merge. Whether a subtraction is committed for the key is
-    checked where it is read, in `off_design.resource_path`.
+    Read at graph-build time by `_release_tree`, so a run missing it fails before a job starts
+    rather than on the first exome sequencing group's merge. Also read by `_with_stage_name`,
+    which runs in the status-reporter job after the compute — it reads the same config snapshot
+    the driver did, so the graph-build check is what keeps the error below from surfacing
+    there. Whether a subtraction is committed for the key is checked where it is read, in
+    `off_design.resource_path`.
 
     Returns:
         The design key as configured.
@@ -257,6 +286,15 @@ def exome_design_bed() -> str:
         ) from e
 
 
+def _is_exome_run() -> bool:
+    """Whether this run's configured sequencing type is exome.
+
+    Read by `_release_tree` for the design segment of the path and by `_with_stage_name` for
+    the design in the Analysis meta, so the two cannot disagree about which runs have one.
+    """
+    return cpg_utils.config.config_retrieve(['workflow', 'sequencing_type']) == constants.EXOME
+
+
 def design_segment(design_key: str) -> str:
     """The output-path segment identifying an exome run's capture design.
 
@@ -269,11 +307,17 @@ def design_segment(design_key: str) -> str:
     return re.sub(r'[^A-Za-z0-9._-]', '_', design_key)
 
 
-def release_version(stage_name: str) -> str:
+def _release_version(stage_name: str) -> str:
     """The release a stage writes under: its own output_versions pin if set, else workflow.version.
 
-    Read by `_release_tree` for the output path and by `_with_run_provenance` for the Analysis
+    Read by `_release_tree` for the output path and by `_with_stage_name` for the Analysis
     meta, so the recorded release cannot disagree with the tree written into.
+
+    It answers for the named stage only. A stage consuming another's outputs reads whatever
+    tree that stage's own pin selected, so pinning one stage mid-release leaves every
+    downstream stage writing and recording its own unpinned release over inputs from a pinned
+    one. Pin the downstream stages too: merely forcing them rebuilds at the same path and
+    records the same release, so the new Analysis cannot be told from the one it supersedes.
     """
     pinned = cpg_utils.config.config_retrieve(['workflow', 'output_versions', stage_name], None)
     return pinned or cpg_utils.config.config_retrieve(['workflow', 'version'], 'v1')
@@ -302,8 +346,8 @@ def _release_tree(stage_name: str) -> str:
     starts a fresh tree for the whole run. A genome run never reads the key, so its tree is
     unchanged.
     """
-    tree = f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_{release_version(stage_name)}'
-    if cpg_utils.config.config_retrieve(['workflow', 'sequencing_type']) == constants.EXOME:
+    tree = f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_{_release_version(stage_name)}'
+    if _is_exome_run():
         tree = f'{tree}/{design_segment(exome_design_bed())}'
     return tree
 

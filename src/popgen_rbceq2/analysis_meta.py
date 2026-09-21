@@ -7,17 +7,17 @@ that wrote the file, so the file is there to be read.
 They are module-level functions, not methods: cpg_flow dill-pickles the callable into that job,
 and a bound method would carry ``self`` and fail there, long after the compute has run.
 
-None of them set ``meta.stage`` or ``meta.workflow_version`` — ``stage_support.wire`` adds both
-from the stage class name, so a renamed stage cannot leave a stale literal behind, and the
-recorded release cannot disagree with the tree the outputs went to. See its docstring.
+None of them set ``meta.stage``, ``meta.stage_version``, the rbceq2 tool and db versions, or
+``meta.exome_design``: ``stage_support.wire`` adds those to every registered Analysis, so a
+stage without a meta function still gets them and no two functions can disagree. ``stage`` and
+``stage_version`` come from the class name, the two versions from `constants`, and the design
+from config; see `stage_support._with_stage_name`.
 """
 
 from typing import Any
 
 import cpg_utils
 from cpg_utils.config import genome_build
-
-from popgen_rbceq2.constants import RBCEQ2_VERSION
 
 
 def parse_single_row_rbceq2_tsv(text: str) -> dict[str, str]:
@@ -42,14 +42,13 @@ def blood_group_calls(output: str) -> dict[str, Any]:
         output: The ``<sg>.geno.tsv`` path; the alphanumeric phenotype TSV sits beside it.
 
     Returns:
-        The inferred blood-group genotypes and phenotypes, plus the tool version and reference
-        build they were called with.
+        The inferred blood-group genotypes and phenotypes, and the reference build they were
+        called with. The tool version comes from `stage_support.wire`.
     """
     genotypes: dict[str, str] = parse_single_row_rbceq2_tsv(cpg_utils.to_path(output).read_text())
     pheno_path: cpg_utils.Path = cpg_utils.to_path(output.replace('.geno.tsv', '.pheno_alphanumeric.tsv'))
     phenotypes: dict[str, str] = parse_single_row_rbceq2_tsv(pheno_path.read_text())
     return {
-        'rbceq2_version': RBCEQ2_VERSION,
         'reference_genome': genome_build(),
         'blood_group_genotypes': genotypes,
         'blood_group_phenotypes': phenotypes,
@@ -64,8 +63,7 @@ def call_qc(output: str) -> dict[str, Any]:
             TSVs.
 
     Returns:
-        The Analysis meta, with the same tool version and build the calls Analysis records.
-        ``blood_group_qc_flags`` maps each system to ``PASS``, a
+        The Analysis meta. ``blood_group_qc_flags`` maps each system to ``PASS``, a
         semicolon-joined ``LOWQ``/``NOCOV`` flag naming the failing site and its DP and GQ,
         or ``NA`` for a system rbceq2 called that has no defining site in the map, e.g.
         ``{'JK': 'PASS', 'VEL': 'LOWQ:1:3774964(A>G,DP=8,GQ=45)', 'FUT2': 'NA'}``.
@@ -82,7 +80,6 @@ def call_qc(output: str) -> dict[str, Any]:
     hands the job, so a re-read of config could not disagree with what ran.
     """
     return {
-        'rbceq2_version': RBCEQ2_VERSION,
         'reference_genome': genome_build(),
         'blood_group_qc_flags': parse_single_row_rbceq2_tsv(cpg_utils.to_path(output).read_text()),
     }
@@ -95,11 +92,10 @@ def cohort_calls(output: str) -> dict[str, str]:
         output: The combined geno TSV.
 
     Returns:
-        The tool version, and the sibling phenotype and QC TSV paths, which are otherwise
-        undiscoverable: the Analysis is registered against the geno TSV alone.
+        The sibling phenotype and QC TSV paths, which are otherwise undiscoverable: the
+        Analysis is registered against the geno TSV alone.
     """
     return {
-        'rbceq2_version': RBCEQ2_VERSION,
         'pheno_numeric_path': output.replace('.geno.tsv', '.pheno_numeric.tsv'),
         'pheno_alphanumeric_path': output.replace('.geno.tsv', '.pheno_alphanumeric.tsv'),
         'qc_path': output.replace('.geno.tsv', '.qc.tsv'),
