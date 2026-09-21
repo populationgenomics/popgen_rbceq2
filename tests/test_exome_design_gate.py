@@ -247,20 +247,24 @@ def test_an_exome_merge_fails_when_dragen_called_outside_the_configured_design(
 # --- handing the same sites to the QC ---
 
 
-def test_an_exome_qc_is_handed_the_off_design_sites_the_merge_filled_from(
+def test_an_exome_qc_is_handed_the_fillable_sites_the_merge_wrote(
     mocker,
     exome_sequencing_group,
     shm_tmp_path: Path,
 ):
     # A post-hoc reference block is kept whole, so one selected for an off-design hole can be
     # the only record at an in-design hole beside it. The QC keeps that hole NOCOV only if it
-    # knows which sites were fillable, and the only right answer is the BED the merge read.
+    # knows which sites were fillable, and the only right answer is the list the merge used.
+    #
+    # That is a stage input, not the committed BED: the merge's single-copy chrX gate reads
+    # this sample's own genotypes, so the committed file can name a site this sample never
+    # allowed to be filled, and the QC would then trust a post-hoc record there.
     _config(shm_tmp_path, 'exome', design_key=TWIST_KEY)
 
     batch = _queue_qc(mocker, exome_sequencing_group)
 
-    assert off_design.resource_path(TWIST_KEY) in _localised(batch)
-    assert '--fillable-sites /io/localised.bed' in _command(batch)
+    assert off_design.resource_path(TWIST_KEY) not in _localised(batch)
+    assert '--fillable-sites gs://bucket/SG000001.some-input' in _command(batch)
 
 
 def test_a_genome_qc_is_handed_no_fillable_set(

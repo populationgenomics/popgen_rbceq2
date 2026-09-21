@@ -1,13 +1,8 @@
 """What the conversion step does to a haploid genotype on the sex chromosomes.
 
-DRAGEN calls non-PAR chrX and chrY at their real ploidy in a male sample, writing a one-token
-`GT=1` rather than the pseudo-diploid `1/1` some callers emit. XK, GATA1 and ATP11C are defined
-there, and rbceq2 scores a one-token GT as one chromosome copy.
-
-A ploidy rewrite inserted into this pipe would be silent. Diploidising a hemizygous null gives
-a well-formed VCF and a well-formed call: rbceq2 reports `XK*N.16/XK*N.16`, indistinguishable
-in the genotype TSV from a female homozygote, with the correct phenotype beside it. Nothing
-fails and nothing logs, so the check has to be on the bytes the converter emits.
+A ploidy rewrite inserted into this pipe would be silent: it yields a well-formed VCF and a
+well-formed call, with the correct phenotype beside a genotype no consumer can challenge. So
+the check has to be on the bytes the converter emits. See README, "Sex-chromosome ploidy".
 
 These run the real `bcftools view` from the real helper, because what is asserted is bcftools'
 own behaviour: that `view --trim-alt-alleles` leaves FORMAT/GT alone. A Python stand-in would

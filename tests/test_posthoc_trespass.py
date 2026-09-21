@@ -146,6 +146,7 @@ def _merge(
             'exome_probesets_hg38/test_design_bed',
             cpu=1,
             genome='GRCh38',
+            fillable_out='fillable_sites.bed',
         )
     )
     return subprocess.run(  # noqa: S603
@@ -182,6 +183,7 @@ def _guard_then_merge(
             'exome_probesets_hg38/test_design_bed',
             cpu=1,
             genome='GRCh38',
+            fillable_out='fillable_sites.bed',
         )
     )
     return subprocess.run(  # noqa: S603
@@ -342,7 +344,8 @@ def test_a_posthoc_block_reaching_an_in_design_hole_fills_only_the_off_design_on
 
     stderr = _merge(tmp_path, block, sites_bed=SITES_WITH_IN_DESIGN_HOLE).stderr
 
-    assert 'capture design and filled, 1 inside it and left for the QC to flag NOCOV' in stderr
+    assert '1 inside' in stderr
+    assert 'the capture design and left for the QC to flag NOCOV, 1 outside it and filled,' in stderr
     flags = _flags(tmp_path, sites_bed=SITES_WITH_IN_DESIGN_HOLE)
     assert flags[OFF_DESIGN].startswith('POSTHOC:1:2000(')
     assert flags[IN_DESIGN] == 'PASS'
@@ -520,6 +523,9 @@ def test_the_guard_passes_a_gvcf_dragen_called_a_defining_site_in(tmp_path):
 # PAR1, where a male sample is genuinely diploid and the fill must still work.
 XK_SINGLE_COPY = 37694549
 XG_IN_PAR1 = 2748343
+# A DRAGEN record in the single-copy window, written at one copy as it is for a male
+# sample. The gate reads these tokens rather than any recorded sex.
+SINGLE_COPY_DRAGEN_CHRX = f'chrX\t{XK_SINGLE_COPY - 500}\t.\tA\tG,<NON_REF>\t200\tPASS\tSPARE=1\tGT:DP:GQ\t1:50:50\n'
 
 
 def _chrx_beds(pos: int) -> tuple[str, str]:
@@ -538,8 +544,11 @@ def test_a_posthoc_call_in_single_copy_chrx_is_not_filled(tmp_path):
     flips the phenotype.
     """
     sites_bed, off_design_bed = _chrx_beds(XK_SINGLE_COPY)
+    # A one-token DRAGEN GT in the window is what tells the gate this sample is single-copy.
+    # Without it the gate would still fire, but for want of evidence rather than because of it.
+    dragen = DRAGEN_RECORDS + SINGLE_COPY_DRAGEN_CHRX
     posthoc = f'chrX\t{XK_SINGLE_COPY}\t.\tG\tA,<NON_REF>\t410\t.\tSPARE=1\tGT:DP:GQ\t1/1:38:99\n'
-    result = _merge(tmp_path, posthoc, sites_bed=sites_bed, off_design_bed=off_design_bed)
+    result = _merge(tmp_path, posthoc, dragen_records=dragen, sites_bed=sites_bed, off_design_bed=off_design_bed)
 
     assert result.returncode == 0, result.stderr
     merged = subprocess.run(  # noqa: S603
@@ -550,7 +559,7 @@ def test_a_posthoc_call_in_single_copy_chrx_is_not_filled(tmp_path):
     ).stdout
     assert f'chrX\t{XK_SINGLE_COPY}' not in merged
     # And the job says so, rather than dropping the site without a word.
-    assert 'single-copy chrX left unfilled' in result.stderr
+    assert '1 outside it but in single-copy chrX and left unfilled' in result.stderr
 
 
 def test_a_posthoc_call_in_par1_is_still_filled(tmp_path):
@@ -572,4 +581,102 @@ def test_a_posthoc_call_in_par1_is_still_filled(tmp_path):
         check=True,
     ).stdout
     assert f'chrX\t{XG_IN_PAR1}\t0/1\t{POSTHOC_CALLER}' in merged
-    assert 'single-copy chrX left unfilled' not in result.stderr
+    assert '0 outside it but in single-copy chrX and left unfilled' in result.stderr
+
+
+def test_a_gated_chrx_hole_is_not_reported_as_being_inside_the_design(tmp_path):
+    """The three accounting terms add up, with the gated sites named as their own.
+
+    Counting the off-design holes after the gate rather than before it absorbs the gated
+    sites into the in-design term, which reports a site the design never targeted as one it
+    did. The QC reads NOCOV either way, so the log is the only place the difference shows.
+    """
+    sites_bed, off_design_bed = _chrx_beds(XK_SINGLE_COPY)
+    posthoc = f'chrX\t{XK_SINGLE_COPY}\t.\tG\tA,<NON_REF>\t410\t.\tSPARE=1\tGT:DP:GQ\t1/1:38:99\n'
+    stderr = _merge(tmp_path, posthoc, sites_bed=sites_bed, off_design_bed=off_design_bed).stderr
+
+    assert '2 defining site(s) with no DRAGEN record; 0 inside' in stderr
+    assert '1 outside it and filled,' in stderr
+    assert '1 outside it but in single-copy chrX and left unfilled' in stderr
+
+
+def test_a_run_whose_only_fillable_hole_is_gated_does_not_claim_nothing_to_fill(tmp_path):
+    """`nothing to fill` would be false: there was a hole, and the gate is why it stayed."""
+    # The fill branch is skipped because uncovered.bed is empty, but uncovered.all.bed was not.
+    sites_bed = SITES_BED + f'chrX\t{XK_SINGLE_COPY - 1}\t{XK_SINGLE_COPY}\n'
+    off_design_bed = f'chrX\t{XK_SINGLE_COPY - 1}\t{XK_SINGLE_COPY}\n'
+    dragen = f'chr1\t{OFF_DESIGN}\t.\tC\tT,<NON_REF>\t200\tPASS\tSPARE=1\tGT:DP:GQ\t0/1:50:50\n' + DRAGEN_RECORDS
+    posthoc = f'chrX\t{XK_SINGLE_COPY}\t.\tG\tA,<NON_REF>\t410\t.\tSPARE=1\tGT:DP:GQ\t1/1:38:99\n'
+
+    stderr = _merge(tmp_path, posthoc, dragen_records=dragen, sites_bed=sites_bed, off_design_bed=off_design_bed).stderr
+
+    assert 'every fillable site is in single-copy chrX; nothing left to fill' in stderr
+    assert 'nothing to fill' not in stderr.replace('nothing left to fill', '')
+
+
+def test_a_diploid_chrx_sample_keeps_its_off_design_fill(tmp_path):
+    """The gate reads DRAGEN's encoding, so a two-copy sample is not gated by coordinate.
+
+    Gating on the coordinate alone would drop these fills for every sample, including the
+    roughly half of a cohort whose chrX is diploid and where the two callers therefore agree.
+    Josh's finding 1: a sex-blind gate is a regression against the off-design XK recoveries.
+    """
+    sites_bed, off_design_bed = _chrx_beds(XK_SINGLE_COPY)
+    diploid_chrx = f'chrX\t{XK_SINGLE_COPY - 500}\t.\tA\tG,<NON_REF>\t200\tPASS\tSPARE=1\tGT:DP:GQ\t0/1:50:50\n'
+    dragen = DRAGEN_RECORDS + diploid_chrx
+    posthoc = f'chrX\t{XK_SINGLE_COPY}\t.\tG\tA,<NON_REF>\t410\t.\tSPARE=1\tGT:DP:GQ\t0/1:38:99\n'
+
+    result = _merge(tmp_path, posthoc, dragen_records=dragen, sites_bed=sites_bed, off_design_bed=off_design_bed)
+
+    assert result.returncode == 0, result.stderr
+    merged = subprocess.run(  # noqa: S603
+        ['bcftools', 'query', '-f', '%CHROM\t%POS\t[%GT]\n', str(tmp_path / 'merged.vcf.gz')],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert f'chrX\t{XK_SINGLE_COPY}\t0/1' in merged
+    assert '0 outside it but in single-copy chrX and left unfilled' in result.stderr
+
+
+def test_a_chrx_window_with_no_dragen_record_is_gated(tmp_path):
+    """No genotypes in the window is no evidence of ploidy, so the conservative side is taken."""
+    # Being wrong this way costs a fill and leaves a NOCOV flag. Being wrong the other way
+    # would hand rbceq2 a file claiming one chromosome copy and two.
+    sites_bed, off_design_bed = _chrx_beds(XK_SINGLE_COPY)
+    posthoc = f'chrX\t{XK_SINGLE_COPY}\t.\tG\tA,<NON_REF>\t410\t.\tSPARE=1\tGT:DP:GQ\t0/1:38:99\n'
+
+    result = _merge(tmp_path, posthoc, sites_bed=sites_bed, off_design_bed=off_design_bed)
+
+    assert result.returncode == 0, result.stderr
+    assert '1 outside it but in single-copy chrX and left unfilled' in result.stderr
+
+
+def test_an_autosomal_hole_inside_the_chrx_window_is_still_filled(tmp_path):
+    """The gate is a contig and a range, not a range alone.
+
+    The single-copy window is a chrX coordinate range, and real autosomal defining sites sit
+    inside the same numbers: FY is at chr1:159 Mb, KEL at chr7:142 Mb. Dropping the contig
+    test from the gate would silently stop filling those, and no other fixture here would
+    notice, because the rest sit below the window.
+    """
+    autosomal = 37694549
+    row = f'chr1\t{autosomal - 1}\t{autosomal}\n'
+    sites_bed = SITES_BED + row
+    off_design_bed = OFF_DESIGN_BED + row
+    # A one-token chrX GT so the gate is switched on for this sample; without it the gate
+    # never runs and the contig test is not reached at all.
+    dragen = DRAGEN_RECORDS + SINGLE_COPY_DRAGEN_CHRX
+    posthoc = f'chr1\t{autosomal}\t.\tG\tA,<NON_REF>\t410\t.\tSPARE=1\tGT:DP:GQ\t0/1:38:99\n'
+
+    result = _merge(tmp_path, posthoc, dragen_records=dragen, sites_bed=sites_bed, off_design_bed=off_design_bed)
+
+    assert result.returncode == 0, result.stderr
+    merged = subprocess.run(  # noqa: S603
+        ['bcftools', 'query', '-f', '%CHROM\t%POS\t[%GT]\n', str(tmp_path / 'merged.vcf.gz')],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert f'chr1\t{autosomal}\t0/1' in merged
+    assert '0 outside it but in single-copy chrX and left unfilled' in result.stderr

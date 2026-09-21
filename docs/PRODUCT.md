@@ -73,7 +73,7 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
   keeping it would put two callers' alleles on one base in rbceq2's input with nothing to choose
   between them, or let the second caller decide a site the design targeted. The hole returns to
   `NOCOV`. A reference block is kept, since it asserts nothing rbceq2 sees and dropping it would
-  lose the hole it was kept for; the QC then reads the same off-design BED the merge did and
+  lose the hole it was kept for; the QC then reads the fillable-site list the merge wrote and
   counts a post-hoc record only at a site the merge was allowed to fill, so an in-design hole
   the block spans stays `NOCOV`.
 - **A call resting on a recovered site is always annotated as such.** The site's QC flag name

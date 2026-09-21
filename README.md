@@ -344,14 +344,45 @@ weaken the check for every cohort: this is the only place the pipeline compares 
 it was handed, and from here a real swap and a stale header look the same. Confirm identity
 with somalier, then fix the input.
 
+#### Sex-chromosome ploidy
+
+DRAGEN calls chrX outside the pseudoautosomal regions at its real ploidy, so a sample with one
+X gets a one-token genotype there (`GT=1`) rather than the pseudo-diploid `1/1` some callers
+write. XK, GATA1 and ATP11C are defined in that window. rbceq2 reads one token as one copy and
+renders it `XK*01.02/-`.
+
+**Never rewrite a genotype anywhere in this stage.** Expanding `1` to `1|1` makes that call
+render as `XK*01.02/XK*01.02`, which no consumer can distinguish from a female homozygote. It
+is a well-formed VCF and a well-formed call, so nothing fails and nothing logs. The phenotype
+is unaffected, which is why this is only visible in the genotype column.
+
+**The file rbceq2 reads must carry one ploidy per region.** rbceq2 derives a single
+chromosome-copy count per blood group and refuses any record claiming *more*: that system
+reports `Undetermined` with an empty phenotype, and the rest of the sample is unaffected. A
+record claiming *fewer* is not refused. It resolves the contradiction the wrong way and flips
+the phenotype, with no warning anywhere.
+
+That invariant belongs to `merged.vcf.gz`, not to the conversion. A genome's merged VCF is
+DRAGEN's records alone and satisfies it by construction. An exome's also holds
+HaplotypeCaller's, which runs at its default ploidy of 2 and always writes two tokens, so
+`_merge_posthoc_commands` keeps the fill out of the single-copy window. Bounds are
+`constants.NON_PAR_X`, keyed by genome build and raising for a build with no recorded bounds.
+
+**The gate reads DRAGEN's own genotypes, not a recorded sex.** Gating by coordinate alone would
+drop these fills for a two-copy sample as well, which has no contradiction to avoid, and that
+is about half of every cohort. No records in the window is no evidence, so it gates. Every way
+of being wrong costs a fill and leaves a `NOCOV` flag, never a call.
+
+The cost on a one-copy sample is the off-design XK sites, 10 on Twist and 2 on Agilent CREv2.
+They reach the QC as `NOCOV`, which is where they were before post-hoc calling existed.
+
+**The rejected alternative was rewriting the post-hoc genotypes to match DRAGEN.** That keeps
+the recovered site, but it has to infer the sample's copy number to know what to write, and a
+wrong inference produces a confident wrong call where dropping the site produces a flag.
+
 Three things to preserve when changing this stage:
 
-- **Never rewrite a genotype, and never fill single-copy chrX.** DRAGEN writes a one-token GT
-  outside PAR on chrX for a male sample; HaplotypeCaller writes two tokens. Both in one file
-  say the sample has one chromosome copy and two, and rbceq2 reports that blood group
-  `Undetermined`, or, where the post-hoc call is a het, resolves it the wrong way and flips the
-  phenotype with no warning. Bounds are in `constants.NON_PAR_X`. This costs the off-design XK
-  sites, 10 on Twist and 2 on Agilent CREv2, which reach the QC as NOCOV.
+- **Never rewrite a genotype, and never fill single-copy chrX.** See above.
 - **Region restriction is unconditional**, using `resources/bg_regions.<genome>.bed`. This is
   what allows the single pass, and it beats reading the whole genome — minutes rather than the
   best part of an hour. It needs the gVCF `.tbi`, because `bcftools -R` jumps by index. Keep
@@ -611,6 +642,14 @@ Calling these alleles needs the DRAGEN SV and CNV VCFs alongside the SNV calls, 
 its own.
 
 ## Development
+
+`scripts/gen_synthetic_gvcf.py` writes a small synthetic DRAGEN-shaped gVCF for local checks.
+This repo ships no test data and cannot, because a real gVCF is 12-15Gb and names a real
+individual, so the suite builds every fixture inline. The generator covers what an inline
+fixture cannot: a whole sample, in three sex-chromosome encodings, for running the conversion
+and rbceq2 by hand. It reads its coordinates from the committed site map, so a fixture cannot
+call a site the pipeline does not ship. rbceq2 itself needs Python 3.12 and will not install
+into this repo's 3.11 environment.
 
 ```commandline
 uv sync --group dev      # install, including the package itself

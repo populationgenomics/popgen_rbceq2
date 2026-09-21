@@ -6,11 +6,10 @@ individual. The test suite therefore builds every fixture inline, which is right
 tests and useless for the one question that needs a whole sample: **what do the rbceq2 TSVs
 say when the sex chromosomes are encoded the way DRAGEN encodes them?**
 
-That question is why this exists. DRAGEN calls non-PAR chrX and chrY at their real ploidy in
-a male sample, writing a one-token `GT`, and three blood-group loci sit there: XK, GATA1 and
-ATP11C. `--diploidise` writes the same sample with both alleles spelled out (`1` as `1|1`), and
-`--mixed` writes one site that way and the rest as single copies, which is the self-contradiction
-rbceq2 refuses. Run all three through the conversion, then rbceq2, and diff the TSVs.
+`--diploidise` writes the same sample with both alleles spelled out (`1` as `1|1`), and
+`--mixed` writes one site that way and the rest as single copies, which is the
+self-contradiction rbceq2 refuses. Run all three through the conversion, then rbceq2, and diff
+the TSVs. See README, "Sex-chromosome ploidy".
 
 Coordinates are read from the committed `bg_site_systems.<genome>.tsv` rather than written
 here, so a fixture cannot describe a site the pipeline does not ship.
@@ -30,17 +29,12 @@ import logging
 import sys
 from pathlib import Path
 
-from popgen_rbceq2 import stage_support
+from popgen_rbceq2 import constants, stage_support
 from popgen_rbceq2.scripts import bg_db
 
 logger = logging.getLogger(__name__)
 
 SAMPLE = 'CPGSYNTH1'
-
-# GRCh38 non-PAR chrX. A male sample is haploid here and diploid either side of it, which is
-# the distinction the fixture exists to carry. PAR1 ends at 2,781,479 and PAR2 begins at
-# 155,701,383; XG and CD99 sit inside PAR1, XK, GATA1 and ATP11C between them.
-NON_PAR_X = (2_781_480, 155_701_382)
 
 # Which defining site to call, and with how many copies of the ALT, per blood-group system.
 #
@@ -84,20 +78,29 @@ HEADER = """##fileformat=VCFv4.2
 """
 
 
-def is_non_par_x(chrom: str, pos: int) -> bool:
-    """Whether a coordinate is one DRAGEN would call haploid in a male sample.
+def is_non_par_x(chrom: str, pos: int, genome: str) -> bool:
+    """Whether a coordinate is one DRAGEN would call at one copy in a male sample.
+
+    The bounds come from `constants.NON_PAR_X`, the same table the merge's gate reads. Holding
+    a second copy here would let the fixture and the code it exercises disagree about where PAR
+    ends, and the fixture would still look right.
 
     Args:
         chrom: Contig name, `chr`-prefixed.
         pos: 1-based position.
+        genome: Genome build, selecting the bounds.
 
     Returns:
-        True for non-PAR chrX, which is where the haploid encoding appears.
+        True for non-PAR chrX, which is where the single-copy encoding appears.
+
+    Raises:
+        KeyError: The build has no recorded bounds. See `constants.non_par_x`.
     """
-    return chrom == 'chrX' and NON_PAR_X[0] <= pos <= NON_PAR_X[1]
+    lo, hi = constants.non_par_x(genome)
+    return chrom == 'chrX' and lo <= pos <= hi
 
 
-def render_gt(chrom: str, pos: int, copies: int, *, diploidise: bool) -> str:
+def render_gt(chrom: str, pos: int, copies: int, *, diploidise: bool, genome: str) -> str:
     """Build a GT string at the ploidy of its coordinate.
 
     Args:
@@ -106,11 +109,12 @@ def render_gt(chrom: str, pos: int, copies: int, *, diploidise: bool) -> str:
         copies: How many copies of the ALT allele the sample carries, 0 to 2.
         diploidise: Write a single-copy site with its allele duplicated and a phased separator
             (`1` as `1|1`) instead of as DRAGEN called it.
+        genome: Genome build, selecting the PAR bounds.
 
     Returns:
         A one-token GT on non-PAR chrX unless `diploidise`, and a two-token GT elsewhere.
     """
-    if is_non_par_x(chrom, pos):
+    if is_non_par_x(chrom, pos, genome):
         token = '1' if copies >= 1 else '0'
         return f'{token}|{token}' if diploidise else token
     return ('0/0', '0/1', '1/1')[copies]
@@ -209,13 +213,13 @@ def build(genome: str, *, diploidise: bool = False, mixed: bool = False) -> str:
 
         block_start = site.pos - BLOCK_LEN - 1
         block_end = block_start + BLOCK_LEN - 1
-        block_gt = render_gt(site.chrom, block_start, 0, diploidise=site_diploidise)
+        block_gt = render_gt(site.chrom, block_start, 0, diploidise=site_diploidise, genome=genome)
         block_record = (
             f'{site.chrom}\t{block_start}\t.\t{site.ref[0]}\t<NON_REF>\t.\t.\t'
             f'END={block_end}\tGT:DP:GQ:MIN_DP\t{block_gt}:42:45:38'
         )
         rows.append((site.chrom, block_start, block_record))
-        gt = render_gt(site.chrom, site.pos, copies, diploidise=site_diploidise)
+        gt = render_gt(site.chrom, site.pos, copies, diploidise=site_diploidise, genome=genome)
         rows.append(
             (
                 site.chrom,

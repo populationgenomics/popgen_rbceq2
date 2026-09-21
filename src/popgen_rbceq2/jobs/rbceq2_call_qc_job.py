@@ -546,9 +546,10 @@ def load_fillable_sites(text: str) -> frozenset[tuple[str, int]]:
     """Read the defining sites the post-hoc caller was allowed to fill.
 
     Args:
-        text: Contents of the committed off-design defining-sites BED for the run's design
-            (`resources/bg_off_design_sites.*`): one 0-based half-open single-base interval per
-            site, no header.
+        text: The fillable-site list `FilterAndConvertGvcfsForRbceq2` wrote for this sequencing
+            group: one 0-based half-open single-base interval per site, no header. That is the
+            committed off-design BED less anything the merge's single-copy chrX gate removed,
+            so it is per-sample and not interchangeable with the committed file.
 
     Returns:
         The sites as (contig, 1-based position), the coordinates `DefiningSite` carries.

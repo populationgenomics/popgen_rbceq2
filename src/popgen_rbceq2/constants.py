@@ -15,9 +15,8 @@ RBCEQ2_DB_VERSION = '2.5.1'
 # current tag when bumping either.
 RBCEQ2_IMAGE_TAG = '2.4.4-1'
 
-# The single-copy stretch of chrX in a male sample, 1-based inclusive: everything between PAR1
-# and PAR2. DRAGEN calls it at its real ploidy and writes a one-token GT there. Three
-# blood-group loci sit in it: XK, GATA1 and ATP11C.
+# The single-copy stretch of chrX, 1-based inclusive: everything between PAR1 and PAR2. XK,
+# GATA1 and ATP11C are defined in it. See README, "Sex-chromosome ploidy".
 #
 # Keyed by genome build because the boundaries move between builds, and absent rather than
 # guessed for a build whose resources this repo does not ship. chrY needs no entry: no

@@ -1,11 +1,9 @@
 """The fixture generator writes the ploidy it claims to, at sites the pipeline ships.
 
-`gen_synthetic_gvcf.py` exists to answer one question locally: what do the rbceq2 TSVs say
-when non-PAR chrX is encoded the way DRAGEN encodes it. That answer is only worth anything
-if the fixture is right, and a fixture is wrong in two ways that look fine. It can put the
-ploidy boundary in the wrong place, in which case the haploid case is never exercised and
-the run looks clean. Or it can call a coordinate rbceq2's database has nothing at, in which
-case every system comes back reference and the diff is empty for the wrong reason.
+A fixture is wrong in two ways that look fine. It can put the ploidy boundary in the wrong
+place, in which case the single-copy case is never exercised and the run looks clean. Or it
+can call a coordinate rbceq2's database has nothing at, in which case every system comes back
+reference and the diff is empty for the wrong reason.
 
 So these tests check the boundary against PAR1 and PAR2, and check every called coordinate
 against the same committed defining-sites BED the pipeline hands bcftools. No external
@@ -17,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from popgen_rbceq2 import stage_support
+from popgen_rbceq2 import constants, stage_support
 from popgen_rbceq2.scripts import bg_db, gen_synthetic_gvcf
 
 GENOME = 'GRCh38'
@@ -47,27 +45,47 @@ def _is_one_token(gt: str) -> bool:
     return '/' not in gt and '|' not in gt
 
 
+def test_the_production_par_bounds_are_where_grch38_puts_them():
+    """The constant the merge's gate reads, pinned against the literals.
+
+    This is the copy that matters. `is_non_par_x` reads it rather than holding its own, so
+    without this assertion the production bounds could be wrong by 100 Mb and every test below
+    would still pass, because they would all be wrong together.
+    """
+    assert constants.NON_PAR_X[GENOME] == (PAR1_LAST + 1, PAR2_FIRST - 1)
+
+
 def test_the_par_boundary_is_where_grch38_puts_it():
-    """The haploid window starts one base past PAR1 and ends one base before PAR2."""
-    assert not gen_synthetic_gvcf.is_non_par_x('chrX', PAR1_LAST)
-    assert gen_synthetic_gvcf.is_non_par_x('chrX', PAR1_LAST + 1)
-    assert gen_synthetic_gvcf.is_non_par_x('chrX', PAR2_FIRST - 1)
-    assert not gen_synthetic_gvcf.is_non_par_x('chrX', PAR2_FIRST)
+    """The window starts one base past PAR1 and ends one base before PAR2."""
+    assert not gen_synthetic_gvcf.is_non_par_x('chrX', PAR1_LAST, GENOME)
+    assert gen_synthetic_gvcf.is_non_par_x('chrX', PAR1_LAST + 1, GENOME)
+    assert gen_synthetic_gvcf.is_non_par_x('chrX', PAR2_FIRST - 1, GENOME)
+    assert not gen_synthetic_gvcf.is_non_par_x('chrX', PAR2_FIRST, GENOME)
+
+
+def test_a_build_with_no_recorded_bounds_raises_rather_than_guessing():
+    """GRCh37 moves both boundaries, so falling back to GRCh38's would be silently wrong."""
+    # The merge's gate reads the same table, where a wrong window means filling single-copy
+    # chrX or gating PAR. Refusing is the only safe answer for a build we ship no bounds for.
+    with pytest.raises(KeyError, match='GRCh37'):
+        constants.non_par_x('GRCh37')
+    with pytest.raises(KeyError, match='GRCh37'):
+        gen_synthetic_gvcf.is_non_par_x('chrX', PAR1_LAST + 1, 'GRCh37')
 
 
 def test_no_autosome_is_ever_treated_as_haploid():
     """Only chrX carries the one-token encoding; chr1 at the same offsets does not."""
     # The window is a coordinate range, so a contig check that was dropped would leave
     # chr1:37686082 haploid and the autosomal half of every fixture quietly wrong.
-    assert not gen_synthetic_gvcf.is_non_par_x('chr1', PAR1_LAST + 1)
-    assert not gen_synthetic_gvcf.is_non_par_x('chr9', PAR1_LAST + 1)
+    assert not gen_synthetic_gvcf.is_non_par_x('chr1', PAR1_LAST + 1, GENOME)
+    assert not gen_synthetic_gvcf.is_non_par_x('chr9', PAR1_LAST + 1, GENOME)
 
 
 def test_the_native_fixture_is_haploid_outside_par_and_diploid_inside_it():
     """The default output is what DRAGEN writes for a male sample."""
     text = gen_synthetic_gvcf.build(GENOME)
-    outside = [r for r in _variants(text) if gen_synthetic_gvcf.is_non_par_x(r[0], int(r[1]))]
-    inside = [r for r in _variants(text) if not gen_synthetic_gvcf.is_non_par_x(r[0], int(r[1]))]
+    outside = [r for r in _variants(text) if gen_synthetic_gvcf.is_non_par_x(r[0], int(r[1]), GENOME)]
+    inside = [r for r in _variants(text) if not gen_synthetic_gvcf.is_non_par_x(r[0], int(r[1]), GENOME)]
 
     assert outside, 'the fixture must exercise the non-PAR chrX path or it tests nothing'
     assert inside, 'the fixture must keep a diploid comparison in the same file'
@@ -88,7 +106,7 @@ def test_the_mixed_fixture_disagrees_with_itself_on_one_contig():
     # Mixing across contigs would not reproduce it: rbceq2 derives its copy count per
     # chromosome, so a haploid chrX beside a diploid chr1 is an ordinary male sample.
     text = gen_synthetic_gvcf.build(GENOME, mixed=True)
-    outside = [_gt(r) for r in _variants(text) if gen_synthetic_gvcf.is_non_par_x(r[0], int(r[1]))]
+    outside = [_gt(r) for r in _variants(text) if gen_synthetic_gvcf.is_non_par_x(r[0], int(r[1]), GENOME)]
     assert any(_is_one_token(gt) for gt in outside)
     assert any(not _is_one_token(gt) for gt in outside)
 
