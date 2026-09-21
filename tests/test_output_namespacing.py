@@ -211,25 +211,65 @@ def test_output_version_can_be_pinned_per_stage(mock_sequencing_group, shm_tmp_p
     )
 
 
+def _pinned(release: object) -> dict:
+    """A genome config whose only oddity is what FlagBloodGroupCallQc is pinned to."""
+    return {
+        'name': 'popgen_rbceq2',
+        'version': 'v1',
+        'sequencing_type': 'genome',
+        'output_versions': {'FlagBloodGroupCallQc': release},
+    }
+
+
 @pytest.mark.parametrize(
     ('workflow_config', 'expected_in_message'),
     [
         # No release at all. Defaulting one would name an output tree and assert itself on
         # every Metamist row under a version the run never declared.
         ({'name': 'popgen_rbceq2', 'sequencing_type': 'genome'}, 'workflow.version'),
+        # A blank workflow.version, which merging a config over the defaults can produce.
+        ({'name': 'popgen_rbceq2', 'version': '', 'sequencing_type': 'genome'}, 'workflow.version'),
         # A blank pin. Falling back to workflow.version here would write the pinned stage into
         # the shared tree and record the shared release — the opposite of what pinning is for.
+        (_pinned('  '), 'workflow.output_versions.FlagBloodGroupCallQc'),
+        # false is the one to watch: bool subclasses int, so a str/int check that does not
+        # exclude it first would release the stage under 'False'.
+        (_pinned(False), 'workflow.output_versions.FlagBloodGroupCallQc'),
+        (_pinned(1.5), 'workflow.output_versions.FlagBloodGroupCallQc'),
+        (_pinned(['v5']), 'workflow.output_versions.FlagBloodGroupCallQc'),
+        # Anything that would put a separator or a space in the tree, rather than being
+        # silently rewritten into a segment the meta then disagrees with.
+        (_pinned('v5/rerun'), 'workflow.output_versions.FlagBloodGroupCallQc'),
+        (_pinned('v5 rerun'), 'workflow.output_versions.FlagBloodGroupCallQc'),
+        # output_versions written as a scalar instead of a table. cpg_utils walks the key list
+        # with `in`, a substring test on a str, so this reads as "no pin" for most stage names
+        # and raises a bare TypeError for one whose name is a substring of the value.
+        (
+            {'name': 'popgen_rbceq2', 'version': 'v1', 'sequencing_type': 'genome', 'output_versions': 'v5'},
+            'workflow.output_versions',
+        ),
         (
             {
                 'name': 'popgen_rbceq2',
                 'version': 'v1',
                 'sequencing_type': 'genome',
-                'output_versions': {'FlagBloodGroupCallQc': '  '},
+                'output_versions': 'FlagBloodGroupCallQc',
             },
-            'workflow.output_versions.FlagBloodGroupCallQc',
+            'workflow.output_versions',
         ),
     ],
-    ids=['no_version', 'blank_pin'],
+    ids=[
+        'no_version',
+        'blank_version',
+        'blank_pin',
+        'false_pin',
+        'float_pin',
+        'list_pin',
+        'pin_with_separator',
+        'pin_with_space',
+        'scalar_output_versions',
+        'scalar_output_versions_matching_a_stage_name',
+    ],
 )
 def test_a_release_is_never_invented(workflow_config, expected_in_message, mock_sequencing_group, shm_tmp_path):
     set_config({'workflow': workflow_config}, shm_tmp_path / 'bad_release.toml')

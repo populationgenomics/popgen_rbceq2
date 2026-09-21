@@ -307,6 +307,12 @@ def design_segment(design_key: str) -> str:
     return re.sub(r'[^A-Za-z0-9._-]', '_', design_key)
 
 
+# The characters a release may use. It becomes a path segment verbatim, unlike a design key,
+# which `design_segment` sanitises — a pin is typed by hand for one run, so a stray '/' or space
+# is a mistake worth refusing rather than quietly rewriting into a different tree.
+_RELEASE_SEGMENT = re.compile(r'[A-Za-z0-9._-]+')
+
+
 def _release_version(stage_name: str) -> str:
     """The release a stage writes under: its own output_versions pin if set, else workflow.version.
 
@@ -326,23 +332,39 @@ def _release_version(stage_name: str) -> str:
     one row to the next.
 
     Returns:
-        The release, always a non-empty string.
+        The release, always one non-empty path segment.
 
     Raises:
-        cpg_utils.config.ConfigError: Neither a pin nor ``workflow.version`` is set, or the
-            one that is set is blank. Not defaulted: a release this run never declared would
-            name an output tree and assert itself in Metamist on every row.
+        cpg_utils.config.ConfigError: ``workflow.output_versions`` is not a table, or the
+            release that applies is unset, of the wrong type, or not one path segment. Never
+            defaulted or coerced: a release this run did not declare would name an output tree
+            and assert itself in Metamist on every row, permanently.
     """
-    pinned = cpg_utils.config.config_retrieve(['workflow', 'output_versions', stage_name], None)
+    pins = cpg_utils.config.config_retrieve(['workflow', 'output_versions'], None)
+    if pins is not None and not isinstance(pins, Mapping):
+        # A scalar here is not a pin cpg_utils can find, and its key walk does a substring test
+        # on a str, so this would otherwise read as "no pin" for most stage names and raise a
+        # bare TypeError for a stage whose name happens to be a substring of the value.
+        raise cpg_utils.config.ConfigError(
+            'workflow.output_versions is a table keyed on stage class name, e.g. '
+            f"[workflow.output_versions] then FlagBloodGroupCallQc = 'v5'; got a "
+            f'{type(pins).__name__}, {pins!r}.'
+        )
+    pinned = pins.get(stage_name) if pins else None
     source = 'workflow.version' if pinned is None else f'workflow.output_versions.{stage_name}'
     raw = cpg_utils.config.config_retrieve(['workflow', 'version'], None) if pinned is None else pinned
-    version = str(raw).strip() if raw is not None else ''
-    if not version:
+
+    # bool first: it is a subclass of int, and `false` would otherwise release under 'False'.
+    usable = isinstance(raw, str) or (isinstance(raw, int) and not isinstance(raw, bool))
+    version = str(raw).strip() if usable else ''
+    if not _RELEASE_SEGMENT.fullmatch(version):
         raise cpg_utils.config.ConfigError(
-            f"{source} names the release, e.g. 'v4'; got {raw!r}. It is the segment of every "
-            'output path after the rbceq2 version, and what every Analysis records as '
-            'meta.stage_version. The shipped default config sets workflow.version, so a run '
-            'reaching this either does not merge the defaults or pins a stage to a blank value.'
+            f"{source} names the release: a string or whole number, e.g. 'v4', limited to "
+            f'{_RELEASE_SEGMENT.pattern} because it is one path segment. Got '
+            f'{type(raw).__name__} {raw!r}. It is the segment of every output path after the '
+            'rbceq2 version, and what every Analysis records as meta.stage_version, so it is '
+            'never defaulted or coerced. The shipped default config sets workflow.version — '
+            'see the README on how configs merge if you did not expect to be setting it.'
         )
     return version
 
