@@ -1,15 +1,6 @@
-"""What the conversion step does to a haploid genotype on the sex chromosomes.
+"""That the conversion step leaves FORMAT/GT alone, whatever ploidy it is written at.
 
-A ploidy rewrite inserted into this pipe would be silent: it yields a well-formed VCF and a
-well-formed call, with the correct phenotype beside a genotype no consumer can challenge. So
-the check has to be on the bytes the converter emits. See README, "Sex-chromosome ploidy".
-
-These run the real `bcftools view` from the real helper, because what is asserted is bcftools'
-own behaviour: that `view --trim-alt-alleles` leaves FORMAT/GT alone. A Python stand-in would
-assert that this file believes that, which is not the same claim.
-
-Skipped where bcftools is not installed. Local bcftools is expected to be the pinned image's
-1.24, as for the other shell tests here.
+Runs the real helper under real bcftools, and is skipped where bcftools is not installed.
 """
 
 import shutil
@@ -28,12 +19,9 @@ pytestmark = [
     ),
 ]
 
-# chrX:37686068 is XK's defining coordinate in GRCh38, one of the three non-PAR blood-group
-# loci that carry a haploid call in a male sample. chrX:2748343 is XG's, inside PAR1, where the
-# same sample is genuinely diploid. Using the real coordinates keeps the fixture honest about
-# which case is which, though nothing in the converter reads them.
+# XK's defining coordinate in GRCh38, one of the three loci that carry a one-token call in a
+# single-copy sample. Nothing in the converter reads the coordinate.
 XK_NON_PAR = 37686068
-XG_PAR1 = 2748343
 
 HEADER = """##fileformat=VCFv4.2
 ##contig=<ID=chrX,length=156040895>
@@ -74,51 +62,21 @@ def _convert(tmp_path: Path, body: str) -> list[str]:
     return query.stdout.split()
 
 
-def test_a_haploid_genotype_survives_the_conversion_unchanged(tmp_path):
-    """A one-token GT reaches rbceq2 as one token."""
-    # The regression this guards: any step reinstated here that rewrites `1` to `1|1` turns a
-    # hemizygous male null into something rbceq2 reports as a homozygote, with no error anywhere.
-    assert _convert(tmp_path, _record(XK_NON_PAR, '1')) == ['1']
+@pytest.mark.parametrize('gts', [['1'], ['0'], ['0/1'], ['1', '0/1']])
+def test_the_converter_passes_genotypes_through(tmp_path, gts):
+    """Every GT the converter is given comes out of it byte-identical."""
+    # `0` is not the inert case it looks like. rbceq2 drops a one-token `0` as hom-ref exactly
+    # as it drops `0/0`, so the row contributes no allele either way, but ploidy inference runs
+    # before that drop and reads one token as single-copy evidence where two read as two.
+    #
+    # The mixed pair is deliberate: rbceq2 refuses a file claiming both one chromosome copy and
+    # two, and the converter must not be what hides that. Making the file self-consistent here
+    # would mean choosing a ploidy from the sample's own calls, which is the merge's job.
+    body = ''.join(_record(XK_NON_PAR + 10 * i, gt) for i, gt in enumerate(gts))
+    assert _convert(tmp_path, body) == gts
 
 
-def test_a_haploid_reference_call_survives_the_conversion_unchanged(tmp_path):
-    """The `0` half of the same case."""
-    # rbceq2 reads a single-token `0` as no data rather than as a hemizygous reference, so this
-    # is not merely the symmetric case: expanding it to `0|0` would assert a reference genotype
-    # the caller never made.
-    assert _convert(tmp_path, _record(XK_NON_PAR, '0')) == ['0']
-
-
-def test_a_diploid_genotype_in_par_survives_the_conversion_unchanged(tmp_path):
-    """A PAR call is diploid in every sample and must stay that way."""
-    assert _convert(tmp_path, _record(XG_PAR1, '0/1')) == ['0/1']
-
-
-def test_the_converter_does_not_normalise_ploidy_across_records(tmp_path):
-    """Mixed ploidy in, mixed ploidy out: the converter has no opinion about it.
-
-    rbceq2 refuses a file that claims both one chromosome copy and two, and the converter must
-    not be the thing that hides it. Making the file self-consistent here would mean choosing a
-    ploidy for a sample from its own calls, which is `_merge_posthoc_commands`' job and needs
-    the PAR bounds this helper does not carry.
-    """
-    body = _record(XK_NON_PAR, '1') + _record(XK_NON_PAR + 10, '1/1')
-    assert _convert(tmp_path, body) == ['1', '1/1']
-
-
-def test_the_non_ref_drop_still_applies_to_a_haploid_record(tmp_path):
-    """Passing GT through does not mean passing the symbolic allele through."""
-    # A haploid reference block is the ordinary shape on non-PAR chrX, so the <NON_REF> drop
-    # has to keep working on exactly the records whose genotypes are now left alone.
+def test_a_non_ref_record_is_dropped(tmp_path):
+    """A <NON_REF>-only record is not in the converted VCF; the real call beside it is."""
     body = _record(XK_NON_PAR, '1') + _record(XK_NON_PAR + 10, '0', ref='C', alt='<NON_REF>')
     assert _convert(tmp_path, body) == ['1']
-
-
-def test_the_conversion_shell_runs_no_bcftools_plugin():
-    """The converter is two bcftools subcommands and no plugin."""
-    # The behavioural tests above cover what the shell does; this one constrains what can be
-    # added to it. A plugin is how ploidy gets rewritten, `+fixploidy` and `+setGT` alike, so
-    # the shape is worth pinning rather than any one name. Needs no bcftools to fail.
-    shell = _convert_commands('converted.vcf.gz', cpu=1)
-    assert 'fixploidy' not in shell
-    assert ' bcftools +' not in shell

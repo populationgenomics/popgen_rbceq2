@@ -159,12 +159,7 @@ def _sample_check_commands(posthoc_gvcf: str, gvcf: str) -> str:
 def _convert_commands(out_vcf: str, cpu: int) -> str:
     """Shell turning `merged.vcf.gz` into the VCF rbceq2 reads, and indexing it.
 
-    Two things happen and no more. `<NON_REF>` records are dropped, because the symbolic allele
-    breaks rbceq2, which does not accept native gVCFs; and the ALT alleles left unused by the
-    earlier split are trimmed. **Nothing touches FORMAT/GT.**
-
-    Separate from the stage so `tests/test_haploid_passthrough.py` can execute this shell under
-    real bcftools and pin that. See README, "Sex-chromosome ploidy".
+    Drops `<NON_REF>` records and trims unused ALT alleles. Does not read or write FORMAT/GT.
 
     Args:
         out_vcf: Path to write the bgzipped converted VCF to. Its `.tbi` goes beside it.
@@ -482,20 +477,8 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
     delete every variant in the file. After the split only the symbolic-only record
     matches and the real variant survives.
 
-    Genotypes are never rewritten. DRAGEN calls single-copy chrX at its real ploidy in a male
-    sample (GT="1"/"0" outside PAR), rbceq2 scores a one-token GT as one copy, and a rewrite to
-    "1|1" would make a hemizygous XK null render as `XK*N.16/XK*N.16`, indistinguishable in the
-    genotype TSV from a female homozygote.
-
-    **The file rbceq2 reads must carry one ploidy per region.** rbceq2 derives a single
-    chromosome-copy count per blood group and refuses any record claiming more: the system
-    reports `Undetermined/Undetermined` and empty phenotypes. A record claiming *fewer* passes
-    silently and resolves the contradiction the wrong way, flipping the phenotype.
-
-    That invariant belongs to `merged.vcf.gz`, not to this conversion. A genome's merged VCF is
-    DRAGEN's records alone and satisfies it by construction. An exome's also holds
-    HaplotypeCaller's, which run at ploidy 2, so `_merge_posthoc_commands` keeps the fill out of
-    single-copy chrX.
+    The file rbceq2 reads must carry one ploidy per region. See README, "Sex-chromosome
+    ploidy".
     """
 
     def expected_outputs(

@@ -45,6 +45,11 @@ SAMPLE = 'CPGSYNTH1'
 CALLS = (
     # (system, 1-based GRCh38 position, ALT copies)
     ('XK', 37686082, 1),  # non-PAR chrX: one copy in a male
+    # A non-variant call in the same window. rbceq2 drops it as hom-ref, so it contributes no
+    # allele, but ploidy inference runs first and reads the one token as single-copy evidence
+    # where two tokens would read as two. Without a row of this shape the fixture cannot show
+    # what happens to a sample whose only chrX records are reference calls.
+    ('XK', 37694285, 0),  # non-PAR chrX: reference, one copy
     ('GATA1', 48794162, 1),  # non-PAR chrX: one copy
     ('XG', 2748343, 1),  # PAR1: genuinely two copies, must stay two-token
     ('FY', 159205564, 2),  # autosomal: both copies
@@ -94,7 +99,7 @@ def is_non_par_x(chrom: str, pos: int, genome: str) -> bool:
         True for non-PAR chrX, which is where the single-copy encoding appears.
 
     Raises:
-        KeyError: The build has no recorded bounds. See `constants.non_par_x`.
+        KeyError: No bounds are recorded for `genome`.
     """
     lo, hi = constants.non_par_x(genome)
     return chrom == 'chrX' and lo <= pos <= hi
@@ -166,9 +171,7 @@ def _site_at(
         The matching site.
 
     Raises:
-        LookupError: The system or the coordinate is absent. Both messages name what was
-            looked for, because the caller is a hard-coded table and the reader's next
-            question is always which entry to change.
+        LookupError: `system` or `pos` is absent from the committed map.
     """
     sites = grouped.get(system)
     if not sites:
@@ -196,10 +199,7 @@ def build(genome: str, *, diploidise: bool = False, mixed: bool = False) -> str:
         The complete VCF text, records sorted by contig then position.
 
     Raises:
-        LookupError: A site named in `CALLS` is not in the committed map for this build,
-            which means the resources moved and this script needs revisiting. Deliberate:
-            skipping it would shrink the fixture and weaken every comparison built on it,
-            without failing anything.
+        LookupError: A site named in `CALLS` is absent from the committed map for `genome`.
     """
     grouped = sites_by_system(genome)
     calls = [*CALLS, (MIXED_SYSTEM, MIXED_POS, 1)] if mixed else list(CALLS)

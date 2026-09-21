@@ -15,8 +15,8 @@ RBCEQ2_DB_VERSION = '2.5.1'
 # current tag when bumping either.
 RBCEQ2_IMAGE_TAG = '2.4.4-1'
 
-# The single-copy stretch of chrX, 1-based inclusive: everything between PAR1 and PAR2. XK,
-# GATA1 and ATP11C are defined in it. See README, "Sex-chromosome ploidy".
+# The single-copy stretch of chrX, 1-based inclusive: everything between PAR1 and PAR2. See
+# README, "Sex-chromosome ploidy".
 #
 # Keyed by genome build because the boundaries move between builds, and absent rather than
 # guessed for a build whose resources this repo does not ship. chrY needs no entry: no
@@ -37,14 +37,10 @@ def non_par_x(genome: str) -> tuple[int, int]:
         `(first, last)`, 1-based inclusive.
 
     Raises:
-        KeyError: The build has no entry. Deliberate: a wrong boundary would silently
-            mis-classify PAR as single-copy and vice versa, which is worse than stopping.
+        KeyError: No bounds are recorded for `genome`.
     """
     if genome not in NON_PAR_X:
-        raise KeyError(
-            f'No chrX PAR boundaries recorded for {genome}. Add them to NON_PAR_X rather than '
-            'letting the post-hoc ploidy gate fall back to a build that does not apply.'
-        )
+        raise KeyError(f'No chrX PAR boundaries recorded for {genome}. Add them to NON_PAR_X.')
     return NON_PAR_X[genome]
 
 

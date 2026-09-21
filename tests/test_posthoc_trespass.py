@@ -65,9 +65,20 @@ OFF_DESIGN_BED = f'chr1\t{OFF_DESIGN - 1}\t{OFF_DESIGN}\n'
 IN_DESIGN_HOLE = 2010
 SITES_WITH_IN_DESIGN_HOLE = SITES_BED + f'chr1\t{IN_DESIGN_HOLE - 1}\t{IN_DESIGN_HOLE}\n'
 
+# Single-copy chrX, where the two callers disagree about ploidy. XK:37694549 is a real
+# GRCh38 defining site and is off-design on the Twist exome; XG:2748343 is a real one in
+# PAR1, where a male sample is genuinely diploid and the fill must still work.
+XK_SINGLE_COPY = 37694549
+XG_IN_PAR1 = 2748343
+# A DRAGEN record in the single-copy window, written at one copy as it is for a sample with
+# one X. The gate reads these tokens rather than any recorded sex. Part of DRAGEN_RECORDS
+# below, so the merged file holds both ploidies wherever a post-hoc chrX record survives.
+SINGLE_COPY_DRAGEN_CHRX = f'chrX\t{XK_SINGLE_COPY - 500}\t.\tA\tG,<NON_REF>\t200\tPASS\tSPARE=1\tGT:DP:GQ\t1:50:50\n'
+
 # DRAGEN calls the in-design site and has no record at all at the off-design one, which is the
 # capture edge this feature exists for.
-DRAGEN_RECORDS = f'chr1\t{IN_DESIGN}\t.\tA\tG,<NON_REF>\t200\tPASS\tSPARE=1\tGT:DP:GQ\t0/1:50:50\n'
+DRAGEN_CHR1_ONLY = f'chr1\t{IN_DESIGN}\t.\tA\tG,<NON_REF>\t200\tPASS\tSPARE=1\tGT:DP:GQ\t0/1:50:50\n'
+DRAGEN_RECORDS = DRAGEN_CHR1_ONLY + SINGLE_COPY_DRAGEN_CHRX
 
 # A gVCF header declares far more tags than any one record carries, which matters: the merge's
 # `annotate -x '^INFO/END,...'` reads the header, and errors outright if the header has nothing
@@ -518,37 +529,23 @@ def test_the_guard_passes_a_gvcf_dragen_called_a_defining_site_in(tmp_path):
     assert flags[OFF_DESIGN].startswith('POSTHOC:')
 
 
-# Single-copy chrX, where the two callers disagree about ploidy. XK:37694549 is a real
-# GRCh38 defining site and is off-design on the Twist exome; XG:2748343 is a real one in
-# PAR1, where a male sample is genuinely diploid and the fill must still work.
-XK_SINGLE_COPY = 37694549
-XG_IN_PAR1 = 2748343
-# A DRAGEN record in the single-copy window, written at one copy as it is for a male
-# sample. The gate reads these tokens rather than any recorded sex.
-SINGLE_COPY_DRAGEN_CHRX = f'chrX\t{XK_SINGLE_COPY - 500}\t.\tA\tG,<NON_REF>\t200\tPASS\tSPARE=1\tGT:DP:GQ\t1:50:50\n'
-
-
 def _chrx_beds(pos: int) -> tuple[str, str]:
     """Sites and off-design BEDs with one chrX hole at `pos`, beside the chr1 pair."""
     row = f'chrX\t{pos - 1}\t{pos}\n'
     return SITES_BED + row, OFF_DESIGN_BED + row
 
 
-def test_a_posthoc_call_in_single_copy_chrx_is_not_filled(tmp_path):
-    """HaplotypeCaller's diploid GT must not reach the merged VCF beside DRAGEN's haploid one.
+def test_a_posthoc_call_in_non_par_chrx_is_not_filled(tmp_path):
+    """A fillable hole in non-PAR chrX is left unfilled, and the job says how many it skipped.
 
-    What this guards is not in this stage's own shell. HaplotypeCaller runs at its default
-    ploidy of 2, so its record here says two chromosome copies while DRAGEN's chrX records say
-    one, and rbceq2 answers a file claiming both by reporting the whole blood group
-    Undetermined. A het post-hoc call is worse: it claims one copy, passes unchallenged, and
-    flips the phenotype.
+    HaplotypeCaller runs at its default ploidy of 2, so its record here says two chromosome
+    copies while DRAGEN's chrX record says one, and rbceq2 answers a file claiming both by
+    reporting the whole blood group Undetermined. A het post-hoc call is worse: it claims one
+    copy, passes unchallenged, and flips the phenotype.
     """
     sites_bed, off_design_bed = _chrx_beds(XK_SINGLE_COPY)
-    # A one-token DRAGEN GT in the window is what tells the gate this sample is single-copy.
-    # Without it the gate would still fire, but for want of evidence rather than because of it.
-    dragen = DRAGEN_RECORDS + SINGLE_COPY_DRAGEN_CHRX
     posthoc = f'chrX\t{XK_SINGLE_COPY}\t.\tG\tA,<NON_REF>\t410\t.\tSPARE=1\tGT:DP:GQ\t1/1:38:99\n'
-    result = _merge(tmp_path, posthoc, dragen_records=dragen, sites_bed=sites_bed, off_design_bed=off_design_bed)
+    result = _merge(tmp_path, posthoc, sites_bed=sites_bed, off_design_bed=off_design_bed)
 
     assert result.returncode == 0, result.stderr
     merged = subprocess.run(  # noqa: S603
@@ -557,13 +554,15 @@ def test_a_posthoc_call_in_single_copy_chrx_is_not_filled(tmp_path):
         text=True,
         check=True,
     ).stdout
+    # The positive control. Without it an empty merge would satisfy the assertion below.
+    assert f'chr1\t{IN_DESIGN}\t0/1' in merged
+    assert f'chrX\t{XK_SINGLE_COPY - 500}\t1' in merged
     assert f'chrX\t{XK_SINGLE_COPY}' not in merged
-    # And the job says so, rather than dropping the site without a word.
-    assert '1 outside it but in single-copy chrX and left unfilled' in result.stderr
+    assert '1 outside it but in single-copy chrX' in result.stderr
 
 
 def test_a_posthoc_call_in_par1_is_still_filled(tmp_path):
-    """The gate is bounded by PAR, so XG and CD99 keep their off-design recovery.
+    """The gate is bounded by PAR, so XG keeps its off-design recovery.
 
     A male sample has two copies of PAR1, so HaplotypeCaller's diploid GT is correct there
     and agrees with DRAGEN's. Gating the whole contig instead of the single-copy stretch
@@ -581,7 +580,7 @@ def test_a_posthoc_call_in_par1_is_still_filled(tmp_path):
         check=True,
     ).stdout
     assert f'chrX\t{XG_IN_PAR1}\t0/1\t{POSTHOC_CALLER}' in merged
-    assert '0 outside it but in single-copy chrX and left unfilled' in result.stderr
+    assert '0 outside it but in single-copy chrX' in result.stderr
 
 
 def test_a_gated_chrx_hole_is_not_reported_as_being_inside_the_design(tmp_path):
@@ -623,7 +622,9 @@ def test_a_diploid_chrx_sample_keeps_its_off_design_fill(tmp_path):
     """
     sites_bed, off_design_bed = _chrx_beds(XK_SINGLE_COPY)
     diploid_chrx = f'chrX\t{XK_SINGLE_COPY - 500}\t.\tA\tG,<NON_REF>\t200\tPASS\tSPARE=1\tGT:DP:GQ\t0/1:50:50\n'
-    dragen = DRAGEN_RECORDS + diploid_chrx
+    # DRAGEN_CHR1_ONLY, not DRAGEN_RECORDS: the default fixture carries a one-token chrX row,
+    # which would make this sample single-copy and gate the fill for the wrong reason.
+    dragen = DRAGEN_CHR1_ONLY + diploid_chrx
     posthoc = f'chrX\t{XK_SINGLE_COPY}\t.\tG\tA,<NON_REF>\t410\t.\tSPARE=1\tGT:DP:GQ\t0/1:38:99\n'
 
     result = _merge(tmp_path, posthoc, dragen_records=dragen, sites_bed=sites_bed, off_design_bed=off_design_bed)
@@ -636,7 +637,7 @@ def test_a_diploid_chrx_sample_keeps_its_off_design_fill(tmp_path):
         check=True,
     ).stdout
     assert f'chrX\t{XK_SINGLE_COPY}\t0/1' in merged
-    assert '0 outside it but in single-copy chrX and left unfilled' in result.stderr
+    assert '0 outside it but in single-copy chrX' in result.stderr
 
 
 def test_a_chrx_window_with_no_dragen_record_is_gated(tmp_path):
@@ -646,10 +647,12 @@ def test_a_chrx_window_with_no_dragen_record_is_gated(tmp_path):
     sites_bed, off_design_bed = _chrx_beds(XK_SINGLE_COPY)
     posthoc = f'chrX\t{XK_SINGLE_COPY}\t.\tG\tA,<NON_REF>\t410\t.\tSPARE=1\tGT:DP:GQ\t0/1:38:99\n'
 
-    result = _merge(tmp_path, posthoc, sites_bed=sites_bed, off_design_bed=off_design_bed)
+    result = _merge(
+        tmp_path, posthoc, dragen_records=DRAGEN_CHR1_ONLY, sites_bed=sites_bed, off_design_bed=off_design_bed
+    )
 
     assert result.returncode == 0, result.stderr
-    assert '1 outside it but in single-copy chrX and left unfilled' in result.stderr
+    assert '1 outside it but in single-copy chrX' in result.stderr
 
 
 def test_an_autosomal_hole_inside_the_chrx_window_is_still_filled(tmp_path):
@@ -679,4 +682,4 @@ def test_an_autosomal_hole_inside_the_chrx_window_is_still_filled(tmp_path):
         check=True,
     ).stdout
     assert f'chr1\t{autosomal}\t0/1' in merged
-    assert '0 outside it but in single-copy chrX and left unfilled' in result.stderr
+    assert '0 outside it but in single-copy chrX' in result.stderr

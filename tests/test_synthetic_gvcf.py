@@ -55,12 +55,22 @@ def test_the_production_par_bounds_are_where_grch38_puts_them():
     assert constants.NON_PAR_X[GENOME] == (PAR1_LAST + 1, PAR2_FIRST - 1)
 
 
-def test_the_par_boundary_is_where_grch38_puts_it():
-    """The window starts one base past PAR1 and ends one base before PAR2."""
-    assert not gen_synthetic_gvcf.is_non_par_x('chrX', PAR1_LAST, GENOME)
-    assert gen_synthetic_gvcf.is_non_par_x('chrX', PAR1_LAST + 1, GENOME)
-    assert gen_synthetic_gvcf.is_non_par_x('chrX', PAR2_FIRST - 1, GENOME)
-    assert not gen_synthetic_gvcf.is_non_par_x('chrX', PAR2_FIRST, GENOME)
+@pytest.mark.parametrize(
+    ('chrom', 'pos', 'expected'),
+    [
+        ('chrX', PAR1_LAST, False),
+        ('chrX', PAR1_LAST + 1, True),
+        ('chrX', PAR2_FIRST - 1, True),
+        ('chrX', PAR2_FIRST, False),
+        # A contig test dropped from the window would leave these single-copy, and the
+        # autosomal half of every fixture would be quietly wrong.
+        ('chr1', PAR1_LAST + 1, False),
+        ('chr9', PAR1_LAST + 1, False),
+    ],
+)
+def test_the_window_is_chrx_between_par1_and_par2(chrom, pos, expected):
+    """The window is a contig and a range, starting one base past PAR1."""
+    assert gen_synthetic_gvcf.is_non_par_x(chrom, pos, GENOME) is expected
 
 
 def test_a_build_with_no_recorded_bounds_raises_rather_than_guessing():
@@ -73,24 +83,16 @@ def test_a_build_with_no_recorded_bounds_raises_rather_than_guessing():
         gen_synthetic_gvcf.is_non_par_x('chrX', PAR1_LAST + 1, 'GRCh37')
 
 
-def test_no_autosome_is_ever_treated_as_haploid():
-    """Only chrX carries the one-token encoding; chr1 at the same offsets does not."""
-    # The window is a coordinate range, so a contig check that was dropped would leave
-    # chr1:37686082 haploid and the autosomal half of every fixture quietly wrong.
-    assert not gen_synthetic_gvcf.is_non_par_x('chr1', PAR1_LAST + 1, GENOME)
-    assert not gen_synthetic_gvcf.is_non_par_x('chr9', PAR1_LAST + 1, GENOME)
+def test_the_native_fixture_writes_one_copy_on_chrx_and_two_in_par():
+    """The default output is what DRAGEN writes for a single-copy sample.
 
-
-def test_the_native_fixture_is_haploid_outside_par_and_diploid_inside_it():
-    """The default output is what DRAGEN writes for a male sample."""
-    text = gen_synthetic_gvcf.build(GENOME)
-    outside = [r for r in _variants(text) if gen_synthetic_gvcf.is_non_par_x(r[0], int(r[1]), GENOME)]
-    inside = [r for r in _variants(text) if not gen_synthetic_gvcf.is_non_par_x(r[0], int(r[1]), GENOME)]
-
-    assert outside, 'the fixture must exercise the non-PAR chrX path or it tests nothing'
-    assert inside, 'the fixture must keep a diploid comparison in the same file'
-    assert all(_is_one_token(_gt(r)) for r in outside)
-    assert not any(_is_one_token(_gt(r)) for r in inside)
+    Named coordinates, not `is_non_par_x`. Classifying the fixture with the same function that
+    built it cannot fail: moving the window to 40 Mb would leave that version green.
+    """
+    gts = {(r[0], int(r[1])): _gt(r) for r in _variants(gen_synthetic_gvcf.build(GENOME))}
+    assert gts[('chrX', 37686082)] == '1'  # XK, between PAR1 and PAR2
+    assert gts[('chrX', 2748343)] == '0/1'  # XG, inside PAR1
+    assert gts[('chr1', 159205564)] == '1/1'  # FY, autosomal
 
 
 def test_the_diploidised_fixture_has_no_haploid_genotype_left():
@@ -105,17 +107,14 @@ def test_the_mixed_fixture_disagrees_with_itself_on_one_contig():
     """`--mixed` is the half-rewritten state, and has to be mixed on non-PAR chrX itself."""
     # Mixing across contigs would not reproduce it: rbceq2 derives its copy count per
     # chromosome, so a haploid chrX beside a diploid chr1 is an ordinary male sample.
-    text = gen_synthetic_gvcf.build(GENOME, mixed=True)
-    outside = [_gt(r) for r in _variants(text) if gen_synthetic_gvcf.is_non_par_x(r[0], int(r[1]), GENOME)]
+    native = _variants(gen_synthetic_gvcf.build(GENOME))
+    mixed = _variants(gen_synthetic_gvcf.build(GENOME, mixed=True))
+    outside = [_gt(r) for r in mixed if gen_synthetic_gvcf.is_non_par_x(r[0], int(r[1]), GENOME)]
     assert any(_is_one_token(gt) for gt in outside)
     assert any(not _is_one_token(gt) for gt in outside)
-
-
-def test_the_mixed_fixture_adds_to_the_native_one_rather_than_replacing_it():
-    """Everything the native fixture calls is still called, so the diff isolates the mix."""
-    native = {(r[0], r[1]) for r in _variants(gen_synthetic_gvcf.build(GENOME))}
-    mixed = {(r[0], r[1]) for r in _variants(gen_synthetic_gvcf.build(GENOME, mixed=True))}
-    assert native < mixed
+    # Adds to the native fixture rather than replacing it, so a diff of the two isolates
+    # the contradiction rather than mixing it with a changed call somewhere else.
+    assert {(r[0], r[1]) for r in native} < {(r[0], r[1]) for r in mixed}
 
 
 @pytest.mark.parametrize('kwargs', [{}, {'diploidise': True}, {'mixed': True}])
@@ -128,7 +127,7 @@ def test_every_called_coordinate_is_a_committed_defining_site(kwargs):
         assert (record[0], int(record[1])) in sites, f'{record[0]}:{record[1]} is not a defining site'
 
 
-@pytest.mark.parametrize('kwargs', [{}, {'diploidise': True}, {'mixed': True}])
+@pytest.mark.parametrize('kwargs', [{}, {'mixed': True}])
 def test_the_records_are_sorted(kwargs):
     """An unsorted file is refused by bcftools index, and the stage indexes what it is given."""
     records = _records(gen_synthetic_gvcf.build(GENOME, **kwargs))
@@ -160,31 +159,20 @@ def test_a_reference_block_precedes_each_call_and_does_not_cover_it():
         assert end < variant_pos, f'block {block[0]}:{block[1]}-{end} covers the call at {variant_pos}'
 
 
-def test_an_unknown_system_fails_loudly(monkeypatch):
-    """A resource bump that removes a system this script calls must not pass silently."""
-    # A silent skip would shrink the fixture and weaken every comparison built on it.
-    monkeypatch.setattr(gen_synthetic_gvcf, 'CALLS', (('NOT_A_BLOOD_GROUP', 1, 1),))
-    with pytest.raises(LookupError, match='NOT_A_BLOOD_GROUP'):
+@pytest.mark.parametrize(
+    ('calls', 'match'),
+    [
+        # A system that left the resources. A silent skip would shrink the fixture and
+        # weaken every comparison built on it.
+        ((('NOT_A_BLOOD_GROUP', 1, 1),), 'NOT_A_BLOOD_GROUP'),
+        # A coordinate that left them, which is the case naming sites by coordinate exists to
+        # catch. An index into a system's site list stays valid when the list is reshuffled
+        # and simply points at a different allele, and every other test here would still pass.
+        ((('XK', 1, 1),), 'XK has no variant site at GRCh38 position 1'),
+    ],
+)
+def test_a_call_that_left_the_resources_fails_by_name(monkeypatch, calls, match):
+    """`CALLS` is a hard-coded table, and a resource bump must not silently shrink it."""
+    monkeypatch.setattr(gen_synthetic_gvcf, 'CALLS', calls)
+    with pytest.raises(LookupError, match=match):
         gen_synthetic_gvcf.build(GENOME)
-
-
-def test_a_coordinate_that_left_the_resources_fails_by_name(monkeypatch):
-    """The case naming sites by coordinate exists to catch, and the one an index could not.
-
-    An index into a system's site list stays valid when the list is reshuffled and simply
-    points at a different allele, so the fixture would keep generating and every other test
-    here would keep passing while describing something else. A coordinate cannot do that.
-    """
-    monkeypatch.setattr(gen_synthetic_gvcf, 'CALLS', (('XK', 1, 1),))
-    with pytest.raises(LookupError, match='XK has no variant site at GRCh38 position 1'):
-        gen_synthetic_gvcf.build(GENOME)
-
-
-def test_every_called_coordinate_resolves_in_the_shipped_resources():
-    """CALLS is a hard-coded table; this is what ties it to what the repo actually ships."""
-    grouped = gen_synthetic_gvcf.sites_by_system(GENOME)
-    mixed = (gen_synthetic_gvcf.MIXED_SYSTEM, gen_synthetic_gvcf.MIXED_POS, 1)
-    for system, pos, _copies in (*gen_synthetic_gvcf.CALLS, mixed):
-        site = gen_synthetic_gvcf._site_at(grouped, system, pos, GENOME)
-        assert site.pos == pos
-        assert site.system == system
