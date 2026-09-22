@@ -547,9 +547,11 @@ def load_fillable_sites(text: str) -> frozenset[tuple[str, int]]:
 
     Args:
         text: The fillable-site list `FilterAndConvertGvcfsForRbceq2` wrote for this sequencing
-            group: one 0-based half-open single-base interval per site, no header. That is the
-            committed off-design BED less anything the merge's single-copy chrX gate removed,
-            so it is per-sample and not interchangeable with the committed file.
+            group: one 0-based half-open single-base interval per site, no header. It is the
+            committed off-design BED twice narrowed, first to the sites the DRAGEN gVCF has no
+            record at, then by the merge's single-copy chrX gate. Both steps read this sample,
+            so it is per-sample and not interchangeable with the committed file, and it names
+            the holes that were fillable rather than every off-design site.
 
     Returns:
         The sites as (contig, 1-based position), the coordinates `DefiningSite` carries.

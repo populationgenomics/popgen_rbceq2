@@ -28,6 +28,7 @@ import pytest
 from popgen_rbceq2 import constants, off_design, stage_support
 from popgen_rbceq2.stage_support import DESIGN_CONFIG_PATH, EXOME_DESIGN_KEY
 from popgen_rbceq2.stages import pipeline
+from popgen_rbceq2.stages.blood_group_genotyping import filter_and_convert
 from tests.helpers import set_config
 from tests.test_output_namespacing import outputs_of
 
@@ -70,8 +71,13 @@ def _queue_conversion(mocker, sequencing_group) -> MagicMock:
     return batch
 
 
-def _queue_qc(mocker, sequencing_group) -> MagicMock:
-    """Queue the QC stage's job on a mock batch and return that batch."""
+def _queue_qc(mocker, sequencing_group) -> tuple[MagicMock, MagicMock]:
+    """Queue the QC stage's job on a mock batch, and return the batch and the StageInput.
+
+    The StageInput comes back so a test can assert which stage output was asked for. Its
+    `as_str` answers any key with the same string, so asserting on the rendered command alone
+    would pass with the key misspelled or naming another stage's output.
+    """
     batch = MagicMock()
     mocker.patch('cpg_utils.hail_batch.get_batch', return_value=batch)
     inputs = MagicMock()
@@ -79,7 +85,7 @@ def _queue_qc(mocker, sequencing_group) -> MagicMock:
     # Localised files render under a fixed name so the command can be asserted on.
     batch.read_input.return_value = '/io/localised.bed'
     pipeline.FlagBloodGroupCallQc().queue_jobs(sequencing_group, inputs)
-    return batch
+    return batch, inputs
 
 
 def _command(batch: MagicMock) -> str:
@@ -261,10 +267,17 @@ def test_an_exome_qc_is_handed_the_fillable_sites_the_merge_wrote(
     # allowed to be filled, and the QC would then trust a post-hoc record there.
     _config(shm_tmp_path, 'exome', design_key=TWIST_KEY)
 
-    batch = _queue_qc(mocker, exome_sequencing_group)
+    batch, inputs = _queue_qc(mocker, exome_sequencing_group)
 
     assert off_design.resource_path(TWIST_KEY) not in _localised(batch)
     assert '--fillable-sites gs://bucket/SG000001.some-input' in _command(batch)
+    # Which output, not just that something was passed. `as_str` answers every key with the
+    # same string, so the command alone would read the same with the key misspelled.
+    inputs.as_str.assert_any_call(
+        exome_sequencing_group,
+        filter_and_convert.FilterAndConvertGvcfsForRbceq2,
+        key='fillable_sites',
+    )
 
 
 def test_a_genome_qc_is_handed_no_fillable_set(
@@ -276,7 +289,7 @@ def test_a_genome_qc_is_handed_no_fillable_set(
     # rather than assuming one. Reading the design key here would also break every genome run.
     _config(shm_tmp_path, 'genome', design_key=None)
 
-    assert '--fillable-sites' not in _command(_queue_qc(mocker, mock_sequencing_group))
+    assert '--fillable-sites' not in _command(_queue_qc(mocker, mock_sequencing_group)[0])
 
 
 def test_a_genome_conversion_never_asks_for_a_design(

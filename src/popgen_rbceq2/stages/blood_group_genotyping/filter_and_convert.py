@@ -443,7 +443,8 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
     Emits two outputs from one pass over the gVCF: `vcf`, the rbceq2 input, and
     `defining_sites`, the DP/GQ at every allele-defining coordinate. Both derive from a
     blood-group-regions intermediate that retains <NON_REF>, and so retains the DRAGEN
-    reference blocks the extract needs.
+    reference blocks the extract needs. An exome emits a third, `fillable_sites`, the holes
+    the post-hoc fill was allowed to take: see `_merge_posthoc_commands`.
 
     Restriction to resources/bg_regions.<genome>.bed is unconditional, so the gVCF .tbi
     must exist. The BED must be a strict superset of every coordinate rbceq2 queries for

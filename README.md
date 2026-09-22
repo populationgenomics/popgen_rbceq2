@@ -219,9 +219,10 @@ writes two outputs, and a third on an exome:
   because it breaks rbceq2, unused ALT alleles are trimmed, and a tabix index is written
   alongside because rbceq2 fetches blood-group regions by coordinate.
 - `fillable_sites`, **exomes only**, the defining sites this sample's post-hoc calls were
-  allowed to fill: the committed off-design BED for the configured design, less the sites the
-  single-copy chrX gate withheld. `FlagBloodGroupCallQc` reads it rather than the committed BED,
-  because the gate reads this sample's own genotypes and so the list is per-sample.
+  allowed to fill. That is the committed off-design BED for the configured design, narrowed
+  twice: to the sites the DRAGEN gVCF has no record at, then by the single-copy chrX gate. So
+  it names the holes that were fillable, not every off-design site, and both steps read this
+  sample. `FlagBloodGroupCallQc` reads it rather than the committed BED for that reason.
 - `defining_sites`, holding FORMAT/GT, DP and GQ at every allele-defining coordinate for the
   QC stage, plus `INFO/POSTHOC` naming the caller that supplied each record. Do not derive this
   from the converted VCF: dropping `<NON_REF>` removes every reference block, and a reference
