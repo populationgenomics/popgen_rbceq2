@@ -123,8 +123,9 @@ def test_genotype_job_runs_rbceq2_in_debug_and_captures_the_log(mocker, mock_seq
 
 @pytest.mark.usefixtures('qc_config')
 def test_call_qc_meta_does_not_set_stage(shm_tmp_path: Path):
-    # cpg-flow injects meta.stage as the Stage class name via get_job_attrs; setting it
-    # here would override that with a hand-typed string.
+    # wire's hook is the only thing that puts stage in Analysis.meta (cpg-flow's get_job_attrs
+    # names the Hail job, not the row), and it adds the class name last — so a meta function
+    # setting stage itself is dead weight that reads as authoritative.
     qc_path = shm_tmp_path / 'SG000001.qc.tsv'
     qc_path.write_text(QC_TSV)
 
@@ -165,6 +166,50 @@ def test_blood_group_calls_meta_tracks_the_configured_reference_build(shm_tmp_pa
     assert meta['reference_genome'] == 'GRCh37'
     assert meta['blood_group_genotypes'] == {'JK': 'JK*01'}
     assert meta['blood_group_phenotypes'] == {'JK': 'Jk(a+b-)'}
+
+
+@pytest.mark.usefixtures('mock_cohort')
+def test_every_wired_stage_records_the_provenance_of_its_row(shm_tmp_path: Path):
+    # Driven through the wired stages rather than the meta functions, because what a row ends
+    # up holding is decided in pipeline.py: dropping a stage's update_analysis_meta, or wiring
+    # it to another stage's, leaves every direct call to those functions green.
+    #
+    # Metamist keeps a row per run and retires none, so each row has to name what produced it.
+    # rbceq2_version is the tool; rbceq2_db_version is the allele database, which moves
+    # independently and is what the committed QC resources are built from.
+    set_config(
+        {
+            'references': {'genome_build': 'GRCh38'},
+            'workflow': {'name': 'popgen_rbceq2', 'version': 'v1', 'sequencing_type': 'genome'},
+        },
+        shm_tmp_path / 'wired.toml',
+    )
+    geno_path = shm_tmp_path / 'SG000001.geno.tsv'
+    geno_path.write_text('UUID: abc123\tJK\nSG000001\tJK*01\n')
+    (shm_tmp_path / 'SG000001.pheno_alphanumeric.tsv').write_text('UUID: abc123\tJK\nSG000001\tJk(a+b-)\n')
+    qc_path = shm_tmp_path / 'SG000001.qc.tsv'
+    qc_path.write_text(QC_TSV)
+    registered = {
+        pipeline.GenotypeBloodGroupsWithRbceq2: geno_path,
+        pipeline.FlagBloodGroupCallQc: qc_path,
+        pipeline.CombineRbceq2OutputsPerCohort: geno_path,
+    }
+
+    metas: dict[str, dict] = {}
+    for wired, output in registered.items():
+        stage = wired()
+        assert stage.update_analysis_meta is not None, f'{stage.name} registers an Analysis with no meta'
+        meta = metas[stage.name] = stage.update_analysis_meta(str(output))
+        assert meta['stage'] == stage.name
+        assert meta['stage_version'] == 'v1'
+        assert meta['rbceq2_version'] == constants.RBCEQ2_VERSION
+        assert meta['rbceq2_db_version'] == constants.RBCEQ2_DB_VERSION
+
+    # The keys each stage's own meta function contributes, which is what says the right
+    # function is wired to the right stage.
+    assert 'blood_group_genotypes' in metas['GenotypeBloodGroupsWithRbceq2']
+    assert 'blood_group_qc_flags' in metas['FlagBloodGroupCallQc']
+    assert 'qc_path' in metas['CombineRbceq2OutputsPerCohort']
 
 
 def test_cohort_calls_meta_points_at_the_sibling_qc_tsv():

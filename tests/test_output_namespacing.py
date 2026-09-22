@@ -207,3 +207,79 @@ def test_output_version_can_be_pinned_per_stage(mock_sequencing_group, shm_tmp_p
     assert str(output['qc']).endswith(
         f'rbceq2_{constants.RBCEQ2_VERSION.replace(".", "_")}_v2/FlagBloodGroupCallQc/SG000001/SG000001.qc.tsv',
     )
+
+
+def test_the_analysis_meta_records_the_release_its_outputs_went_to(mock_sequencing_group, shm_tmp_path):
+    # Metamist keeps a row per release and retires none, so stage_version is how a reader tells
+    # two releases of one cohort apart. It is read from the same pin the path is, hence the tie
+    # to the path here: a stage with an output_versions pin must not record the unpinned
+    # release.
+    set_config(
+        {
+            'references': {'genome_build': 'GRCh38'},
+            'workflow': {
+                'name': 'popgen_rbceq2',
+                'version': 'v1',
+                'sequencing_type': 'genome',
+                'output_versions': {'FlagBloodGroupCallQc': 'v2'},
+            },
+        },
+        shm_tmp_path / 'meta_release.toml',
+    )
+    qc_path = shm_tmp_path / 'SG000001.qc.tsv'
+    qc_path.write_text('UUID: abc123\tJK\nSG000001\tPASS\n')
+    stage = pipeline.FlagBloodGroupCallQc()
+    assert stage.update_analysis_meta is not None
+
+    meta = stage.update_analysis_meta(str(qc_path))
+
+    assert meta['stage_version'] == 'v2'
+    assert f'_{meta["stage_version"]}/' in str(outputs_of(stage, mock_sequencing_group)['qc'])
+
+
+def test_the_analysis_meta_records_the_design_an_exome_was_called_against(
+    exome_sequencing_group,
+    mock_sequencing_group,
+    shm_tmp_path,
+):
+    # The design is the third axis of an exome output tree, and the only one a reader could
+    # not otherwise recover from the meta: two rows for one sequencing group called under two
+    # designs are identical on every other key. Recorded as the references-repo key, not the
+    # sanitised path segment, so it can be looked up; the tie to the path is asserted through
+    # design_segment for the same reason the release tie is.
+    design_key = 'exome_probesets_hg38/twist_vcgs_custom_exome_covered_targets_bed'
+    set_config(
+        {
+            'references': {'genome_build': 'GRCh38'},
+            'workflow': {
+                'name': 'popgen_rbceq2',
+                'version': 'v1',
+                'sequencing_type': 'exome',
+                stage_support.EXOME_DESIGN_KEY: design_key,
+            },
+        },
+        shm_tmp_path / 'exome_meta.toml',
+    )
+    qc_path = shm_tmp_path / 'SG000001.qc.tsv'
+    qc_path.write_text('UUID: abc123\tJK\nSG000001\tPASS\n')
+    stage = pipeline.FlagBloodGroupCallQc()
+    assert stage.update_analysis_meta is not None
+
+    meta = stage.update_analysis_meta(str(qc_path))
+
+    assert meta['exome_design'] == design_key
+    path = str(outputs_of(stage, exome_sequencing_group)['qc'])
+    assert f'/{stage_support.design_segment(meta["exome_design"])}/' in path
+
+    # A genome run carries the key holding None rather than dropping it, so the meta shape
+    # does not depend on sequencing type and a query can filter on it either way.
+    set_config(
+        {
+            'references': {'genome_build': 'GRCh38'},
+            'workflow': {'name': 'popgen_rbceq2', 'version': 'v1', 'sequencing_type': 'genome'},
+        },
+        shm_tmp_path / 'genome_meta.toml',
+    )
+    genome_meta = stage.update_analysis_meta(str(qc_path))
+    assert genome_meta['exome_design'] is None
+    assert 'twist' not in str(outputs_of(stage, mock_sequencing_group)['qc'])

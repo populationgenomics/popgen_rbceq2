@@ -8,9 +8,10 @@ Everything cpg_flow needs to know about a stage is declared in its ``wire`` call
 depends on via ``requires``, and what it records in Metamist via ``analysis_type`` /
 ``analysis_keys`` / ``update_analysis_meta``.
 
-cpg_flow records each stage's name in ``Analysis.meta`` itself; ``wire`` re-asserts it after
-the stage's meta function runs, so a meta function that sets ``stage`` cannot override the
-framework's value with a stale hand-typed name.
+``wire`` adds the keys a meta function cannot know to every Analysis registered here: the
+stage name, the release it wrote under, the rbceq2 tool and db versions, and an exome run's
+capture design. A meta function setting any of them is overridden, not merged with. See
+``stage_support._with_stage_name``.
 """
 
 import cpg_flow.stage

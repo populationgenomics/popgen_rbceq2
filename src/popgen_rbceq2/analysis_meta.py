@@ -7,16 +7,17 @@ that wrote the file, so the file is there to be read.
 They are module-level functions, not methods: cpg_flow dill-pickles the callable into that job,
 and a bound method would carry ``self`` and fail there, long after the compute has run.
 
-None of them set ``meta.stage`` — ``stage_support.wire`` adds it from the stage class name, so a
-renamed stage cannot leave a stale literal behind. See its docstring.
+None of them set ``meta.stage``, ``meta.stage_version``, the rbceq2 tool and db versions, or
+``meta.exome_design``: ``stage_support.wire`` adds those to every registered Analysis, so a
+stage without a meta function still gets them and no two functions can disagree. ``stage`` and
+``stage_version`` come from the class name, the two versions from `constants`, and the design
+from config; see `stage_support._with_stage_name`.
 """
 
 from typing import Any
 
 import cpg_utils
 from cpg_utils.config import genome_build
-
-from popgen_rbceq2.constants import RBCEQ2_VERSION
 
 
 def parse_single_row_rbceq2_tsv(text: str) -> dict[str, str]:
@@ -41,14 +42,13 @@ def blood_group_calls(output: str) -> dict[str, Any]:
         output: The ``<sg>.geno.tsv`` path; the alphanumeric phenotype TSV sits beside it.
 
     Returns:
-        The inferred blood-group genotypes and phenotypes, plus the tool version and reference
-        build they were called with.
+        The inferred blood-group genotypes and phenotypes, and the reference build they were
+        called with. The tool version comes from `stage_support.wire`.
     """
     genotypes: dict[str, str] = parse_single_row_rbceq2_tsv(cpg_utils.to_path(output).read_text())
     pheno_path: cpg_utils.Path = cpg_utils.to_path(output.replace('.geno.tsv', '.pheno_alphanumeric.tsv'))
     phenotypes: dict[str, str] = parse_single_row_rbceq2_tsv(pheno_path.read_text())
     return {
-        'rbceq2_version': RBCEQ2_VERSION,
         'reference_genome': genome_build(),
         'blood_group_genotypes': genotypes,
         'blood_group_phenotypes': phenotypes,
