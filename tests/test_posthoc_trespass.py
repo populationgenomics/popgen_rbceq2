@@ -173,8 +173,10 @@ def _guard_then_merge(
 def _flags(tmp_path: Path, *, sites_bed: str = SITES_BED, off_design_bed: str = OFF_DESIGN_BED) -> dict[int, str]:
     """Extract merged.vcf.gz the way the stage does and flag every defining site.
 
-    Runs the QC's own aggregation, handed the off-design BED as the fillable set the way the
-    QC stage hands it to the job, so the result is what the QC TSV would say at each site.
+    Runs the QC's own aggregation over the fillable-site list the merge wrote, which is what
+    `FlagBloodGroupCallQc` is handed, so the result is what the QC TSV would say at each site.
+    Reading the committed list instead would let the QC trust a post-hoc record at a site the
+    single-copy chrX gate withheld, which is the disagreement this hand-off exists to prevent.
     """
     out = subprocess.run(  # noqa: S603
         [  # noqa: S607
@@ -201,7 +203,9 @@ def _flags(tmp_path: Path, *, sites_bed: str = SITES_BED, off_design_bed: str = 
         )
         for line in sites_bed.splitlines()
     ]
-    cells, _ = flags_by_system(sites, records, 10, 20, load_fillable_sites(off_design_bed))
+    written = tmp_path / 'fillable_sites.bed'
+    fillable = written.read_text() if written.exists() else off_design_bed
+    cells, _ = flags_by_system(sites, records, 10, 20, load_fillable_sites(fillable))
     return {site.pos: cells[site.system] for site in sites}
 
 
@@ -524,6 +528,11 @@ def test_a_posthoc_call_in_non_par_chrx_is_not_filled(tmp_path):
     assert f'chrX\t{XK_SINGLE_COPY}' not in merged
     assert '1 outside it but in single-copy chrX' in result.stderr
 
+    # The list handed to the QC is the post-gate one, so the withheld chrX site is absent from
+    # it. Reading the committed list instead would let the QC trust a post-hoc record at a site
+    # the merge never allowed to be filled.
+    assert (tmp_path / 'fillable_sites.bed').read_text() == f'chr1\t{OFF_DESIGN - 1}\t{OFF_DESIGN}\n'
+
 
 def test_a_posthoc_call_in_par1_is_still_filled(tmp_path):
     """The gate is bounded by PAR, so XG keeps its off-design recovery.
@@ -619,17 +628,16 @@ def test_an_autosomal_hole_inside_the_chrx_window_is_still_filled(tmp_path):
     """The gate is a contig and a range, not a range alone.
 
     The single-copy window is a chrX coordinate range, and real autosomal defining sites sit
-    inside the same numbers: FY is at chr1:159 Mb, KEL at chr7:142 Mb. Dropping the contig
-    test from the gate would silently stop filling those, and no other fixture here would
-    notice, because the rest sit below the window.
+    inside the same numbers: KEL is at chr7:142 Mb, well below the window's end at 155.7 Mb.
+    Dropping the contig test from the gate would silently stop filling those, and no other
+    fixture here would notice, because the rest sit below the window's start.
     """
     autosomal = 37694549
     row = f'chr1\t{autosomal - 1}\t{autosomal}\n'
     sites_bed = SITES_BED + row
     off_design_bed = OFF_DESIGN_BED + row
-    # A one-token chrX GT so the gate is switched on for this sample; without it the gate
-    # never runs and the contig test is not reached at all.
-    dragen = DRAGEN_RECORDS + SINGLE_COPY_DRAGEN_CHRX
+    # DRAGEN_RECORDS already carries a one-token chrX row, so the gate is on for this sample.
+    dragen = DRAGEN_RECORDS
     posthoc = f'chr1\t{autosomal}\t.\tG\tA,<NON_REF>\t410\t.\tSPARE=1\tGT:DP:GQ\t0/1:38:99\n'
 
     result = _merge(tmp_path, posthoc, dragen_records=dragen, sites_bed=sites_bed, off_design_bed=off_design_bed)

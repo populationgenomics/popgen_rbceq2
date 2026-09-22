@@ -695,7 +695,7 @@ def build_qc_tsv(geno_tsv: str, system_flags: dict[str, str]) -> str:
 @click.option(
     '--fillable-sites',
     default=None,
-    help='Off-design defining-sites BED the merge filled from; required when the extract carries post-hoc records',
+    help='Fillable-site list the merge wrote for this sample; required when the extract carries post-hoc records',
 )
 def main(
     geno_tsv: str,
@@ -715,8 +715,8 @@ def main(
         output: Path to write the QC TSV to.
         min_depth: DP below which a defining site is flagged.
         min_gq: GQ below which a defining site is flagged.
-        fillable_sites: The off-design defining-sites BED the merge was allowed to fill from,
-            or None on a run that merged nothing. See `flags_by_system`.
+        fillable_sites: The fillable-site list `FilterAndConvertGvcfsForRbceq2` wrote for this
+            sample, or None on a run that merged nothing. See `flags_by_system`.
     """
     setup_logging(force=True)
     sites = load_site_systems(to_path(site_systems).read_text())

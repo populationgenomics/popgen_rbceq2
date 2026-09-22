@@ -213,11 +213,15 @@ rests on a recovered site — reaches Metamist as a `POSTHOC` flag on the QC TSV
 
 Convert a gVCF into a VCF rbceq2 can read, using `bcftools`. This is the only stage that reads
 the raw gVCF, 12-15Gb localised whole, so its resources are sized above the others. One pass
-writes two outputs:
+writes two outputs, and a third on an exome:
 
 - `vcf`, the rbceq2 input. Multiallelics are split, the `<NON_REF>` symbolic allele is dropped
   because it breaks rbceq2, unused ALT alleles are trimmed, and a tabix index is written
   alongside because rbceq2 fetches blood-group regions by coordinate.
+- `fillable_sites`, **exomes only**, the defining sites this sample's post-hoc calls were
+  allowed to fill: the committed off-design BED for the configured design, less the sites the
+  single-copy chrX gate withheld. `FlagBloodGroupCallQc` reads it rather than the committed BED,
+  because the gate reads this sample's own genotypes and so the list is per-sample.
 - `defining_sites`, holding FORMAT/GT, DP and GQ at every allele-defining coordinate for the
   QC stage, plus `INFO/POSTHOC` naming the caller that supplied each record. Do not derive this
   from the converted VCF: dropping `<NON_REF>` removes every reference block, and a reference
@@ -248,7 +252,8 @@ question from the one this feature exists to answer. On the validation cohorts t
 1,674 Twist recoveries and 7 of 1,657 CREv2 ones, in C4B, RHD, RHCE and A4GALT. Keeping that
 promise takes two steps, because a post-hoc record kept for an off-design hole is kept whole and
 can reach an in-design hole beside it: the merge drops a post-hoc *variant* that does, and the
-QC, handed the same off-design BED, disregards a post-hoc *reference block* there.
+QC, handed the fillable-site list the merge wrote, disregards a post-hoc *reference block*
+there.
 
 The two tests are two subtractions, and they run in different places for a reason. Taking the
 design's intervals out of the defining sites depends on nothing about any sample, or any run:
@@ -280,8 +285,9 @@ edge, and what happens next depends on the record:
   sees, since the conversion drops every `<NON_REF>`-only record first, and dropping the block
   instead would throw away the hole it was kept for. At a called base two records then cover the
   site in the extract, and `resolve_coverage` prefers the one with no `INFO/POSTHOC`. At an
-  in-design hole the block is the only record, so `FlagBloodGroupCallQc` reads the same
-  off-design BED and counts a post-hoc record only at a site in it; the hole stays `NOCOV`.
+  in-design hole the block is the only record, so `FlagBloodGroupCallQc` reads the
+  fillable-site list the merge wrote and counts a post-hoc record only at a site in it; the
+  hole stays `NOCOV`.
 
 Mechanically the drop is an `INFO/COVERED` mark from `bcftools annotate -m`, which matches on a
 record's whole span rather than its POS, followed by removing every marked record whose alleles
@@ -382,7 +388,8 @@ wrong inference produces a confident wrong call where dropping the site produces
 
 Three things to preserve when changing this stage:
 
-- **Never rewrite a genotype, and never fill single-copy chrX.** See above.
+- **Never rewrite a genotype, and never put two ploidies in one merged file.** Non-PAR chrX is
+  filled only for a sample DRAGEN encoded as two-copy. See above.
 - **Region restriction is unconditional**, using `resources/bg_regions.<genome>.bed`. This is
   what allows the single pass, and it beats reading the whole genome — minutes rather than the
   best part of an hour. It needs the gVCF `.tbi`, because `bcftools -R` jumps by index. Keep
@@ -477,8 +484,8 @@ A site that is neither poor nor recovered is not listed at all, which is what ma
 `PASS` cell mean "nothing to report". `NOCOV` never carries `POSTHOC`: no record from either
 caller means there is no caller to name. A post-hoc record counts as covering a site only where
 the merge was allowed to fill one, so a hole inside the capture design that a kept post-hoc
-reference block happens to span is still `NOCOV`; the QC stage reads the same off-design BED
-the merge did.
+reference block happens to span is still `NOCOV`; the QC stage reads the fillable-site list
+`FilterAndConvertGvcfsForRbceq2` wrote for this sample.
 
 A cell can therefore say both things at once. Only `POSTHOC` names is a clean recovery; a
 `LOWQ+POSTHOC` or a `POSTHOC` beside a `NOCOV` site is a recovery that is also compromised,
@@ -649,6 +656,11 @@ individual, so the suite builds every fixture inline. The generator covers what 
 fixture cannot: a whole sample, in three sex-chromosome encodings, for running the conversion
 and rbceq2 by hand. It reads its coordinates from the committed site map, so a fixture cannot
 call a site the pipeline does not ship.
+
+Run all of this **from the repo root**: the paths below are relative to it. It leaves
+`native.g.vcf*`, `diploidised.g.vcf*`, `mixed.g.vcf*`, `merged.vcf.gz*`, `converted.vcf.gz*`,
+the rbceq2 TSVs and a `v312/` venv untracked in the tree. Only `tmp/` is gitignored, so either
+work in `tmp/` and prefix the resource paths with `../`, or delete the lot afterwards.
 
 ```commandline
 uv run python -m popgen_rbceq2.scripts.gen_synthetic_gvcf GRCh38 native.g.vcf

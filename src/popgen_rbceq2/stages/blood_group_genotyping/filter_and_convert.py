@@ -236,8 +236,8 @@ def _merge_posthoc_commands(
     and disregards a post-hoc record at any other site, which is what keeps such a hole NOCOV.
     `FlagBloodGroupCallQc` reads the list this fragment wrote, not the committed off-design BED:
     the single-copy chrX gate below is decided per sample, so the two would otherwise disagree
-    about a gated site. Splitting blocks on the boundary
-    would be the alternative and is not worth it.
+    about a gated site. Splitting blocks on the boundary would be the alternative and is not
+    worth it.
 
     Assumes `_sample_check_commands` has already run: the two files name one sample.
 
