@@ -1,0 +1,260 @@
+"""Generate a synthetic DRAGEN-shaped gVCF for one sequencing group, for local checks.
+
+    uv run python -m popgen_rbceq2.scripts.gen_synthetic_gvcf GRCh38 out.g.vcf [--diploidise | --mixed]
+
+`--diploidise` writes the same sample with both alleles spelled out (`1` as `1|1`), and
+`--mixed` writes one site that way and the rest as single copies, which is the
+self-contradiction rbceq2 refuses. Coordinates are read from the committed
+`bg_site_systems.<genome>.tsv`, so a fixture cannot describe a site the pipeline does not ship.
+
+The output is a plain gVCF, not the VCF rbceq2 reads. See README, "Development", for the
+conversion recipe: the `norm -m -any` split has to run before the `<NON_REF>` drop, and
+skipping it empties the file with exit code 0.
+
+It is not a substitute for running a real sample before trusting a ploidy change; it fixes the
+encoding under test rather than discovering what DRAGEN actually emitted.
+"""
+
+import argparse
+import csv
+import logging
+import sys
+from pathlib import Path
+
+from popgen_rbceq2 import constants, stage_support
+from popgen_rbceq2.scripts import bg_db
+
+logger = logging.getLogger(__name__)
+
+SAMPLE = 'CPGSYNTH1'
+
+# Which defining site to call, and with how many copies of the ALT, per blood-group system.
+#
+# Named by coordinate, not by position in the system's site list. An index would survive a
+# database bump that reshuffled the list and quietly describe a different allele, and the
+# tests would not notice, because they only check that a called site is *a* defining site.
+# A coordinate that stops existing stops the run instead, naming what went missing.
+CALLS = (
+    # (system, 1-based GRCh38 position, ALT copies)
+    ('XK', 37686082, 1),  # non-PAR chrX: one copy in a male
+    # A non-variant call in the same window. rbceq2 drops it as hom-ref, so it contributes no
+    # allele, but ploidy inference runs first and reads the one token as single-copy evidence
+    # where two tokens would read as two. Without a row of this shape the fixture cannot show
+    # what happens to a sample whose only chrX records are reference calls.
+    ('XK', 37694285, 0),  # non-PAR chrX: reference, one copy
+    ('GATA1', 48794162, 1),  # non-PAR chrX: one copy
+    ('XG', 2748343, 1),  # PAR1: genuinely two copies, must stay two-token
+    ('FY', 159205564, 2),  # autosomal: both copies
+    ('FY', 159205704, 1),  # autosomal: one of two
+)
+
+# The XK site --mixed writes with two copies while the rest of non-PAR chrX stays at one.
+MIXED_SYSTEM, MIXED_POS = 'XK', 37686132
+
+# Length of the reference block placed before each called site. rbceq2 never sees these -- the
+# <NON_REF> drop removes them -- but the QC extract reads them, so the conversion stage has to
+# survive a file that has both.
+BLOCK_LEN = 20
+
+HEADER = """##fileformat=VCFv4.2
+##FILTER=<ID=PASS,Description="All filters passed">
+##FILTER=<ID=LowDepth,Description="Site filtered because of low read depth">
+##FILTER=<ID=DRAGENSnpHardQUAL,Description="Set if true:QUAL < 10.41">
+##FILTER=<ID=DRAGENIndelHardQUAL,Description="Set if true:QUAL < 7.83">
+##ALT=<ID=NON_REF,Description="Represents any possible alternative allele at this location">
+##INFO=<ID=END,Number=1,Type=Integer,Description="Stop position of the interval">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Approximate read depth">
+##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype Quality">
+##FORMAT=<ID=MIN_DP,Number=1,Type=Integer,Description="Minimum DP observed within the block">
+##contig=<ID=chr1,length=248956422>
+##contig=<ID=chr9,length=138394717>
+##contig=<ID=chrX,length=156040895>
+"""
+
+
+def is_non_par_x(chrom: str, pos: int, genome: str) -> bool:
+    """Whether a coordinate is one DRAGEN would call at one copy in a male sample.
+
+    The bounds come from `constants.NON_PAR_X`, the same table the merge's gate reads. Holding
+    a second copy here would let the fixture and the code it exercises disagree about where PAR
+    ends, and the fixture would still look right.
+
+    Args:
+        chrom: Contig name, `chr`-prefixed.
+        pos: 1-based position.
+        genome: Genome build, selecting the bounds.
+
+    Returns:
+        True for non-PAR chrX, which is where the single-copy encoding appears.
+
+    Raises:
+        KeyError: No bounds are recorded for `genome`.
+    """
+    lo, hi = constants.NON_PAR_X[genome]
+    return chrom == 'chrX' and lo <= pos <= hi
+
+
+def render_gt(chrom: str, pos: int, copies: int, *, diploidise: bool, genome: str) -> str:
+    """Build a GT string at the ploidy of its coordinate.
+
+    Args:
+        chrom: Contig name.
+        pos: 1-based position.
+        copies: How many copies of the ALT allele the sample carries, 0 to 2.
+        diploidise: Write a single-copy site with its allele duplicated and a phased separator
+            (`1` as `1|1`) instead of as DRAGEN called it.
+        genome: Genome build, selecting the PAR bounds.
+
+    Returns:
+        A one-token GT on non-PAR chrX unless `diploidise`, and a two-token GT elsewhere.
+    """
+    if is_non_par_x(chrom, pos, genome):
+        token = '1' if copies >= 1 else '0'
+        return f'{token}|{token}' if diploidise else token
+    return ('0/0', '0/1', '1/1')[copies]
+
+
+def sites_by_system(genome: str) -> dict[str, list[bg_db.DefiningSite]]:
+    """Read the committed site map and group its variant sites by blood-group system.
+
+    Args:
+        genome: Genome build, selecting which committed resource to read.
+
+    Returns:
+        System name to its `var` sites in coordinate order. `ref` sites are excluded: they
+        define an allele by the reference base being present, so there is no ALT to call.
+    """
+    path = stage_support.blood_group_resource(f'bg_site_systems.{genome}.tsv')
+    grouped: dict[str, list[bg_db.DefiningSite]] = {}
+    with Path(path).open(newline='') as fh:
+        for row in csv.DictReader(fh, delimiter='\t'):
+            if row['kind'] != 'var':
+                continue
+            site = bg_db.DefiningSite(
+                chrom=row['chrom'],
+                pos=int(row['pos']),
+                ref=row['ref'],
+                alt=row['alt'],
+                kind='var',
+                system=row['system'],
+            )
+            grouped.setdefault(site.system, []).append(site)
+    return grouped
+
+
+def _site_at(
+    grouped: dict[str, list[bg_db.DefiningSite]],
+    system: str,
+    pos: int,
+    genome: str,
+) -> bg_db.DefiningSite:
+    """Find one `CALLS` entry's defining site in the committed map.
+
+    Args:
+        grouped: Output of `sites_by_system`.
+        system: Blood-group system the site belongs to.
+        pos: 1-based position, as written in `CALLS`.
+        genome: Genome build, for the error message.
+
+    Returns:
+        The matching site.
+
+    Raises:
+        LookupError: `system` or `pos` is absent from the committed map.
+    """
+    sites = grouped.get(system)
+    if not sites:
+        raise LookupError(f'{system} has no variant site in bg_site_systems.{genome}.tsv')
+    for site in sites:
+        if site.pos == pos:
+            return site
+    raise LookupError(
+        f'{system} has no variant site at {genome} position {pos} in '
+        f'bg_site_systems.{genome}.tsv. The resources moved; pick another {system} site '
+        f'and update CALLS. Available: {[s.pos for s in sites[:10]]}'
+    )
+
+
+def build(genome: str, *, diploidise: bool = False, mixed: bool = False) -> str:
+    """Render the whole gVCF.
+
+    Args:
+        genome: Genome build, selecting the committed site map to read coordinates from.
+        diploidise: Write every non-PAR chrX call with both alleles spelled out.
+        mixed: Write one extra XK site with two alleles while the rest of non-PAR chrX keeps
+            one, so the file contradicts itself about the chromosome count.
+
+    Returns:
+        The complete VCF text, records sorted by contig then position.
+
+    Raises:
+        LookupError: A site named in `CALLS` is absent from the committed map for `genome`.
+    """
+    grouped = sites_by_system(genome)
+    calls = [*CALLS, (MIXED_SYSTEM, MIXED_POS, 1)] if mixed else list(CALLS)
+
+    rows: list[tuple[str, int, str]] = []
+    for system, pos, copies in calls:
+        site = _site_at(grouped, system, pos, genome)
+        # --mixed gives two copies to only the extra site, which is what makes the file
+        # disagree with itself; --diploidise applies to every single-copy coordinate.
+        site_diploidise = diploidise or (mixed and (system, pos) == (MIXED_SYSTEM, MIXED_POS))
+
+        block_start = site.pos - BLOCK_LEN - 1
+        block_end = block_start + BLOCK_LEN - 1
+        block_gt = render_gt(site.chrom, block_start, 0, diploidise=site_diploidise, genome=genome)
+        block_record = (
+            f'{site.chrom}\t{block_start}\t.\t{site.ref[0]}\t<NON_REF>\t.\t.\t'
+            f'END={block_end}\tGT:DP:GQ:MIN_DP\t{block_gt}:42:45:38'
+        )
+        rows.append((site.chrom, block_start, block_record))
+        gt = render_gt(site.chrom, site.pos, copies, diploidise=site_diploidise, genome=genome)
+        rows.append(
+            (
+                site.chrom,
+                site.pos,
+                f'{site.chrom}\t{site.pos}\t.\t{site.ref}\t{site.alt},<NON_REF>\t320\tPASS\t.\tGT:DP:GQ\t{gt}:50:48',
+            )
+        )
+
+    rows.sort(key=lambda r: (bg_db.chrom_key(r[0]), r[1]))
+    header = HEADER + f'#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{SAMPLE}\n'
+    return header + ''.join(f'{r[2]}\n' for r in rows)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Write one fixture gVCF.
+
+    Args:
+        argv: Command-line arguments, for testing.
+
+    Returns:
+        Process exit status.
+    """
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('genome', help='Genome build, e.g. GRCh38')
+    parser.add_argument('out', type=Path, help='Path to write the uncompressed gVCF to')
+    shape = parser.add_mutually_exclusive_group()
+    shape.add_argument(
+        '--diploidise',
+        action='store_true',
+        help='Write every single-copy call with both alleles spelled out (`1` as `1|1`)',
+    )
+    shape.add_argument(
+        '--mixed',
+        action='store_true',
+        help='Expand one non-PAR chrX call and not the rest, the contradiction rbceq2 refuses',
+    )
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    text = build(args.genome, diploidise=args.diploidise, mixed=args.mixed)
+    args.out.write_text(text)
+    shape_name = 'partially diploidised' if args.mixed else ('diploidised' if args.diploidise else 'native haploid')
+    logger.info(f'Wrote {args.out} ({shape_name}), {text.count(chr(10)) - text.count("##") - 1} records')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

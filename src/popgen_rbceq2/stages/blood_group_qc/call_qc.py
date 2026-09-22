@@ -6,7 +6,7 @@ import cpg_utils.config
 import cpg_utils.hail_batch
 import hailtop.batch.job
 
-from popgen_rbceq2 import constants, off_design, stage_support
+from popgen_rbceq2 import constants, stage_support
 from popgen_rbceq2.stages.blood_group_genotyping import (
     filter_and_convert,
     genotype,
@@ -34,12 +34,13 @@ class FlagBloodGroupCallQc(cpg_flow.stage.SequencingGroupStage):
     Systems whose only defining alleles are large structural variants have no assessable
     site and are reported `NA` rather than `PASS`.
 
-    Reads only the small extract, not the gVCF. For an exome it also reads the committed
-    off-design defining sites for the configured design, the same BED the merge filled from,
-    so a post-hoc record counts as covering a site only where the merge was allowed to fill
-    one. The merge keeps a post-hoc reference block whole, and a block selected for an
-    off-design hole can reach an in-design hole beside it where it is the only record;
-    without the BED the QC would report that hole as recovered when it stays NOCOV.
+    Reads only the small extract, not the gVCF. For an exome it also reads the fillable-site
+    list `FilterAndConvertGvcfsForRbceq2` wrote for this sample, so a post-hoc record counts as
+    covering a site only where the merge was allowed to fill one. That list is per-sample, not
+    the committed off-design BED: the merge's single-copy chrX gate reads this sample's own
+    genotypes. The merge keeps a post-hoc reference block whole, and a block selected for an
+    off-design hole can reach an in-design hole beside it where it is the only record; without
+    the list the QC would report that hole as recovered when it stays NOCOV.
 
     Registers a per-SG Analysis of its own (analysis_type='blood_group_qc', output = the QC
     TSV), separate from the one GenotypeBloodGroupsWithRbceq2 registers, with the geno TSV
@@ -85,10 +86,17 @@ class FlagBloodGroupCallQc(cpg_flow.stage.SequencingGroupStage):
             'output': str(outputs['qc']),
             'min-depth': str(min_depth),
             'min-gq': str(min_gq),
-            # The same predicate the merge gates on, so this asks for the BED exactly when the
-            # extract can carry a post-hoc record; the job fails if the two ever disagree.
+            # The list the merge actually used, not the committed off-design BED. The merge's
+            # single-copy chrX gate is decided per sample, so the committed BED can name a site
+            # this sample was never allowed to fill, and the QC would then trust a post-hoc
+            # record there. Same predicate the merge gates on, so the key exists exactly when
+            # the extract can carry a post-hoc record.
             'fillable-sites': (
-                b.read_input(off_design.resource_path(stage_support.exome_design_bed()))
+                inputs.as_str(
+                    sequencing_group,
+                    filter_and_convert.FilterAndConvertGvcfsForRbceq2,
+                    key='fillable_sites',
+                )
                 if posthoc_genotype.applies_to(sequencing_group)
                 else None
             ),

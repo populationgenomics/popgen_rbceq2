@@ -41,6 +41,12 @@ FILENAME == spans { n = ++c[$1]; lo[$1, n] = $2 + 0; hi[$1, n] = $3 + 0; next }
 { for (i = 1; i <= c[$1]; i++) if (lo[$1, i] <= $2 + 0 && $2 + 0 < hi[$1, i]) next; print }
 """
 
+# BED rows outside the single-copy chrX window, as a BED. `awk -v lo= -v hi= <this> in.bed`.
+# Kept here with the module's other awk programs rather than inlined, where every brace would
+# have to be doubled inside the command f-string. awk rather than bedtools or bcftools: the
+# stage image is bcftools:1.24-1, which has no bedtools, and the input is a BED.
+_OUTSIDE_NON_PAR_X_AWK = '!($1 == "chrX" && $3 >= lo && $3 <= hi)'
+
 # Stamp INFO/POSTHOC on every record of the post-hoc supplement. `.` is the empty INFO column
 # and has to be replaced rather than appended to, or the record grows a `.;POSTHOC=...` INFO
 # that no parser accepts.
@@ -102,13 +108,13 @@ def _primary_records_guard(sites_bed: str, genome: str) -> str:
         Shell lines, indented for the job command.
     """
     return f"""
-            bcftools query -T {sites_bed} --targets-overlap 2 -f '%POS\\n' dragen.vcf.gz > dragen_at_sites.txt
-            if [ ! -s dragen_at_sites.txt ]; then
-                echo "ERROR: no DRAGEN gVCF record overlaps any blood-group defining site." >&2
-                echo "Check the gVCF contig naming, and that references.genome_build" >&2
-                echo "({genome}) matches the build the gVCF was called against." >&2
-                exit 1
-            fi"""
+        bcftools query -T {sites_bed} --targets-overlap 2 -f '%POS\\n' dragen.vcf.gz > dragen_at_sites.txt
+        if [ ! -s dragen_at_sites.txt ]; then
+            echo "ERROR: no DRAGEN gVCF record overlaps any blood-group defining site." >&2
+            echo "Check the gVCF contig naming, and that references.genome_build" >&2
+            echo "({genome}) matches the build the gVCF was called against." >&2
+            exit 1
+        fi"""
 
 
 def _sample_check_commands(posthoc_gvcf: str, gvcf: str) -> str:
@@ -156,12 +162,33 @@ def _sample_check_commands(posthoc_gvcf: str, gvcf: str) -> str:
     """
 
 
+def _convert_commands(out_vcf: str, cpu: int) -> str:
+    """Shell turning `merged.vcf.gz` into the VCF rbceq2 reads, and indexing it.
+
+    Drops `<NON_REF>` records and trims unused ALT alleles. Does not read or write FORMAT/GT.
+
+    Args:
+        out_vcf: Path to write the bgzipped converted VCF to. Its `.tbi` goes beside it.
+        cpu: Thread count for the BGZF deflation and for reading it back to index.
+
+    Returns:
+        Shell, indented to sit inside the stage's command block.
+    """
+    return f"""
+        bcftools view \\
+                -e 'ALT="<NON_REF>"' \\
+                --trim-alt-alleles --threads {cpu} -Oz -o {out_vcf} merged.vcf.gz
+        bcftools index -t --threads {cpu} {out_vcf}"""
+
+
 def _merge_posthoc_commands(
     posthoc_gvcf: str,
     sites_bed: str,
     off_design_bed: str,
     design_key: str,
     cpu: int,
+    genome: str,
+    fillable_out: str,
 ) -> str:
     """Shell to fill the primary gVCF's blind spots from the post-hoc caller's gVCF.
 
@@ -206,9 +233,11 @@ def _merge_posthoc_commands(
     was kept for. That does leave the block covering the site in the extract. At a called base
     two records cover it and `resolve_coverage` prefers the one with no INFO/POSTHOC; at an
     in-design hole the block is the only record there, so the QC is handed the fillable sites
-    (`FlagBloodGroupCallQc` reads the same off-design BED) and disregards a post-hoc record at
-    any other site, which is what keeps such a hole NOCOV. Splitting blocks on the boundary
-    would be the alternative and is not worth it.
+    and disregards a post-hoc record at any other site, which is what keeps such a hole NOCOV.
+    `FlagBloodGroupCallQc` reads the list this fragment wrote, not the committed off-design BED:
+    the single-copy chrX gate below is decided per sample, so the two would otherwise disagree
+    about a gated site. Splitting blocks on the boundary would be the alternative and is not
+    worth it.
 
     Assumes `_sample_check_commands` has already run: the two files name one sample.
 
@@ -219,10 +248,19 @@ def _merge_posthoc_commands(
             committed `off_design.resource_path`; the only sites a post-hoc record may fill.
         design_key: The `[references]` key the design came from, for the error message.
         cpu: Threads to give the BGZF steps.
+        genome: The configured genome build, for the single-copy chrX bounds the fill is
+            kept out of.
+        fillable_out: Path to write the fillable-site list this sample was actually given.
+            The QC reads it rather than the committed off-design BED, because the chrX gate
+            makes the list per-sample.
 
     Returns:
         The shell fragment, for interpolation into the stage's command.
+
+    Raises:
+        KeyError: No bounds are recorded for `genome`.
     """
+    non_par_lo, non_par_hi = constants.NON_PAR_X[genome]
     return f"""
         # --targets-overlap 1 here, not 2: this needs every record whose *span* reaches a
         # defining site, which is what %END reports and what the QC counts as covering. Mode 2
@@ -239,7 +277,25 @@ def _merge_posthoc_commands(
         # design and the committed sites and on nothing about this sample, so it is subtracted
         # once per design and committed under resources/.
         awk -v spans=covered.bed '{_SITES_OUTSIDE_SPANS_AWK}' \\
-            covered.bed {off_design_bed} > uncovered.bed
+            covered.bed {off_design_bed} > uncovered.all.bed
+
+        # Single-copy chrX is not filled for a single-copy sample, because HaplotypeCaller
+        # always writes two tokens and DRAGEN writes one there. Whether this sample is
+        # single-copy is read from DRAGEN's own genotypes; no records in the window is no
+        # evidence, so gate. See README, "Sex-chromosome ploidy", for what the contradiction
+        # costs, why the alternative was rejected, and why the gate is not sex-blind.
+        bcftools query -r chrX:{non_par_lo}-{non_par_hi} -f '[%GT]\\n' dragen.vcf.gz > chrx_gts.txt
+        if [ ! -s chrx_gts.txt ] || grep -qv '[/|]' chrx_gts.txt; then
+            awk -v lo={non_par_lo} -v hi={non_par_hi} '{_OUTSIDE_NON_PAR_X_AWK}' \\
+                uncovered.all.bed > uncovered.bed
+        else
+            cp uncovered.all.bed uncovered.bed
+        fi
+        n_haploid=$(($(wc -l < uncovered.all.bed) - $(wc -l < uncovered.bed)))
+        # What the QC must read. Written here rather than derived there: after the gate this is
+        # a per-sample answer, and a QC reading the committed BED would trust a post-hoc record
+        # at a site this sample never allowed to be filled.
+        cp uncovered.bed {fillable_out}
 
         # A DRAGEN reference block reaching a site outside the design means the configured BED
         # is not the one the gVCF was called against. The likely case is a target-regions file
@@ -270,10 +326,15 @@ def _merge_posthoc_commands(
         sort uncovered.bed > uncovered.sorted.bed
 
         awk -v spans=covered.bed '{_SITES_OUTSIDE_SPANS_AWK}' covered.bed {sites_bed} > holes.bed
+        # The off-design count comes from uncovered.all.bed, before the single-copy chrX gate.
+        # Taken after it, the gated sites would be absorbed into `n_holes - n_off` and reported
+        # as inside the capture design, which they are not. The three terms sum to n_holes.
         n_holes=$(wc -l < holes.bed | tr -d ' ')
+        n_off=$(wc -l < uncovered.all.bed | tr -d ' ')
         n_fill=$(wc -l < uncovered.bed | tr -d ' ')
-        echo "post-hoc: $n_holes defining site(s) with no DRAGEN record; $n_fill outside the" >&2
-        echo "capture design and filled, $((n_holes - n_fill)) inside it and left for the QC to flag NOCOV" >&2
+        echo "post-hoc: $n_holes defining site(s) with no DRAGEN record; $((n_holes - n_off)) inside" >&2
+        echo "the capture design and left for the QC to flag NOCOV, $n_fill outside it and filled," >&2
+        echo "$n_haploid outside it but in single-copy chrX and left unfilled, also NOCOV" >&2
 
         # An empty -T file is a hard error in bcftools ("Failed to read the targets"), so the
         # no-holes case has to branch rather than fall through the same pipeline.
@@ -364,6 +425,9 @@ def _merge_posthoc_commands(
 
             bcftools index -t --threads {cpu} posthoc_tagged.vcf.gz
             bcftools concat -a --threads {cpu} -Oz -o merged.vcf.gz dragen.vcf.gz posthoc_tagged.vcf.gz
+        elif [ "$n_haploid" -gt 0 ]; then
+            echo "post-hoc: every fillable site is in single-copy chrX; nothing left to fill" >&2
+            mv dragen.vcf.gz merged.vcf.gz
         else
             echo "post-hoc: no defining site outside the capture design lacks a DRAGEN record; nothing to fill" >&2
             mv dragen.vcf.gz merged.vcf.gz
@@ -379,7 +443,8 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
     Emits two outputs from one pass over the gVCF: `vcf`, the rbceq2 input, and
     `defining_sites`, the DP/GQ at every allele-defining coordinate. Both derive from a
     blood-group-regions intermediate that retains <NON_REF>, and so retains the DRAGEN
-    reference blocks the extract needs.
+    reference blocks the extract needs. An exome emits a third, `fillable_sites`, the holes
+    the post-hoc fill was allowed to take: see `_merge_posthoc_commands`.
 
     Restriction to resources/bg_regions.<genome>.bed is unconditional, so the gVCF .tbi
     must exist. The BED must be a strict superset of every coordinate rbceq2 queries for
@@ -419,11 +484,8 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
     delete every variant in the file. After the split only the symbolic-only record
     matches and the real variant survives.
 
-    `bcftools +fixploidy` normalises DRAGEN's true haploid calls (GT="1"/"0") in
-    non-PAR chrX/Y for male samples into pseudo-diploid (GT="1|1" or "0|0"). rbceq2
-    assumes diploid GTs everywhere and crashes on haploid calls at the XK/GATA1/ATP11C
-    blood-group loci (get_ref asserts len(GT) == 3); fixploidy only touches haploid
-    genotypes, leaving already-diploid calls and their phasing untouched.
+    The file rbceq2 reads must carry one ploidy per region. See README, "Sex-chromosome
+    ploidy".
     """
 
     def expected_outputs(
@@ -432,11 +494,16 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
         if not sequencing_group.gvcf:
             return None
         prefix = stage_support.get_sg_output_prefix(sequencing_group, stage_name=self.name, category='tmp')
-        return {
+        outputs: stage_support.ExpectedOutputs = {
             'vcf': prefix / f'{sequencing_group.id}.converted.vcf.gz',
             'index': prefix / f'{sequencing_group.id}.converted.vcf.gz.tbi',
             'defining_sites': prefix / f'{sequencing_group.id}.defining_sites.tsv',
         }
+        # Exome-only, on the same predicate the merge itself gates on, so the key exists
+        # exactly when there is a merge to have produced it. A genome fills nothing.
+        if posthoc_genotype.applies_to(sequencing_group):
+            outputs['fillable_sites'] = prefix / f'{sequencing_group.id}.fillable_sites.bed'
+        return outputs
 
     def queue_jobs(
         self,
@@ -505,6 +572,8 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
                 str(off_design_bed),
                 design_key,
                 cpu,
+                genome,
+                str(j.fillable_sites),
             )
         else:
             merge_posthoc = '        mv dragen.vcf.gz merged.vcf.gz'
@@ -515,9 +584,8 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
         #
         # --threads only ever parallelises BGZF (de)compression, so it belongs on the steps
         # that do some: norm decompresses the bgzipped gVCF (the shared pool is attached to
-        # input readers as well as the output, synced_bcf_reader.c bcf_sr_add_hreader),
-        # +fixploidy deflates the -Oz output, and index reads that back. The middle view has
-        # an uncompressed BCF stream on both sides, so a thread count there does nothing.
+        # input readers as well as the output, synced_bcf_reader.c bcf_sr_add_hreader), the
+        # final view deflates the -Oz converted VCF, and index reads that back.
         #
         # --targets-overlap 2 is what makes the extract see a reference block that starts
         # before a defining site and spans it. Streamed targets default to `pos`, which
@@ -548,14 +616,12 @@ class FilterAndConvertGvcfsForRbceq2(cpg_flow.stage.SequencingGroupStage):
             bcftools query -T {sites_bed} --targets-overlap 2 \\
                 -f '{_EXTRACT_FORMAT}' \\
                 merged.vcf.gz > {j.sites}
-            bcftools view \\
-                    -e 'ALT="<NON_REF>"' \\
-                    --trim-alt-alleles -Ou merged.vcf.gz \\
-                | bcftools +fixploidy --threads {cpu} -Oz -o {out['vcf.gz']} -
-            bcftools index -t --threads {cpu} {out['vcf.gz']}
+{_convert_commands(str(out['vcf.gz']), cpu)}
             """,
         )
         # write_output base drops the suffix; the resource group re-adds .vcf.gz / .vcf.gz.tbi.
         b.write_output(out, str(outputs['vcf']).removesuffix('.vcf.gz'))
         b.write_output(j.sites, str(outputs['defining_sites']))
+        if 'fillable_sites' in outputs:
+            b.write_output(j.fillable_sites, str(outputs['fillable_sites']))
         return self.make_outputs(sequencing_group, data=outputs, jobs=[j])

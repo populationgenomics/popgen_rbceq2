@@ -546,9 +546,12 @@ def load_fillable_sites(text: str) -> frozenset[tuple[str, int]]:
     """Read the defining sites the post-hoc caller was allowed to fill.
 
     Args:
-        text: Contents of the committed off-design defining-sites BED for the run's design
-            (`resources/bg_off_design_sites.*`): one 0-based half-open single-base interval per
-            site, no header.
+        text: The fillable-site list `FilterAndConvertGvcfsForRbceq2` wrote for this sequencing
+            group: one 0-based half-open single-base interval per site, no header. It is the
+            committed off-design BED twice narrowed, first to the sites the DRAGEN gVCF has no
+            record at, then by the merge's single-copy chrX gate. Both steps read this sample,
+            so it is per-sample and not interchangeable with the committed file, and it names
+            the holes that were fillable rather than every off-design site.
 
     Returns:
         The sites as (contig, 1-based position), the coordinates `DefiningSite` carries.
@@ -694,7 +697,7 @@ def build_qc_tsv(geno_tsv: str, system_flags: dict[str, str]) -> str:
 @click.option(
     '--fillable-sites',
     default=None,
-    help='Off-design defining-sites BED the merge filled from; required when the extract carries post-hoc records',
+    help='Fillable-site list the merge wrote for this sample; required when the extract carries post-hoc records',
 )
 def main(
     geno_tsv: str,
@@ -714,8 +717,8 @@ def main(
         output: Path to write the QC TSV to.
         min_depth: DP below which a defining site is flagged.
         min_gq: GQ below which a defining site is flagged.
-        fillable_sites: The off-design defining-sites BED the merge was allowed to fill from,
-            or None on a run that merged nothing. See `flags_by_system`.
+        fillable_sites: The fillable-site list `FilterAndConvertGvcfsForRbceq2` wrote for this
+            sample, or None on a run that merged nothing. See `flags_by_system`.
     """
     setup_logging(force=True)
     sites = load_site_systems(to_path(site_systems).read_text())

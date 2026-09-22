@@ -18,6 +18,18 @@ RBCEQ2_DB_VERSION = '2.5.1'
 # current tag when bumping either.
 RBCEQ2_IMAGE_TAG = '2.4.4-1'
 
+# The single-copy stretch of chrX, 1-based inclusive: everything between PAR1 and PAR2. See
+# README, "Sex-chromosome ploidy".
+#
+# Keyed by genome build because the boundaries move between builds, and absent rather than
+# guessed for a build whose resources this repo does not ship. chrY needs no entry: no
+# blood-group defining site or region is on it, so no chrY record ever reaches rbceq2.
+NON_PAR_X: dict[str, tuple[int, int]] = {
+    # PAR1 ends at 2,781,479 and PAR2 begins at 155,701,383.
+    'GRCh38': (2_781_480, 155_701_382),
+}
+
+
 # The `workflow.sequencing_type` value of an exome run. An exome gVCF is called against a
 # capture-target BED, which is what puts defining sites outside it beyond reach; a genome gVCF
 # has no such edge. Post-hoc calling exists for this type, and stage_support keys an exome

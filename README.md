@@ -254,11 +254,16 @@ rests on a recovered site — reaches Metamist as a `POSTHOC` flag on the QC TSV
 
 Convert a gVCF into a VCF rbceq2 can read, using `bcftools`. This is the only stage that reads
 the raw gVCF, 12-15Gb localised whole, so its resources are sized above the others. One pass
-writes two outputs:
+writes two outputs, and a third on an exome:
 
 - `vcf`, the rbceq2 input. Multiallelics are split, the `<NON_REF>` symbolic allele is dropped
   because it breaks rbceq2, unused ALT alleles are trimmed, and a tabix index is written
   alongside because rbceq2 fetches blood-group regions by coordinate.
+- `fillable_sites`, **exomes only**, the defining sites this sample's post-hoc calls were
+  allowed to fill. That is the committed off-design BED for the configured design, narrowed
+  twice: to the sites the DRAGEN gVCF has no record at, then by the single-copy chrX gate. So
+  it names the holes that were fillable, not every off-design site, and both steps read this
+  sample. `FlagBloodGroupCallQc` reads it rather than the committed BED for that reason.
 - `defining_sites`, holding FORMAT/GT, DP and GQ at every allele-defining coordinate for the
   QC stage, plus `INFO/POSTHOC` naming the caller that supplied each record. Do not derive this
   from the converted VCF: dropping `<NON_REF>` removes every reference block, and a reference
@@ -289,7 +294,8 @@ question from the one this feature exists to answer. On the validation cohorts t
 1,674 Twist recoveries and 7 of 1,657 CREv2 ones, in C4B, RHD, RHCE and A4GALT. Keeping that
 promise takes two steps, because a post-hoc record kept for an off-design hole is kept whole and
 can reach an in-design hole beside it: the merge drops a post-hoc *variant* that does, and the
-QC, handed the same off-design BED, disregards a post-hoc *reference block* there.
+QC, handed the fillable-site list the merge wrote, disregards a post-hoc *reference block*
+there.
 
 The two tests are two subtractions, and they run in different places for a reason. Taking the
 design's intervals out of the defining sites depends on nothing about any sample, or any run:
@@ -321,8 +327,9 @@ edge, and what happens next depends on the record:
   sees, since the conversion drops every `<NON_REF>`-only record first, and dropping the block
   instead would throw away the hole it was kept for. At a called base two records then cover the
   site in the extract, and `resolve_coverage` prefers the one with no `INFO/POSTHOC`. At an
-  in-design hole the block is the only record, so `FlagBloodGroupCallQc` reads the same
-  off-design BED and counts a post-hoc record only at a site in it; the hole stays `NOCOV`.
+  in-design hole the block is the only record, so `FlagBloodGroupCallQc` reads the
+  fillable-site list the merge wrote and counts a post-hoc record only at a site in it; the
+  hole stays `NOCOV`.
 
 Mechanically the drop is an `INFO/COVERED` mark from `bcftools annotate -m`, which matches on a
 record's whole span rather than its POS, followed by removing every marked record whose alleles
@@ -385,8 +392,46 @@ weaken the check for every cohort: this is the only place the pipeline compares 
 it was handed, and from here a real swap and a stale header look the same. Confirm identity
 with somalier, then fix the input.
 
-Two things to preserve when changing this stage:
+#### Sex-chromosome ploidy
 
+DRAGEN calls chrX outside the pseudoautosomal regions at its real ploidy, so a sample with one
+X gets a one-token genotype there (`GT=1`) rather than the pseudo-diploid `1/1` some callers
+write. XK, GATA1 and ATP11C are defined in that window. rbceq2 reads one token as one copy and
+renders it `XK*01.02/-`.
+
+**Never rewrite a genotype anywhere in this stage.** Expanding `1` to `1|1` makes that call
+render as `XK*01.02/XK*01.02`, which no consumer can distinguish from a female homozygote. It
+is a well-formed VCF and a well-formed call, so nothing fails and nothing logs. The phenotype
+is unaffected, which is why this is only visible in the genotype column.
+
+**The file rbceq2 reads must carry one ploidy per region.** rbceq2 derives a single
+chromosome-copy count per blood group and refuses any record claiming *more*: that system
+reports `Undetermined` with an empty phenotype, and the rest of the sample is unaffected. A
+record claiming *fewer* is not refused. It resolves the contradiction the wrong way and flips
+the phenotype, with no warning anywhere.
+
+That invariant belongs to `merged.vcf.gz`, not to the conversion. A genome's merged VCF is
+DRAGEN's records alone and satisfies it by construction. An exome's also holds
+HaplotypeCaller's, which runs at its default ploidy of 2 and always writes two tokens, so
+`_merge_posthoc_commands` keeps the fill out of the single-copy window. Bounds are
+`constants.NON_PAR_X`, keyed by genome build and raising for a build with no recorded bounds.
+
+**The gate reads DRAGEN's own genotypes, not a recorded sex.** Gating by coordinate alone would
+drop these fills for a two-copy sample as well, which has no contradiction to avoid, and that
+is about half of every cohort. No records in the window is no evidence, so it gates. Every way
+of being wrong costs a fill and leaves a `NOCOV` flag, never a call.
+
+The cost on a one-copy sample is the off-design XK sites, 10 on Twist and 2 on Agilent CREv2.
+They reach the QC as `NOCOV`, which is where they were before post-hoc calling existed.
+
+**The rejected alternative was rewriting the post-hoc genotypes to match DRAGEN.** That keeps
+the recovered site, but it has to infer the sample's copy number to know what to write, and a
+wrong inference produces a confident wrong call where dropping the site produces a flag.
+
+Three things to preserve when changing this stage:
+
+- **Never rewrite a genotype, and never put two ploidies in one merged file.** Non-PAR chrX is
+  filled only for a sample DRAGEN encoded as two-copy. See above.
 - **Region restriction is unconditional**, using `resources/bg_regions.<genome>.bed`. This is
   what allows the single pass, and it beats reading the whole genome — minutes rather than the
   best part of an hour. It needs the gVCF `.tbi`, because `bcftools -R` jumps by index. Keep
@@ -481,8 +526,8 @@ A site that is neither poor nor recovered is not listed at all, which is what ma
 `PASS` cell mean "nothing to report". `NOCOV` never carries `POSTHOC`: no record from either
 caller means there is no caller to name. A post-hoc record counts as covering a site only where
 the merge was allowed to fill one, so a hole inside the capture design that a kept post-hoc
-reference block happens to span is still `NOCOV`; the QC stage reads the same off-design BED
-the merge did.
+reference block happens to span is still `NOCOV`; the QC stage reads the fillable-site list
+`FilterAndConvertGvcfsForRbceq2` wrote for this sample.
 
 A cell can therefore say both things at once. Only `POSTHOC` names is a clean recovery; a
 `LOWQ+POSTHOC` or a `POSTHOC` beside a `NOCOV` site is a recovery that is also compromised,
@@ -646,6 +691,47 @@ Calling these alleles needs the DRAGEN SV and CNV VCFs alongside the SNV calls, 
 its own.
 
 ## Development
+
+`scripts/gen_synthetic_gvcf.py` writes a small synthetic DRAGEN-shaped gVCF for local checks.
+This repo ships no test data and cannot, because a real gVCF is 12-15Gb and names a real
+individual, so the suite builds every fixture inline. The generator covers what an inline
+fixture cannot: a whole sample, in three sex-chromosome encodings, for running the conversion
+and rbceq2 by hand. It reads its coordinates from the committed site map, so a fixture cannot
+call a site the pipeline does not ship.
+
+Run all of this **from the repo root**: the paths below are relative to it. It leaves
+`native.g.vcf*`, `diploidised.g.vcf*`, `mixed.g.vcf*`, `merged.vcf.gz*`, `converted.vcf.gz*`,
+the rbceq2 TSVs and a `v312/` venv untracked in the tree. Only `tmp/` is gitignored, so either
+work in `tmp/` and prefix the resource paths with `../`, or delete the lot afterwards.
+
+```commandline
+uv run python -m popgen_rbceq2.scripts.gen_synthetic_gvcf GRCh38 native.g.vcf
+uv run python -m popgen_rbceq2.scripts.gen_synthetic_gvcf GRCh38 diploidised.g.vcf --diploidise
+uv run python -m popgen_rbceq2.scripts.gen_synthetic_gvcf GRCh38 mixed.g.vcf --mixed
+```
+
+What it writes is a gVCF, not the VCF rbceq2 reads, and the order below matters. `norm -m -any`
+has to run before the `<NON_REF>` drop: in a gVCF a real variant carries the symbolic allele as
+a trailing ALT, `ALT="<NON_REF>"` matches if any ALT matches, so dropping first deletes every
+record and exits 0.
+
+```commandline
+bgzip -kf native.g.vcf && tabix -fp vcf native.g.vcf.gz
+bcftools norm -m -any -R src/popgen_rbceq2/resources/bg_regions.GRCh38.bed -Oz \
+    -o merged.vcf.gz native.g.vcf.gz
+bcftools view -e 'ALT="<NON_REF>"' --trim-alt-alleles -Oz -o converted.vcf.gz merged.vcf.gz
+bcftools index -t -f converted.vcf.gz
+```
+
+Then run rbceq2 over `converted.vcf.gz` and diff the TSVs, ignoring column 1, which carries a
+per-run UUID and the input filename. rbceq2 needs Python 3.12 and will not install into this
+repo's 3.11 environment, so give it its own:
+
+```commandline
+uv venv --python 3.12 v312
+VIRTUAL_ENV=$PWD/v312 uv pip install rbceq2
+./v312/bin/rbceq2 --vcf converted.vcf.gz --out native --reference_genome GRCh38 --debug
+```
 
 ```commandline
 uv sync --group dev      # install, including the package itself
