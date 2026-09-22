@@ -27,23 +27,6 @@ NON_PAR_X: dict[str, tuple[int, int]] = {
 }
 
 
-def non_par_x(genome: str) -> tuple[int, int]:
-    """Return the single-copy chrX bounds for a genome build.
-
-    Args:
-        genome: The configured `references.genome_build`.
-
-    Returns:
-        `(first, last)`, 1-based inclusive.
-
-    Raises:
-        KeyError: No bounds are recorded for `genome`.
-    """
-    if genome not in NON_PAR_X:
-        raise KeyError(f'No chrX PAR boundaries recorded for {genome}. Add them to NON_PAR_X.')
-    return NON_PAR_X[genome]
-
-
 # The `workflow.sequencing_type` value of an exome run. An exome gVCF is called against a
 # capture-target BED, which is what puts defining sites outside it beyond reach; a genome gVCF
 # has no such edge. Post-hoc calling exists for this type, and stage_support keys an exome

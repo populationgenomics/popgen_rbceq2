@@ -78,8 +78,6 @@ def test_a_build_with_no_recorded_bounds_raises_rather_than_guessing():
     # The merge's gate reads the same table, where a wrong window means filling single-copy
     # chrX or gating PAR. Refusing is the only safe answer for a build we ship no bounds for.
     with pytest.raises(KeyError, match='GRCh37'):
-        constants.non_par_x('GRCh37')
-    with pytest.raises(KeyError, match='GRCh37'):
         gen_synthetic_gvcf.is_non_par_x('chrX', PAR1_LAST + 1, 'GRCh37')
 
 
@@ -105,8 +103,9 @@ def test_the_diploidised_fixture_has_no_haploid_genotype_left():
 
 def test_the_mixed_fixture_disagrees_with_itself_on_one_contig():
     """`--mixed` is the half-rewritten state, and has to be mixed on non-PAR chrX itself."""
-    # Mixing across contigs would not reproduce it: rbceq2 derives its copy count per
-    # chromosome, so a haploid chrX beside a diploid chr1 is an ordinary male sample.
+    # rbceq2 derives one copy count per blood group, so the mix must sit within one system.
+    # Mixing across contigs would not reproduce it: a one-token chrX beside a two-token chr1
+    # is an ordinary sample with one X.
     native = _variants(gen_synthetic_gvcf.build(GENOME))
     mixed = _variants(gen_synthetic_gvcf.build(GENOME, mixed=True))
     outside = [_gt(r) for r in mixed if gen_synthetic_gvcf.is_non_par_x(r[0], int(r[1]), GENOME)]

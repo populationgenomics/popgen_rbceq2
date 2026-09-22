@@ -30,6 +30,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from helpers import write_bgzipped_vcf
 
 from popgen_rbceq2.constants import POSTHOC_CALLER
 from popgen_rbceq2.jobs.rbceq2_call_qc_job import flags_by_system, load_fillable_sites, parse_extract
@@ -80,43 +81,6 @@ SINGLE_COPY_DRAGEN_CHRX = f'chrX\t{XK_SINGLE_COPY - 500}\t.\tA\tG,<NON_REF>\t200
 DRAGEN_CHR1_ONLY = f'chr1\t{IN_DESIGN}\t.\tA\tG,<NON_REF>\t200\tPASS\tSPARE=1\tGT:DP:GQ\t0/1:50:50\n'
 DRAGEN_RECORDS = DRAGEN_CHR1_ONLY + SINGLE_COPY_DRAGEN_CHRX
 
-# A gVCF header declares far more tags than any one record carries, which matters: the merge's
-# `annotate -x '^INFO/END,...'` reads the header, and errors outright if the header has nothing
-# outside its keep list. SPARE stands in for the BaseQRankSum, MLEAC and friends a real
-# HaplotypeCaller header declares.
-HEADER = """##fileformat=VCFv4.2
-##contig=<ID=chr1,length=250000000>
-##contig=<ID=chrX,length=156040895>
-##ALT=<ID=NON_REF,Description="Represents any possible alternative allele">
-##INFO=<ID=END,Number=1,Type=Integer,Description="Block end position">
-##INFO=<ID=SPARE,Number=1,Type=Integer,Description="A tag nothing downstream reads">
-##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
-##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">
-##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">
-##FORMAT=<ID=MIN_DP,Number=1,Type=Integer,Description="Minimum depth over the block">
-#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE1
-"""
-
-
-def _bgzip(
-    tmp_path: Path, name: str, body: str, *, index: bool, extra_header: str = '', sample: str = 'SAMPLE1'
-) -> Path:
-    """Write a VCF body under HEADER and bgzip it, indexing only when asked.
-
-    `extra_header` is one more `##` line, placed before the column header. `sample` renames
-    the one sample column.
-    """
-    plain = tmp_path / name
-    header = HEADER if not extra_header else HEADER.replace('#CHROM', f'{extra_header}\n#CHROM')
-    header = header.replace('\tSAMPLE1\n', f'\t{sample}\n')
-    plain.write_text(header + body)
-    packed = tmp_path / f'{name}.gz'
-    with packed.open('wb') as out:
-        subprocess.run(['bgzip', '-c', str(plain)], stdout=out, check=True)  # noqa: S603, S607
-    if index:
-        subprocess.run(['bcftools', 'index', '-t', str(packed)], check=True)  # noqa: S603, S607
-    return packed
-
 
 def _merge(
     tmp_path: Path,
@@ -133,7 +97,7 @@ def _merge(
     `posthoc_sample` names the post-hoc file's sample; the DRAGEN file is always SAMPLE1.
     `check=False` for a merge expected to fail, so the test can read the exit code and stderr.
     """
-    posthoc = _bgzip(tmp_path, 'posthoc.g.vcf', posthoc_records, index=True, sample=posthoc_sample)
+    posthoc = write_bgzipped_vcf(tmp_path, 'posthoc.g.vcf', posthoc_records, index=True, sample=posthoc_sample)
     sites = tmp_path / 'sites.bed'
     sites.write_text(sites_bed)
     off_design = tmp_path / 'off_design_defining_sites.bed'
@@ -143,7 +107,7 @@ def _merge(
     # stamped with that declaration so the extract can read the tag whether or not anything
     # was merged. Not indexed, because the fragment's own first line indexes it.
     (tmp_path / 'posthoc_hdr.txt').write_text(f'{_POSTHOC_HEADER_LINE}\n')
-    dragen = _bgzip(tmp_path, 'dragen.vcf', dragen_records, index=False, extra_header=_POSTHOC_HEADER_LINE)
+    dragen = write_bgzipped_vcf(tmp_path, 'dragen.vcf', dragen_records, index=False, extra_header=_POSTHOC_HEADER_LINE)
 
     # The sample check runs first in the stage's job and reads the raw gVCF; the intermediate
     # carries the same header, so it stands in for the raw file here.
@@ -176,13 +140,13 @@ def _guard_then_merge(
     dragen_records: str,
 ) -> subprocess.CompletedProcess[str]:
     """Run the wrong-build guard and then the merge, the order the stage runs them in."""
-    posthoc = _bgzip(tmp_path, 'posthoc.g.vcf', posthoc_records, index=True)
+    posthoc = write_bgzipped_vcf(tmp_path, 'posthoc.g.vcf', posthoc_records, index=True)
     sites = tmp_path / 'sites.bed'
     sites.write_text(SITES_BED)
     off_design = tmp_path / 'off_design_defining_sites.bed'
     off_design.write_text(OFF_DESIGN_BED)
     (tmp_path / 'posthoc_hdr.txt').write_text(f'{_POSTHOC_HEADER_LINE}\n')
-    _bgzip(tmp_path, 'dragen.vcf', dragen_records, index=False, extra_header=_POSTHOC_HEADER_LINE)
+    write_bgzipped_vcf(tmp_path, 'dragen.vcf', dragen_records, index=False, extra_header=_POSTHOC_HEADER_LINE)
 
     script = (
         'set -euo pipefail\n'
@@ -573,12 +537,8 @@ def test_a_posthoc_call_in_par1_is_still_filled(tmp_path):
     result = _merge(tmp_path, posthoc, sites_bed=sites_bed, off_design_bed=off_design_bed)
 
     assert result.returncode == 0, result.stderr
-    merged = subprocess.run(  # noqa: S603
-        ['bcftools', 'query', '-f', '%CHROM\t%POS\t[%GT]\t%INFO/POSTHOC\n', str(tmp_path / 'merged.vcf.gz')],  # noqa: S607
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
+    query = ['bcftools', 'query', '-f', '%CHROM\t%POS\t[%GT]\t%INFO/POSTHOC\n', str(tmp_path / 'merged.vcf.gz')]
+    merged = subprocess.run(query, capture_output=True, text=True, check=True).stdout  # noqa: S603
     assert f'chrX\t{XG_IN_PAR1}\t0/1\t{POSTHOC_CALLER}' in merged
     assert '0 outside it but in single-copy chrX' in result.stderr
 

@@ -1,26 +1,18 @@
-#!/usr/bin/env python3
 """Generate a synthetic DRAGEN-shaped gVCF for one sequencing group, for local checks.
 
-This repo ships no test data and cannot: a real DRAGEN gVCF is 12-15Gb and names a real
-individual. The test suite therefore builds every fixture inline, which is right for unit
-tests and useless for the one question that needs a whole sample: **what do the rbceq2 TSVs
-say when the sex chromosomes are encoded the way DRAGEN encodes them?**
+    uv run python -m popgen_rbceq2.scripts.gen_synthetic_gvcf GRCh38 out.g.vcf [--diploidise | --mixed]
 
 `--diploidise` writes the same sample with both alleles spelled out (`1` as `1|1`), and
 `--mixed` writes one site that way and the rest as single copies, which is the
-self-contradiction rbceq2 refuses. Run all three through the conversion, then rbceq2, and diff
-the TSVs. See README, "Sex-chromosome ploidy".
+self-contradiction rbceq2 refuses. Coordinates are read from the committed
+`bg_site_systems.<genome>.tsv`, so a fixture cannot describe a site the pipeline does not ship.
 
-Coordinates are read from the committed `bg_site_systems.<genome>.tsv` rather than written
-here, so a fixture cannot describe a site the pipeline does not ship.
+The output is a plain gVCF, not the VCF rbceq2 reads. See README, "Development", for the
+conversion recipe: the `norm -m -any` split has to run before the `<NON_REF>` drop, and
+skipping it empties the file with exit code 0.
 
-    gen_synthetic_gvcf.py GRCh38 out.g.vcf
-    gen_synthetic_gvcf.py GRCh38 out.diploidised.g.vcf --diploidise
-    gen_synthetic_gvcf.py GRCh38 out.mixed.g.vcf --mixed
-
-The output is a plain VCF. `bgzip` and index it before handing it to the conversion stage.
-It is NOT a substitute for running a real male genome before trusting a ploidy change; it
-fixes the encoding under test rather than discovering what DRAGEN actually emitted.
+It is not a substitute for running a real sample before trusting a ploidy change; it fixes the
+encoding under test rather than discovering what DRAGEN actually emitted.
 """
 
 import argparse
@@ -57,8 +49,6 @@ CALLS = (
 )
 
 # The XK site --mixed writes with two copies while the rest of non-PAR chrX stays at one.
-# The README quotes the rbceq2 warning this produces, by coordinate, so moving it means
-# editing that quote too.
 MIXED_SYSTEM, MIXED_POS = 'XK', 37686132
 
 # Length of the reference block placed before each called site. rbceq2 never sees these -- the
@@ -101,7 +91,7 @@ def is_non_par_x(chrom: str, pos: int, genome: str) -> bool:
     Raises:
         KeyError: No bounds are recorded for `genome`.
     """
-    lo, hi = constants.non_par_x(genome)
+    lo, hi = constants.NON_PAR_X[genome]
     return chrom == 'chrX' and lo <= pos <= hi
 
 

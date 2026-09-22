@@ -648,8 +648,36 @@ This repo ships no test data and cannot, because a real gVCF is 12-15Gb and name
 individual, so the suite builds every fixture inline. The generator covers what an inline
 fixture cannot: a whole sample, in three sex-chromosome encodings, for running the conversion
 and rbceq2 by hand. It reads its coordinates from the committed site map, so a fixture cannot
-call a site the pipeline does not ship. rbceq2 itself needs Python 3.12 and will not install
-into this repo's 3.11 environment.
+call a site the pipeline does not ship.
+
+```commandline
+uv run python -m popgen_rbceq2.scripts.gen_synthetic_gvcf GRCh38 native.g.vcf
+uv run python -m popgen_rbceq2.scripts.gen_synthetic_gvcf GRCh38 diploidised.g.vcf --diploidise
+uv run python -m popgen_rbceq2.scripts.gen_synthetic_gvcf GRCh38 mixed.g.vcf --mixed
+```
+
+What it writes is a gVCF, not the VCF rbceq2 reads, and the order below matters. `norm -m -any`
+has to run before the `<NON_REF>` drop: in a gVCF a real variant carries the symbolic allele as
+a trailing ALT, `ALT="<NON_REF>"` matches if any ALT matches, so dropping first deletes every
+record and exits 0.
+
+```commandline
+bgzip -kf native.g.vcf && tabix -fp vcf native.g.vcf.gz
+bcftools norm -m -any -R src/popgen_rbceq2/resources/bg_regions.GRCh38.bed -Oz \
+    -o merged.vcf.gz native.g.vcf.gz
+bcftools view -e 'ALT="<NON_REF>"' --trim-alt-alleles -Oz -o converted.vcf.gz merged.vcf.gz
+bcftools index -t -f converted.vcf.gz
+```
+
+Then run rbceq2 over `converted.vcf.gz` and diff the TSVs, ignoring column 1, which carries a
+per-run UUID and the input filename. rbceq2 needs Python 3.12 and will not install into this
+repo's 3.11 environment, so give it its own:
+
+```commandline
+uv venv --python 3.12 v312
+VIRTUAL_ENV=$PWD/v312 uv pip install rbceq2
+./v312/bin/rbceq2 --vcf converted.vcf.gz --out native --reference_genome GRCh38 --debug
+```
 
 ```commandline
 uv sync --group dev      # install, including the package itself

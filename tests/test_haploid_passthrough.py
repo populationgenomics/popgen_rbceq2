@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from helpers import write_bgzipped_vcf
 
 from popgen_rbceq2.stages.blood_group_genotyping.filter_and_convert import _convert_commands
 
@@ -23,16 +24,6 @@ pytestmark = [
 # single-copy sample. Nothing in the converter reads the coordinate.
 XK_NON_PAR = 37686068
 
-HEADER = """##fileformat=VCFv4.2
-##contig=<ID=chrX,length=156040895>
-##ALT=<ID=NON_REF,Description="Represents any possible alternative allele">
-##INFO=<ID=END,Number=1,Type=Integer,Description="Block end position">
-##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
-##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">
-##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">
-#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE1
-"""
-
 
 def _record(pos: int, gt: str, *, ref: str = 'G', alt: str = 'A') -> str:
     return f'chrX\t{pos}\t.\t{ref}\t{alt}\t200\tPASS\t.\tGT:DP:GQ\t{gt}:50:50\n'
@@ -44,11 +35,7 @@ def _convert(tmp_path: Path, body: str) -> list[str]:
     Writes the body as `merged.vcf.gz`, which is the file the converter reads, then runs the
     helper the stage runs and reads FORMAT/GT back out of what it wrote.
     """
-    plain = tmp_path / 'merged.vcf'
-    plain.write_text(HEADER + body)
-    packed = tmp_path / 'merged.vcf.gz'
-    with packed.open('wb') as out:
-        subprocess.run(['bgzip', '-c', str(plain)], stdout=out, check=True)  # noqa: S603, S607
+    write_bgzipped_vcf(tmp_path, 'merged.vcf', body)
 
     script = 'set -euxo pipefail\n' + _convert_commands('converted.vcf.gz', cpu=1)
     subprocess.run(['bash', '-c', script], cwd=tmp_path, check=True, capture_output=True)  # noqa: S603, S607

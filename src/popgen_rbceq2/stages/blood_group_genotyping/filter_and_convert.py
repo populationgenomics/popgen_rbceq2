@@ -41,6 +41,12 @@ FILENAME == spans { n = ++c[$1]; lo[$1, n] = $2 + 0; hi[$1, n] = $3 + 0; next }
 { for (i = 1; i <= c[$1]; i++) if (lo[$1, i] <= $2 + 0 && $2 + 0 < hi[$1, i]) next; print }
 """
 
+# BED rows outside the single-copy chrX window, as a BED. `awk -v lo= -v hi= <this> in.bed`.
+# Kept here with the module's other awk programs rather than inlined, where every brace would
+# have to be doubled inside the command f-string. awk rather than bedtools or bcftools: the
+# stage image is bcftools:1.24-1, which has no bedtools, and the input is a BED.
+_OUTSIDE_NON_PAR_X_AWK = '!($1 == "chrX" && $3 >= lo && $3 <= hi)'
+
 # Stamp INFO/POSTHOC on every record of the post-hoc supplement. `.` is the empty INFO column
 # and has to be replaced rather than appended to, or the record grows a `.;POSTHOC=...` INFO
 # that no parser accepts.
@@ -102,13 +108,13 @@ def _primary_records_guard(sites_bed: str, genome: str) -> str:
         Shell lines, indented for the job command.
     """
     return f"""
-            bcftools query -T {sites_bed} --targets-overlap 2 -f '%POS\\n' dragen.vcf.gz > dragen_at_sites.txt
-            if [ ! -s dragen_at_sites.txt ]; then
-                echo "ERROR: no DRAGEN gVCF record overlaps any blood-group defining site." >&2
-                echo "Check the gVCF contig naming, and that references.genome_build" >&2
-                echo "({genome}) matches the build the gVCF was called against." >&2
-                exit 1
-            fi"""
+        bcftools query -T {sites_bed} --targets-overlap 2 -f '%POS\\n' dragen.vcf.gz > dragen_at_sites.txt
+        if [ ! -s dragen_at_sites.txt ]; then
+            echo "ERROR: no DRAGEN gVCF record overlaps any blood-group defining site." >&2
+            echo "Check the gVCF contig naming, and that references.genome_build" >&2
+            echo "({genome}) matches the build the gVCF was called against." >&2
+            exit 1
+        fi"""
 
 
 def _sample_check_commands(posthoc_gvcf: str, gvcf: str) -> str:
@@ -169,10 +175,10 @@ def _convert_commands(out_vcf: str, cpu: int) -> str:
         Shell, indented to sit inside the stage's command block.
     """
     return f"""
-            bcftools view \\
-                    -e 'ALT="<NON_REF>"' \\
-                    --trim-alt-alleles --threads {cpu} -Oz -o {out_vcf} merged.vcf.gz
-            bcftools index -t --threads {cpu} {out_vcf}"""
+        bcftools view \\
+                -e 'ALT="<NON_REF>"' \\
+                --trim-alt-alleles --threads {cpu} -Oz -o {out_vcf} merged.vcf.gz
+        bcftools index -t --threads {cpu} {out_vcf}"""
 
 
 def _merge_posthoc_commands(
@@ -252,9 +258,9 @@ def _merge_posthoc_commands(
         The shell fragment, for interpolation into the stage's command.
 
     Raises:
-        KeyError: `genome` has no recorded chrX PAR boundaries. See `constants.non_par_x`.
+        KeyError: No bounds are recorded for `genome`.
     """
-    non_par_lo, non_par_hi = constants.non_par_x(genome)
+    non_par_lo, non_par_hi = constants.NON_PAR_X[genome]
     return f"""
         # --targets-overlap 1 here, not 2: this needs every record whose *span* reaches a
         # defining site, which is what %END reports and what the QC counts as covering. Mode 2
@@ -280,8 +286,8 @@ def _merge_posthoc_commands(
         # costs, why the alternative was rejected, and why the gate is not sex-blind.
         bcftools query -r chrX:{non_par_lo}-{non_par_hi} -f '[%GT]\\n' dragen.vcf.gz > chrx_gts.txt
         if [ ! -s chrx_gts.txt ] || grep -qv '[/|]' chrx_gts.txt; then
-            awk -v lo={non_par_lo} -v hi={non_par_hi} 'BEGIN{{FS=OFS="\\t"}} \\
-                !($1 == "chrX" && $3 >= lo && $3 <= hi)' uncovered.all.bed > uncovered.bed
+            awk -v lo={non_par_lo} -v hi={non_par_hi} '{_OUTSIDE_NON_PAR_X_AWK}' \\
+                uncovered.all.bed > uncovered.bed
         else
             cp uncovered.all.bed uncovered.bed
         fi
