@@ -133,8 +133,10 @@ name follows `rbceq2.core_logic.alleles.Allele.blood_group` (KLF1 becomes KLF).
 - **rbceq2 2.4.4 (released 2026-09-16) handles haploid GT natively.** The SPEC's Q4 and
   our `bcftools +fixploidy` step were a workaround for a crash on haploid chrX/chrY calls.
   2.4.4 also says it keeps "chromosome-copy counts ... distinct", so `1`→`1|1` may now
-  overstate dosage where 2.4.4 would have read hemizygosity correctly. Re-test with and
-  without `+fixploidy` on a male sample when we bump the pin.
+  overstate dosage where 2.4.4 would have read hemizygosity correctly. Re-tested at the pin
+  bump: `popgen_rbceq2#20` (merged 2026-09-22) removed `+fixploidy`, since 2.4.4 renders
+  a hemizygous null as `XK*01.02/-` where the expansion had made it a homozygote, with
+  phenotypes unchanged in the synthetic check.
 - **2.4.4 refuses tied SV evidence** with a named sample error
   (`SvMatcher.match/ambiguous_equal_best_sv_evidence`). The SV∩CNV overlap the SPEC's Q2
   left open (the same deletion arriving from both the SV caller and the CNV caller) may now fail
