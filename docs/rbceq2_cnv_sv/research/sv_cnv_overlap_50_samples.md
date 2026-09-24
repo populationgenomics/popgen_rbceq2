@@ -1,17 +1,21 @@
-# DRAGEN SV caller versus DRAGEN CNV caller in the blood-group regions: 50 OurDNA genomes
+# DRAGEN SV caller versus DRAGEN CNV caller in the blood-group regions: 150 OurDNA genomes
 
-**Date:** 2026-09-17, replicated 2026-09-18 on a second 50 (§10) with a read-level check (§11), a third 50 (§12) and the review-round checks (§13) ·
-**Caller naming:** the SV VCF is written by the DRAGEN 3.7.8 SV caller, which integrates and extends Manta; record IDs keep the SV caller's prefix. This note says "SV caller" or "SV", not "Manta", and claims about the caller are observations of its output, not of the SV caller's algorithm. ·
-**Contains no individual-level data:** aggregate observations only, no sequencing-group IDs, no per-genome tables. · **Inputs:** `gs://cpg-ourdna-main/ica/dragen_3_7_8/output/dragen_metrics/<sg>/<sg>.{sv,cnv}.vcf.gz`
-for 50 sequencing groups drawn with a fixed seed from the 1,255 present (not in Metamist; bulk
-download). **Regions:** the committed `bg_regions.GRCh38.bed` (50 intervals, 52.6 Mb).
-**Matcher:** rbceq2 2.4.4 `SvReader`/`SvMatcher`/`select_best_per_vcf`, imported directly, with
-`load_db_defs(db, svtoken_col='GRCh38')` (176 definitions, 33 RH). Sex mix by DRAGEN's own
-estimate: 30 XX, 18 XY, 1 X0, 1 XYY.
+**Dates:** first 50 genomes 2026-09-17 (§1–9); a second 50 (§10), a read-level check (§11), a third 50 (§12) and the review-round checks (§13) on 2026-09-18. The filename keeps the original "50 samples".
+**Caller naming:** the SV VCF is written by the DRAGEN 3.7.8 SV caller, which integrates and extends Manta; record IDs keep Manta's prefix. This note says "SV caller" or "SV", not "Manta", and its claims about the caller are observations of its output, not of its algorithm.
+**No individual-level data:** aggregate observations only, with no sequencing-group IDs and no per-genome tables.
+**Inputs:** `gs://cpg-ourdna-main/ica/dragen_3_7_8/output/dragen_metrics/<sg>/<sg>.{sv,cnv}.vcf.gz` for 50 sequencing groups per set, drawn with a fixed seed from the 1,255 present (not in Metamist; bulk download).
+**Regions:** the committed `bg_regions.GRCh38.bed` (50 intervals, 52.6 Mb).
+**Matcher:** rbceq2 2.4.4 `SvReader`/`SvMatcher`/`select_best_per_vcf`, imported directly, with `load_db_defs(db, svtoken_col='GRCh38')` (176 definitions, 33 RH). Sex mix of the first 50 by DRAGEN's own estimate: 30 XX, 18 XY, 1 X0, 1 XYY.
 
-The question was SPEC Q2: when the same deletion arrives from both callers, do we have to
-deduplicate before rbceq2, and if so on what rule? Answer: **yes, and a size split at 10 kb is
-the right rule**, but for a different reason than the 2.4.4 tied-evidence error. Details follow.
+The question was SPEC Q2: when the same deletion arrives from both callers, must we deduplicate before rbceq2, and on what rule? Yes, but not for the reason first expected, and not by size. What the 150 genomes showed:
+
+- **The callers occupy different size bands** (§1–2). Below 10 kb no CNV record passes, and the two callers overlap only at 10–50 kb.
+- **Their breakpoints never agree** (§2, §12): 0 of 131 shared events had identical coordinates, so the 2.4.4 tied-evidence error never fired.
+- **The real hazard is double-matching** (§4). Two offset records for one deletion each pick their nearest db token, so one deletion becomes two alleles. This is why the merge must deduplicate.
+- **The SV caller missed a real deletion** (§10–11): a 3.6 kb Gerbich deletion the CNV caller found on 3 bins. So neither caller can own the sub-10 kb band, and the SPEC triages instead of splitting by size (§5).
+- **Non-XX/XY genomes produce chromosome-scale chrX CNV events** (§6), which is why the SPEC gates chrX/chrY CNV records on the karyotype estimate.
+- **A recurrent whole-FUT2 deletion matches no db allele** (§12); rbceq2 ignores it, so the QC must report it.
+- **Across the study the design calls one allele,** the Gerbich deletion.
 
 ## 1. The two callers occupy different size bands
 
@@ -32,7 +36,7 @@ CNV non-PASS 9 to 25 (median 16).
 - Below 10 kb the CNV caller emits nothing that passes; every record is `cnvLength`. The SV
   caller is the only source. This covers 22 of the 67 target alleles (GE, PIGG, MAM, ABO*O.16, XK*N.03,
   XK*N.05, small GYP).
-- At 10 kb and above the CNV caller dominates. the SV caller's 28 PASS DUPs of 200 kb or more are five
+- At 10 kb and above the CNV caller dominates. The SV caller's 28 PASS DUPs of 200 kb or more are five
   whole-arm `DUP:TANDEM` artefacts (chr3 75–130 Mb in 24 samples, chr11, chr8, chr1 with
   `MaxDepth`), not events. Its 3 DELs of 50–200 kb are real-looking but the CNV caller saw
   them too.
@@ -211,7 +215,7 @@ Same pipeline, 50 further genomes with no overlap with the first set. Sex mix 32
 | Large PASS CNV events on chrX | 5, in the X0 and XYY samples | 0 |
 | Haploid GT on chrX SV/CNV records | 1 | 2 |
 | 10 kb+ targets tiled by CNV records in ≥48/50 | all | all (50/50) |
-| db matches under the `pass` or `split` policy | 1 (GE\*01.-02.01, Manta) | 0 |
+| db matches under the `pass` or `split` policy | 1 (GE\*01.-02.01, SV caller) | 0 |
 
 Every structural claim in §§1–7 held. The six SV-only 10 kb+ events in the second set are
 the same recurrent loci as the first (HLA-DRB 88 kb, chr7:100.73 Mb 13 kb, a chr9:133.06 Mb
@@ -251,7 +255,7 @@ on 3 bins and filtered it `cnvLength`.
 **Consequences for the design.**
 
 1. The SV caller is not sensitive enough to own the sub-10 kb band alone. Two Gerbich carriers in 100
-   genomes; the SV caller called one. Rule 1 in §5 has to change: a sub-10 kb `cnvLength` CNV
+   genomes; the SV caller called one. Rule 1 in §5 had to change, and did (SPEC §5.5): a sub-10 kb `cnvLength` CNV
    deletion with **no** reciprocal SV record must be **kept**, its FILTER rewritten to PASS
    (the per-record mechanism the SPEC's Q1 already names; not `--no_filter`). Where the SV caller does
    have a partner, its record still wins, because its breakpoints are exact and the CNV
@@ -297,9 +301,9 @@ no db SV: 0 to 3 per genome, and almost all one thing: a recurrent **8.5–12.8 
 chr19:48.69 Mb spanning every FUT2 defining site**, in 3 of 150 genomes, each reported by both
 callers (SV 9.3–10.1 kb PASS, QUAL 400–797; CNV 8.5–12.8 kb, CN=1 on 6–9 bins, PASS in two and
 `cnvLength` in one). Two of the three carriers share identical SV breakpoints
-(chr19:48,697,201–48,706,493), consistent with one recurrent allele. (An earlier revision of this
-paragraph said "5 of 150 genomes": the triage script counted PASS records, five, not carriers,
-three. Corrected 2026-09-18.) It matches no db allele. A
+(chr19:48,697,201–48,706,493), consistent with one recurrent allele. (An earlier revision said
+"5 of 150 genomes", counting PASS records rather than carriers; corrected 2026-09-18.) It matches
+no db allele. A
 heterozygous whole-FUT2 deletion leaves one FUT2 copy; whatever the gVCF reports at the
 secretor-defining sites is then a single-copy call read as homozygous. rbceq2 does nothing with
 an unmatched deletion, so this is exactly the case the `SVDEL` flag in SPEC §6 exists for. The
