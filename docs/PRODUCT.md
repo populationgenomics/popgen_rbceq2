@@ -106,7 +106,7 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
 - Not a fork or fix of RBCeq2
 - Not the source/maintainer of blood-group data/knowledge
 - No phasing (yet)
-- No calling of structural-variant-defined alleles, which needs the DRAGEN SV and CNV VCFs rather than the gVCF alone. ATP11C, CD99 and, in effect, XG are unreachable today for this reason; null alleles in ~16 further systems are too. Design and estimate in `docs/rbceq2_cnv_sv/`.
+- No calling of structural-variant-defined alleles, which needs the DRAGEN SV and CNV VCFs rather than the gVCF alone. So ATP11C, CD99 and XG are blind today, and so are the null alleles of 16 further systems. Design and estimate in `docs/rbceq2_cnv_sv/`.
 
 ### Ecosystem
 - **RBCeq2**: the genotyper
