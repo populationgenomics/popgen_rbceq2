@@ -29,7 +29,15 @@ name = 'popgen_rbceq2'
 # allele whose defining variant is not PASS, so under v3 no recovered alternate allele ever
 # reached a genotype. And the QC disregards a post-hoc reference block at a hole inside the
 # design, so such a hole reads NOCOV rather than POSTHOC. Genome outputs are again unchanged.
-version = 'v4'
+#
+# v5: the conversion no longer rewrites DRAGEN's one-token sex-chromosome genotypes with
+# bcftools +fixploidy, because rbceq2 2.4.4 reads them natively. A one-copy sample's XK, GATA1
+# and ATP11C genotypes render as single copy (XK*01.02/-) where v4 printed them as homozygous.
+# Exome-only: the post-hoc fill stays out of single-copy chrX for such a sample, so its
+# off-design XK sites read NOCOV rather than being filled at ploidy 2. The tool half of the
+# segment moves to 2_4_4 on its own; the release moves as well so a row's stage_version says
+# which conversion wrote it.
+version = 'v5'
 status_reporter = 'metamist'
 # driver_image =
 # sequencing_type = 'genome'
