@@ -157,8 +157,10 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
   but registering another analysis would silently change it.
 
 ## The current slice.
-An implementation of RBCeq2 as a cpg-flow workflow in CPG's infrastructure, ported from the
-prototype stages in `ourdna_genomic_atlas`. Not yet running on production data from this repo.
+Running at release v5 (rbceq2 2.4.4) on all WGS and WES cohorts, with post-hoc recall on
+exomes. Being designed: calling structural-variant-defined alleles from DRAGEN's SV and CNV
+VCFs (`docs/rbceq2_cnv_sv/SPEC.md`, tracked in #25). The candidate next PRs are GitHub issues,
+one per slice, each linking its spec section.
 
 ## Domain terms
 [See GLOSSARY.md](../GLOSSARY.md)
