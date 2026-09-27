@@ -20,9 +20,12 @@ classifiers = [
 
 dependencies = [
     'click',
-    'cpg-flow>=v1.3.3',
+    'cpg-flow>=v1.4.1',
     'cpg-utils>=5.5.0',
     'metamist>=v7.14.1',
+    # Security floor only; nothing here imports tornado. The cpg_hail base image ships 6.5.5
+    # and `pip install .` keeps it unless asked for more. Drop once the base image has >=6.5.8.
+    'tornado>=6.5.8',
 ]
 
 # The workflow runner — the command analysis-runner invokes.
