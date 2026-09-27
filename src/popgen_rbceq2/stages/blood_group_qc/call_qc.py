@@ -1,7 +1,7 @@
 """Flags the blood-group systems whose call rests on a low-quality defining site."""
 
 import cpg_flow.stage
-import cpg_flow.targets
+import cpg_flow.targets.sequencing_group
 import cpg_utils.config
 import cpg_utils.hail_batch
 import hailtop.batch.job
@@ -48,7 +48,7 @@ class FlagBloodGroupCallQc(cpg_flow.stage.SequencingGroupStage):
     """
 
     def expected_outputs(
-        self, sequencing_group: cpg_flow.targets.SequencingGroup
+        self, sequencing_group: cpg_flow.targets.sequencing_group.SequencingGroup
     ) -> stage_support.ExpectedOutputs | None:
         if not sequencing_group.gvcf:
             return None
@@ -56,7 +56,7 @@ class FlagBloodGroupCallQc(cpg_flow.stage.SequencingGroupStage):
 
     def queue_jobs(
         self,
-        sequencing_group: cpg_flow.targets.SequencingGroup,
+        sequencing_group: cpg_flow.targets.sequencing_group.SequencingGroup,
         inputs: cpg_flow.stage.StageInput,
     ) -> cpg_flow.stage.StageOutput | None:
         outputs = self.expected_outputs(sequencing_group)
