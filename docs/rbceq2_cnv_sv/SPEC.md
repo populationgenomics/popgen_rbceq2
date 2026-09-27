@@ -1,6 +1,6 @@
 # Design spec: structural-variant support for RBCeq2 blood-group calling
 
-**Status:** draft, awaiting design approval; do not implement.
+**Status:** draft, awaiting design approval; do not implement. Implementation is tracked in `popgen_rbceq2#25`.
 **Revision:** 25 September 2026, after the first review round on `popgen_rbceq2#15` and `#16` and the `+fixploidy` removal in `#20`. **Author:** Joshua Schmidt. **Reviewers:** Alexander Stuckey.
 **Reader:** a pipeline engineer or scientist on the team who has not worked on the rbceq2 stages.
 **Decision asked of reviewers:** approve the triage rule and karyotype gate in §5 and the thresholds in §8, or say which to change and why.
