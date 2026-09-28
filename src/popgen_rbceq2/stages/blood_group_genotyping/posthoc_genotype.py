@@ -100,6 +100,7 @@ for attempt in $(seq 1 {attempts}); do
         break
     fi
     if ! grep -qE '{EGRESS_QUOTA_PATTERN}' "$attempt_log"; then
+        echo "Not a GCS egress-quota failure (status $status); not retrying." >&2
         exit "$status"
     fi
     if [ "$attempt" -eq {attempts} ]; then

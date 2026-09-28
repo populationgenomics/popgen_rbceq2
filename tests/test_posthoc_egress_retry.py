@@ -73,7 +73,8 @@ def test_any_other_failure_is_not_retried(tmp_path):
 
     assert result.returncode == 3
     assert attempts == 1
-    assert 'retrying' not in result.stderr
+    assert 'hit the GCS egress quota; retrying' not in result.stderr
+    assert 'Not a GCS egress-quota failure (status 3); not retrying.' in result.stderr
 
 
 def test_the_quota_on_every_attempt_fails_after_the_last_retry_and_says_so(tmp_path):
