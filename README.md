@@ -246,6 +246,13 @@ sites are off-target depends on the sample's capture kit and nothing is saved by
 the whole interval list is 136kb either way. Deciding what to **keep** is the conversion
 stage's job.
 
+Streaming CRAMs for two 400-exome cohorts at once can exceed the project's GCS egress quota
+(`GoogleEgressBandwidth`, per project and region) for a moment. The job that draws the 429 fails
+while the rest of the batch carries on. So HaplotypeCaller is retried up to 3 times, but only on
+that failure. Each retry waits a random time up to 60, 120, then 240 seconds, so jobs that failed
+together do not retry together. Any other failure fails on the first attempt. The retry rides out
+a brief overrun; it does not make running many cohorts at once safe.
+
 The output gVCF goes to tmp and registers no Metamist Analysis. It is an intermediate the
 conversion stage consumes through the cpg-flow graph, and what a reader needs — that a call
 rests on a recovered site — reaches Metamist as a `POSTHOC` flag on the QC TSV instead.

@@ -56,6 +56,64 @@ def _heap_gb(cpu: int, memory: str, section: str) -> int:
     return cpu * _GB_PER_CPU[memory] - _JVM_OVERHEAD_GB
 
 
+# Retries after a first HaplotypeCaller attempt that fails on the GCS egress quota. Streaming
+# CRAMs for two 400-exome cohorts at once is enough to exceed the per-project, per-region
+# GoogleEgressBandwidth quota for a moment, and the job that draws the 429 fails while every
+# other job in the batch carries on. The overrun is brief, so a retry after a wait succeeds.
+EGRESS_RETRIES = 3
+# Retry n waits a random whole number of seconds from 0 to this times 2**(n-1): up to 60, 120
+# and 240. The randomness is the point. Every job that drew a 429 drew it from the same
+# overrun, and waiting a fixed time would send them back together and recreate it.
+EGRESS_BACKOFF_BASE_SECONDS = 60
+# What GCS says when the quota is exceeded, as GATK's NIO reader reports it.
+EGRESS_QUOTA_PATTERN = '429 Too Many Requests|GoogleEgressBandwidth'
+
+
+def retry_on_egress_quota(
+    command: str,
+    *,
+    retries: int = EGRESS_RETRIES,
+    base_seconds: int = EGRESS_BACKOFF_BASE_SECONDS,
+) -> str:
+    """Wrap a bash command so it is retried with jittered exponential backoff on the egress quota.
+
+    Only a failure whose output names the quota is retried. Any other failure exits at once with
+    the command's own status, so a bad reference or a corrupt CRAM still fails on the first
+    attempt. A command still hitting the quota after the last retry fails, saying so.
+
+    Args:
+        command: The bash command to run. Its stdout and stderr both reach the job log, and are
+            also kept for the attempt so the failure can be classified.
+        retries: How many times to rerun it after the first attempt.
+        base_seconds: The first retry's maximum wait; each later retry doubles it.
+
+    Returns:
+        Bash that runs `command` under the retry, for a job that has already `set -euo pipefail`.
+    """
+    attempts = retries + 1
+    return f"""
+attempt_log=$(mktemp)
+for attempt in $(seq 1 {attempts}); do
+    status=0
+    {command} 2>&1 | tee "$attempt_log" || status=$?
+    if [ "$status" -eq 0 ]; then
+        break
+    fi
+    if ! grep -qE '{EGRESS_QUOTA_PATTERN}' "$attempt_log"; then
+        exit "$status"
+    fi
+    if [ "$attempt" -eq {attempts} ]; then
+        echo "ERROR: still over the GCS egress quota after {retries} retries." >&2
+        exit "$status"
+    fi
+    ceiling=$(( {base_seconds} * 2 ** (attempt - 1) ))
+    wait_seconds=$(( RANDOM % (ceiling + 1) ))
+    echo "Attempt $attempt of {attempts} hit the GCS egress quota; retrying in ${{wait_seconds}}s." >&2
+    sleep "$wait_seconds"
+done
+"""
+
+
 def applies_to(sequencing_group: cpg_flow.targets.sequencing_group.SequencingGroup) -> bool:
     """Whether post-hoc calling runs for this sequencing group.
 
@@ -184,17 +242,23 @@ class PosthocGenotypeOffTargetSites(cpg_flow.stage.SequencingGroupStage):
         #
         # The CRAM index is not passed separately: GATK derives the .crai path from the .cram
         # path over NIO the same way it does on a local file.
+        #
+        # A retry reruns HaplotypeCaller from the start and overwrites the output, so a partial
+        # file from the failed attempt never reaches the index check below.
+        haplotype_caller = (
+            f'gatk --java-options "-Xms1g -Xmx{_heap_gb(cpu, memory, cfg)}g" HaplotypeCaller'
+            f' -R {reference.base}'
+            f' -I {sequencing_group.cram!s}'
+            f' -L {padded_bed}'
+            f' -O {out["g.vcf.gz"]}'
+            ' -ERC GVCF'
+            ' --dragen-mode'
+            ' --create-output-variant-index true'
+        )
         j.command(
             f"""
             set -euxo pipefail
-            gatk --java-options "-Xms1g -Xmx{_heap_gb(cpu, memory, cfg)}g" HaplotypeCaller \\
-                -R {reference.base} \\
-                -I {sequencing_group.cram!s} \\
-                -L {padded_bed} \\
-                -O {out['g.vcf.gz']} \\
-                -ERC GVCF \\
-                --dragen-mode \\
-                --create-output-variant-index true
+            {retry_on_egress_quota(haplotype_caller)}
             if [ ! -s {out['g.vcf.gz.tbi']} ]; then
                 echo "ERROR: HaplotypeCaller wrote no index beside its GVCF." >&2
                 exit 1
