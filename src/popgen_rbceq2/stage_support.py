@@ -21,7 +21,8 @@ from importlib.resources.abc import Traversable
 from typing import Any, TypeAlias
 
 import cpg_flow.stage
-import cpg_flow.targets
+import cpg_flow.targets.cohort
+import cpg_flow.targets.sequencing_group
 import cpg_flow.workflow
 import cpg_utils
 import cpg_utils.config
@@ -398,7 +399,9 @@ def _release_tree(stage_name: str) -> str:
     return tree
 
 
-def get_output_prefix(cohort: cpg_flow.targets.Cohort, stage_name: str, category: str | None = None) -> cpg_utils.Path:
+def get_output_prefix(
+    cohort: cpg_flow.targets.cohort.Cohort, stage_name: str, category: str | None = None
+) -> cpg_utils.Path:
     """Standardised output prefix for CohortStage outputs.
 
     Format: cohort.dataset.prefix() / workflow.name / <release tree> / stage_name / cohort.id
@@ -420,7 +423,7 @@ def get_output_prefix(cohort: cpg_flow.targets.Cohort, stage_name: str, category
 
 
 def get_sg_output_prefix(
-    sequencing_group: cpg_flow.targets.SequencingGroup,
+    sequencing_group: cpg_flow.targets.sequencing_group.SequencingGroup,
     stage_name: str,
     category: str | None = None,
 ) -> cpg_utils.Path:

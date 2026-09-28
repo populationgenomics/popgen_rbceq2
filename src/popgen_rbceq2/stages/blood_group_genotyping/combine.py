@@ -4,7 +4,7 @@ import json
 import logging
 
 import cpg_flow.stage
-import cpg_flow.targets
+import cpg_flow.targets.cohort
 import cpg_utils
 import cpg_utils.hail_batch
 import hailtop.batch.job
@@ -34,13 +34,13 @@ class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):
     from FlagBloodGroupCallQc, not from rbceq2, and the keys drive rbceq2's own resource group.
     """
 
-    def expected_outputs(self, cohort: cpg_flow.targets.Cohort) -> stage_support.ExpectedOutputs:
+    def expected_outputs(self, cohort: cpg_flow.targets.cohort.Cohort) -> stage_support.ExpectedOutputs:
         prefix = stage_support.get_output_prefix(cohort, self.name)
         return {key: prefix / f'combined.{cohort.id}.{key}.tsv' for key in (*constants.RBCEQ2_TSV_KEYS, 'qc')}
 
     def queue_jobs(
         self,
-        cohort: cpg_flow.targets.Cohort,
+        cohort: cpg_flow.targets.cohort.Cohort,
         inputs: cpg_flow.stage.StageInput,
     ) -> cpg_flow.stage.StageOutput | None:
         _log_who_gets_the_recall(cohort)
@@ -99,7 +99,7 @@ class CombineRbceq2OutputsPerCohort(cpg_flow.stage.CohortStage):
         return self.make_outputs(cohort, data=outputs, jobs=[j])
 
 
-def _log_who_gets_the_recall(cohort: cpg_flow.targets.Cohort) -> None:
+def _log_who_gets_the_recall(cohort: cpg_flow.targets.cohort.Cohort) -> None:
     """Say at graph build which of the cohort's sequencing groups post-hoc calling runs for.
 
     The recall is gated per sequencing group on having both a CRAM and a gVCF, and a

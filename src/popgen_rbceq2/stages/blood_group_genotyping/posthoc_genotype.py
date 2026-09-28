@@ -3,7 +3,7 @@
 import typing
 
 import cpg_flow.stage
-import cpg_flow.targets
+import cpg_flow.targets.sequencing_group
 import cpg_utils.config
 import cpg_utils.hail_batch
 import hailtop.batch.resource
@@ -56,7 +56,7 @@ def _heap_gb(cpu: int, memory: str, section: str) -> int:
     return cpu * _GB_PER_CPU[memory] - _JVM_OVERHEAD_GB
 
 
-def applies_to(sequencing_group: cpg_flow.targets.SequencingGroup) -> bool:
+def applies_to(sequencing_group: cpg_flow.targets.sequencing_group.SequencingGroup) -> bool:
     """Whether post-hoc calling runs for this sequencing group.
 
     Both this stage's `expected_outputs` and the merge in `FilterAndConvertGvcfsForRbceq2`
@@ -125,7 +125,7 @@ class PosthocGenotypeOffTargetSites(cpg_flow.stage.SequencingGroupStage):
     """
 
     def expected_outputs(
-        self, sequencing_group: cpg_flow.targets.SequencingGroup
+        self, sequencing_group: cpg_flow.targets.sequencing_group.SequencingGroup
     ) -> stage_support.ExpectedOutputs | None:
         # Skipped, not failed, on all three counts, matching how the rest of the pipeline
         # treats a sequencing group it cannot process: a genome (nothing to supplement), no
@@ -141,7 +141,7 @@ class PosthocGenotypeOffTargetSites(cpg_flow.stage.SequencingGroupStage):
 
     def queue_jobs(
         self,
-        sequencing_group: cpg_flow.targets.SequencingGroup,
+        sequencing_group: cpg_flow.targets.sequencing_group.SequencingGroup,
         inputs: cpg_flow.stage.StageInput,  # noqa: ARG002
     ) -> cpg_flow.stage.StageOutput | None:
         outputs = self.expected_outputs(sequencing_group)
