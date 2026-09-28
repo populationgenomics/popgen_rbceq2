@@ -449,6 +449,10 @@ Run rbceq2 in the pinned image and write its three TSVs (`geno`, `pheno_numeric`
 as a custom Metamist Analysis, with the calls parsed into its `meta`. This does not write the
 blood type onto the SequencingGroup record.
 
+rbceq2 runs without `--HPAs` or `--RH`, so the outputs have no HPA, RHD or RHCE columns. The
+database's HPA rows still carry GRCh37 coordinates in the GRCh38 column (#23), and the RH
+hybrid alleles are not reliably callable from short reads.
+
 #### The rbceq2 run log
 
 rbceq2 writes a log on every run whether or not `--debug` is passed; the flag only raises it
@@ -689,8 +693,8 @@ catches another one reaching the resources.
 
 Calling these alleles needs the DRAGEN SV and CNV VCFs alongside the SNV calls, not the gVCF on
 its own. The design for merging them, and an estimate of which systems it would open up, is in
-`docs/rbceq2_cnv_sv/`. The ABCC1 coordinate error is still present in the 2.4.4 database, so
-ABCC1 stays uncallable whatever the input.
+`docs/rbceq2_cnv_sv/`. The ABCC1 coordinate error is still present in db 2.5.1, the one rbceq2
+2.4.4 bundles, so ABCC1 stays uncallable whatever the input.
 
 ## Development
 
@@ -755,4 +759,6 @@ runs the suite again inside it.
 
 - [PRODUCT.md](docs/PRODUCT.md) — what this repo is for and the decisions that shape it
 - [GLOSSARY.md](GLOSSARY.md) — domain terms
+- [docs/release_v5_comparison.md](docs/release_v5_comparison.md) — every per-sample output change from release v4 to v5, accounted for
+- [docs/rbceq2_posthoc_exome/](docs/rbceq2_posthoc_exome/), [docs/rbceq2_cnv_sv/](docs/rbceq2_cnv_sv/), [docs/rbceq2_debug_log/](docs/rbceq2_debug_log/) — per-feature specs and results
 - [RBCeq2 source](https://github.com/limcintyre/RBCeq2)
