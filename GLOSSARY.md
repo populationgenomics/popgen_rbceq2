@@ -66,9 +66,8 @@ Lane's paper); RBCeq2 adds the reference allele to complete the genotype.
   is close to but not identical with DRAGEN's.
 - Single-copy chrX / one-token genotype: outside the pseudoautosomal regions (`constants.NON_PAR_X`)
   DRAGEN writes a one-X sample's genotype as one token (`GT=1`). rbceq2 2.4.4 reads it as one
-  copy and renders `XK*01.02/-`. Since release v5 the pipeline never rewrites a genotype; v4
-  expanded these with `bcftools +fixploidy`, which made a hemizygote read as a homozygote.
-  XK, GATA1 and ATP11C are defined in this window.
+  copy and renders `XK*01.02/-`. The pipeline never rewrites these: expanding `1` to `1|1`
+  would make a hemizygote read as a homozygote. XK, GATA1 and ATP11C are defined in this window.
 - geno / pheno_numeric / pheno_alphanumeric: the three output TSVs.
 - SV VCF / CNV VCF: DRAGEN's two structural-variant outputs per sequencing group, beside the gVCF. Neither is an input to this pipeline yet; see `docs/rbceq2_cnv_sv/`. The SV VCF is written by the DRAGEN SV caller, which integrates and extends Manta: breakpoint evidence, events of any size, a proper `SVTYPE`, and record IDs that keep Manta's prefix. The CNV VCF is bin-based read depth: dosage, `SVTYPE=CNV` on every record, and events under 10 kb filtered as `cnvLength`. Genome and production exome runs both produce the two files, but the exome CNV VCF is called per capture target against a panel of normals and holds events only, with no `DRAGEN:REF:` records and no `cnvLength` filter.
 - `DRAGEN:REF:` record: a CNV VCF record spanning an interval the CNV caller assessed and found at reference copy number, with its bin count (`BC`) and segment mean (`SM`). The CNV analogue of a gVCF reference block. The SV VCF has no equivalent: an absent SV call is silence.
