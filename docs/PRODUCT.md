@@ -160,8 +160,9 @@ The value is a reproducible RBCeq2 wrapper that annotates CPG's underrepresented
 
 ## The current slice.
 Running at release v5 (rbceq2 2.4.4) on all WGS and WES cohorts, with post-hoc recall on
-exomes; what changed from v4 is in `docs/release_v5_comparison.md`. Being designed: calling structural-variant-defined alleles from DRAGEN's SV and CNV
-VCFs (`docs/rbceq2_cnv_sv/SPEC.md`, tracked in #25). The candidate next PRs are GitHub issues,
+exomes; what changed from v4 is in `docs/release_v5_comparison.md`. Designed and approved,
+not yet implemented: calling structural-variant-defined alleles from DRAGEN's SV and CNV VCFs
+(`docs/rbceq2_cnv_sv/SPEC.md`, tracked in #25). The candidate next PRs are GitHub issues,
 one per slice, each linking its spec section.
 
 ## Domain terms

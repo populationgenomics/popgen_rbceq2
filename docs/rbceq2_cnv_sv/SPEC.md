@@ -1,9 +1,9 @@
 # Design spec: structural-variant support for RBCeq2 blood-group calling
 
-**Status:** draft, awaiting design approval; do not implement. Implementation is tracked in `popgen_rbceq2#25`.
+**Status:** approved (Alexander Stuckey, `popgen_rbceq2#15` on 24 September 2026 and `#16` on 25 September 2026); not yet implemented. Implementation is tracked in `popgen_rbceq2#25`. The open questions in §14 are still open.
 **Revision:** 25 September 2026, after the first review round on `popgen_rbceq2#15` and `#16` and the `+fixploidy` removal in `#20`. **Author:** Joshua Schmidt. **Reviewers:** Alexander Stuckey.
 **Reader:** a pipeline engineer or scientist on the team who has not worked on the rbceq2 stages.
-**Decision asked of reviewers:** approve the triage rule and karyotype gate in §5 and the thresholds in §8, or say which to change and why.
+**Decision asked of reviewers:** approve the triage rule and karyotype gate in §5 and the thresholds in §8, or say which to change and why. Approved as written (§13, the 2026-09-25 entry).
 **Area:** rbceq2 blood-group genotyping pipeline (`FilterAndConvertGvcfsForRbceq2` to `GenotypeBloodGroupsWithRbceq2` to `CombineRbceq2OutputsPerCohort`), in `popgen_rbceq2`. rbceq2 is pinned at 2.4.4 (`constants.py`, `popgen_rbceq2#17`), and the database figures below are from that release.
 **Pull-request references:** the stages were ported from `ourdna_genomic_atlas` in August 2026 and both repos number PRs from 1, so every PR below is written `ourdna_genomic_atlas#n` or `popgen_rbceq2#n`.
 **Callers:** the SV VCF is written by the DRAGEN 3.7.8 SV caller, which Illumina describes as integrating and extending Manta; its record IDs keep Manta's prefix (`MantaDEL:`). This spec says "SV caller" and "SV VCF", not "Manta", so that nothing here rests on Manta's internals. The CNV VCF is written by DRAGEN's bin-based CNV caller.
@@ -474,6 +474,8 @@ Feature requests to raise with the RBCeq2 maintainers. This design works around 
 ## 13. Decision log
 
 Newest first; the Q3 entry is undated. Each entry gives the decision, the alternatives rejected and the consequences; a later entry that reverses one says so.
+
+**2026-09-25, design approved (`popgen_rbceq2#15`, `#16`).** Decision: Alexander Stuckey approved both PRs after the first review round, accepting the triage rule and karyotype gate in §5 and the thresholds in §8 as written. Consequences: implementation can start, tracked in `popgen_rbceq2#25`; the open questions in §14 were not settled by the approval and stay open.
 
 **2026-09-21, `+fixploidy` removed at the pin bump (`popgen_rbceq2#20`), closing the 2026-09-18 deferral.** Decision: the SNV conversion pipe no longer rewrites any genotype. rbceq2 2.4.4 reads DRAGEN's one-token non-PAR chrX GT natively and renders a hemizygous null as `XK*01.02/-`. The `1` to `1|1` expansion had rendered it `XK*01.02/XK*01.02`, indistinguishable from a female homozygote; phenotype TSVs were unchanged in the synthetic check. rbceq2 derives one chromosome-copy count per blood group and refuses a file whose records disagree (`Undetermined`), while a record claiming fewer copies than its neighbours passes silently and can flip the phenotype. So the exome post-hoc fill is kept out of single-copy chrX (`constants.NON_PAR_X`), at the cost of 10 off-design XK sites on Twist and 2 on Agilent CREv2, which reach the QC as `NOCOV`. Alternatives rejected: relocating `+fixploidy` onto the merged VCF (the superseded 2026-09-18 position), which would re-fabricate homozygotes for every structural and SNV record on non-PAR chrX; rewriting the post-hoc caller's genotypes to match DRAGEN, which needs a ploidy inference and turns a wrong inference into a confident wrong call. Consequences for this design: the concat in §5.5 adds no ploidy rewrite; `validate_for_rbceq2` should treat a two-token GT on a non-PAR chrX structural record beside one-token SNV records as the contradiction rbceq2 will refuse; §5.2, §5.5, §9 and §11 updated. Open: the gate is sex-blind, so female exomes also lose those XK sites; a gate based on DRAGEN's encoding was raised in the `#20` review.
 
